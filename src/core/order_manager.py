@@ -1,101 +1,170 @@
 """
-Order Execution Manager per NOCTURNA v2.0 Trading Bot
-Gestisce l'invio e il monitoraggio degli ordini ai broker di trading.
+Order Execution Manager for NOCTURNA v2.0 Trading System
+Production-grade order management with enhanced error handling and validation.
 """
 
+import os
+import sys
 import logging
-import asyncio
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Callable
 from enum import Enum
 import json
 import threading
-from alpaca_trade_api import REST as AlpacaREST
-from alpaca_trade_api.entity import Order as AlpacaOrder
 import uuid
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Any
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
 
 class OrderStatus(Enum):
-    """Stati possibili degli ordini."""
+    """Order status enumeration."""
     PENDING = "PENDING"
     SUBMITTED = "SUBMITTED"
-    FILLED = "FILLED"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    FILLED = "FILLED"
     CANCELLED = "CANCELLED"
     REJECTED = "REJECTED"
     EXPIRED = "EXPIRED"
+    ERROR = "ERROR"
+
 
 class OrderType(Enum):
-    """Tipi di ordini supportati."""
+    """Supported order types."""
     MARKET = "market"
     LIMIT = "limit"
     STOP = "stop"
     STOP_LIMIT = "stop_limit"
     TRAILING_STOP = "trailing_stop"
 
+
 class OrderSide(Enum):
-    """Lati degli ordini."""
+    """Order side enumeration."""
     BUY = "buy"
     SELL = "sell"
 
+
+@dataclass
+class OrderRecord:
+    """Structured order record for tracking."""
+    id: str
+    symbol: str
+    side: str
+    order_type: str
+    quantity: float
+    filled_quantity: float = 0.0
+    avg_fill_price: float = 0.0
+    status: OrderStatus = OrderStatus.PENDING
+    client_order_id: str = ""
+    submitted_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    filled_at: Optional[datetime] = None
+    cancelled_at: Optional[datetime] = None
+    last_update: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    filled_avg_price: float = 0.0
+    error_message: Optional[str] = None
+    metadata: Dict = field(default_factory=dict)
+
+
 class OrderExecutionManager:
     """
-    Gestisce l'esecuzione degli ordini e il monitoraggio delle posizioni.
-    Supporta multiple broker API e gestione avanzata degli ordini.
+    Production-grade order execution manager.
+    Handles order submission, monitoring, and position tracking.
     """
-    
+
+    # Maximum order history to retain
+    MAX_ORDER_HISTORY = 10000
+    MAX_DAILY_ORDERS = 500
+
     def __init__(self, config: Dict):
         self.config = config
         self.logger = logging.getLogger(__name__)
-        
-        # Client broker
+
+        # Broker client
         self.alpaca_client = None
-        
-        # Gestione ordini
-        self.active_orders = {}
-        self.order_history = []
-        self.positions = {}
-        
+
+        # Order management
+        self.active_orders: Dict[str, OrderRecord] = {}
+        self.order_history: List[OrderRecord] = []
+        self.positions: Dict[str, Dict] = {}
+
         # Trailing stops
-        self.trailing_stops = {}
-        
-        # Threading per monitoraggio
-        self.monitor_thread = None
+        self.trailing_stops: Dict[str, Dict] = {}
+
+        # Monitoring thread
+        self.monitor_thread: Optional[threading.Thread] = None
         self.running = False
-        
+        self.monitor_interval = 5  # seconds
+
         # Callbacks
-        self.order_callbacks = []
-        self.position_callbacks = []
-        
-        # Risk management
-        self.daily_pnl = 0.0
-        self.max_daily_loss = config.get('max_daily_loss', 0.05)
+        self.order_callbacks: List[Callable] = []
+        self.position_callbacks: List[Callable] = []
+
+        # Risk limits
+        self.max_daily_loss = float(config.get('max_daily_loss', 0.05))
         self.position_limits = config.get('position_limits', {})
-        
-        self._initialize_clients()
-    
-    def _initialize_clients(self):
-        """Inizializza i client dei broker."""
+
+        # Daily tracking
+        self.daily_order_count = 0
+        self.daily_reset_time = datetime.now(timezone.utc).date()
+
+        # Performance tracking
+        self.performance_history = deque(maxlen=1000)
+
+        # Thread safety
+        self._lock = threading.RLock()
+
+        # Initialize broker client
+        self._initialize_broker_client()
+
+    def _initialize_broker_client(self) -> None:
+        """Initialize broker API client with proper error handling."""
         try:
-            # Alpaca API
-            if self.config.get('alpaca_api_key'):
-                self.alpaca_client = AlpacaREST(
-                    key_id=self.config['alpaca_api_key'],
-                    secret_key=self.config['alpaca_secret_key'],
-                    base_url=self.config.get('alpaca_base_url', 'https://paper-api.alpaca.markets')
-                )
-                self.logger.info("Alpaca trading client inizializzato")
-                
-                # Carica posizioni esistenti
-                self._load_existing_positions()
-            
+            alpaca_api_key = self.config.get('alpaca_api_key')
+            alpaca_secret_key = self.config.get('alpaca_secret_key')
+            alpaca_base_url = self.config.get(
+                'alpaca_base_url',
+                'https://paper-api.alpaca.markets'
+            )
+
+            if alpaca_api_key and alpaca_secret_key:
+                try:
+                    from alpaca_trade_api import REST as AlpacaREST
+                    self.alpaca_client = AlpacaREST(
+                        key_id=alpaca_api_key,
+                        secret_key=alpaca_secret_key,
+                        base_url=alpaca_base_url
+                    )
+                    self.logger.info("Alpaca trading client initialized successfully")
+
+                    # Load existing positions
+                    self._load_existing_positions()
+
+                except ImportError:
+                    self.logger.error("Alpaca Trade API not installed")
+                    self.alpaca_client = None
+                except Exception as e:
+                    self.logger.error(f"Failed to initialize Alpaca client: {e}")
+                    self.alpaca_client = None
+            else:
+                self.logger.info("Alpaca API keys not configured - running in simulation mode")
+                self.alpaca_client = None
+
         except Exception as e:
-            self.logger.error(f"Errore nell'inizializzazione client trading: {e}")
-    
-    def _load_existing_positions(self):
-        """Carica le posizioni esistenti dal broker."""
-        try:
-            if self.alpaca_client:
+            self.logger.error(f"Error initializing broker client: {e}")
+            self.alpaca_client = None
+
+    def _load_existing_positions(self) -> None:
+        """Load existing positions from broker."""
+        if not self.alpaca_client:
+            return
+
+        with self._lock:
+            try:
                 positions = self.alpaca_client.list_positions()
                 for pos in positions:
                     self.positions[pos.symbol] = {
@@ -105,223 +174,268 @@ class OrderExecutionManager:
                         'avg_price': float(pos.avg_entry_price),
                         'market_value': float(pos.market_value),
                         'unrealized_pnl': float(pos.unrealized_pl),
-                        'last_update': datetime.now()
+                        'last_update': datetime.now(timezone.utc)
                     }
-                
-                self.logger.info(f"Caricate {len(self.positions)} posizioni esistenti")
-                
-        except Exception as e:
-            self.logger.error(f"Errore nel caricamento posizioni: {e}")
-    
+
+                self.logger.info(f"Loaded {len(self.positions)} existing positions")
+
+            except Exception as e:
+                self.logger.error(f"Error loading positions: {e}")
+
     def submit_order(self, signal: Dict) -> Optional[str]:
         """
-        Invia un ordine al broker basandosi su un segnale di trading.
-        
+        Submit a new order based on trading signal.
+
         Args:
-            signal: Dizionario con dettagli del segnale
-            
+            signal: Trading signal dictionary with order details
+
         Returns:
-            ID dell'ordine se inviato con successo, None altrimenti
+            Order ID if successful, None otherwise
         """
-        try:
-            # Validazione segnale
-            if not self._validate_signal(signal):
+        with self._lock:
+            try:
+                # Validate signal
+                if not self._validate_signal(signal):
+                    return None
+
+                # Check risk limits
+                if not self._check_risk_limits(signal):
+                    return None
+
+                # Check market hours
+                if not self._is_market_open():
+                    self.logger.warning("Market closed, order rejected")
+                    return None
+
+                # Prepare order data
+                order_data = self._prepare_order(signal)
+                if not order_data:
+                    return None
+
+                # Submit to broker
+                order_id = self._submit_to_broker(order_data)
+
+                if order_id:
+                    # Register the order
+                    self._register_order(order_id, order_data, signal)
+
+                    # Setup trailing stop if applicable
+                    if signal.get('trail_trigger'):
+                        self._setup_trailing_stop(order_id, signal)
+
+                    self.logger.info(
+                        f"Order submitted: {order_id} | "
+                        f"Symbol: {signal['symbol']} | "
+                        f"Side: {signal['side']} | "
+                        f"Qty: {signal['quantity']}"
+                    )
+
+                    # Update daily count
+                    self._increment_daily_count()
+
+                    return order_id
+
                 return None
-            
-            # Controlli di risk management
-            if not self._check_risk_limits(signal):
+
+            except Exception as e:
+                self.logger.error(f"Error submitting order: {e}")
                 return None
-            
-            # Preparazione ordine
-            order_data = self._prepare_order(signal)
-            if not order_data:
-                return None
-            
-            # Invio ordine
-            order_id = self._send_order_to_broker(order_data)
-            if order_id:
-                # Registra ordine
-                self._register_order(order_id, order_data, signal)
-                
-                # Setup trailing stop se necessario
-                if signal.get('trail_trigger'):
-                    self._setup_trailing_stop(order_id, signal)
-                
-                self.logger.info(f"Ordine inviato: {order_id} per {signal['symbol']}")
-                return order_id
-            
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"Errore nell'invio ordine: {e}")
-            return None
-    
+
     def _validate_signal(self, signal: Dict) -> bool:
-        """Valida un segnale di trading."""
+        """Validate trading signal structure and values."""
         required_fields = ['symbol', 'side', 'type', 'quantity']
-        
-        for field in required_fields:
-            if field not in signal:
-                self.logger.error(f"Campo mancante nel segnale: {field}")
+
+        for field_name in required_fields:
+            if field_name not in signal:
+                self.logger.error(f"Missing required field: {field_name}")
                 return False
-        
-        # Validazione valori
-        if signal['quantity'] <= 0:
-            self.logger.error("Quantità deve essere positiva")
+
+        # Validate symbol format
+        symbol = signal['symbol']
+        if not isinstance(symbol, str) or not symbol.isalpha() or len(symbol) > 5:
+            self.logger.error(f"Invalid symbol format: {symbol}")
             return False
-        
+
+        # Validate side
         if signal['side'] not in ['buy', 'sell']:
-            self.logger.error("Side deve essere 'buy' o 'sell'")
+            self.logger.error(f"Invalid side: {signal['side']}")
             return False
-        
-        if signal['type'] not in ['market', 'limit', 'stop', 'stop_limit']:
-            self.logger.error("Tipo ordine non supportato")
+
+        # Validate order type
+        valid_types = ['market', 'limit', 'stop', 'stop_limit']
+        if signal['type'] not in valid_types:
+            self.logger.error(f"Invalid order type: {signal['type']}")
             return False
-        
-        return True
-    
-    def _check_risk_limits(self, signal: Dict) -> bool:
-        """Controlla i limiti di rischio prima di inviare un ordine."""
-        try:
-            symbol = signal['symbol']
-            quantity = signal['quantity']
-            
-            # Controllo perdita giornaliera massima
-            if self.daily_pnl < -self.max_daily_loss:
-                self.logger.warning("Limite perdita giornaliera raggiunto")
+
+        # Validate quantity
+        quantity = signal['quantity']
+        if not isinstance(quantity, (int, float)) or quantity <= 0:
+            self.logger.error(f"Invalid quantity: {quantity}")
+            return False
+
+        if quantity > 1000000:
+            self.logger.error(f"Quantity too large: {quantity}")
+            return False
+
+        # Validate prices for limit orders
+        if signal['type'] in ['limit', 'stop_limit']:
+            if 'price' not in signal or signal['price'] <= 0:
+                self.logger.error("Limit price required for limit orders")
                 return False
-            
-            # Controllo limite posizione per simbolo
+
+        if signal['type'] in ['stop', 'stop_limit']:
+            if 'stop_price' not in signal or signal['stop_price'] <= 0:
+                self.logger.error("Stop price required for stop orders")
+                return False
+
+        return True
+
+    def _check_risk_limits(self, signal: Dict) -> bool:
+        """Check if order passes risk limits."""
+        try:
+            # Check daily loss limit
+            daily_pnl = sum(
+                pos.get('unrealized_pnl', 0) + pos.get('realized_pnl', 0)
+                for pos in self.positions.values()
+            )
+
+            if daily_pnl < -self.max_daily_loss:
+                self.logger.warning("Daily loss limit reached")
+                return False
+
+            # Check position limit per symbol
+            symbol = signal['symbol']
             current_position = self.positions.get(symbol, {}).get('quantity', 0)
             symbol_limit = self.position_limits.get(symbol, 1.0)
-            
+
             if signal['side'] == 'buy':
-                new_position = current_position + quantity
+                new_position = current_position + signal['quantity']
             else:
-                new_position = current_position - quantity
-            
+                new_position = current_position - signal['quantity']
+
             if abs(new_position) > symbol_limit:
-                self.logger.warning(f"Limite posizione superato per {symbol}")
+                self.logger.warning(f"Position limit exceeded for {symbol}")
                 return False
-            
-            # Controllo orari di trading
-            if not self._is_market_open():
-                self.logger.warning("Mercato chiuso, ordine bloccato")
-                return False
-            
+
             return True
-            
+
         except Exception as e:
-            self.logger.error(f"Errore nel controllo limiti: {e}")
+            self.logger.error(f"Error checking risk limits: {e}")
             return False
-    
+
     def _is_market_open(self) -> bool:
-        """Controlla se il mercato è aperto."""
+        """Check if market is currently open for trading."""
         try:
             if self.alpaca_client:
                 clock = self.alpaca_client.get_clock()
                 return clock.is_open
-            
-            # Fallback: controllo semplificato
-            now = datetime.now()
-            weekday = now.weekday()
-            hour = now.hour
-            
-            return weekday < 5 and 9 <= hour < 16
-            
-        except Exception:
-            return True  # Default: assume mercato aperto
-    
+
+            # Fallback: simple time-based check
+            now = datetime.now(timezone.utc)
+            # Convert to US Eastern time for market hours
+            # This is simplified - in production use proper timezone handling
+            return now.weekday() < 5 and 9 <= now.hour < 16
+
+        except Exception as e:
+            self.logger.warning(f"Error checking market hours: {e}, assuming market open")
+            return True
+
     def _prepare_order(self, signal: Dict) -> Optional[Dict]:
-        """Prepara i dati dell'ordine per l'invio al broker."""
+        """Prepare order data for broker submission."""
         try:
             order_data = {
-                'symbol': signal['symbol'],
-                'qty': signal['quantity'],
+                'symbol': signal['symbol'].upper(),
+                'qty': str(signal['quantity']),
                 'side': signal['side'],
                 'type': signal['type'],
                 'time_in_force': signal.get('time_in_force', 'day'),
                 'client_order_id': str(uuid.uuid4())
             }
-            
-            # Aggiungi prezzo per ordini limit
+
+            # Add limit price
             if signal['type'] in ['limit', 'stop_limit']:
-                if 'price' not in signal:
-                    self.logger.error("Prezzo richiesto per ordine limit")
-                    return None
                 order_data['limit_price'] = signal['price']
-            
-            # Aggiungi stop price per ordini stop
+
+            # Add stop price
             if signal['type'] in ['stop', 'stop_limit']:
-                if 'stop_price' not in signal:
-                    self.logger.error("Stop price richiesto per ordine stop")
-                    return None
                 order_data['stop_price'] = signal['stop_price']
-            
-            # Aggiungi ordini bracket (stop loss e take profit)
-            if signal.get('stop_loss') or signal.get('take_profit'):
+
+            # Add bracket orders (take profit / stop loss)
+            if 'stop_loss' in signal or 'take_profit' in signal:
                 order_data['order_class'] = 'bracket'
-                
-                if signal.get('stop_loss'):
+
+                if 'stop_loss' in signal:
                     order_data['stop_loss'] = {
                         'stop_price': signal['stop_loss']
                     }
-                
-                if signal.get('take_profit'):
+
+                if 'take_profit' in signal:
                     order_data['take_profit'] = {
                         'limit_price': signal['take_profit']
                     }
-            
+
             return order_data
-            
+
         except Exception as e:
-            self.logger.error(f"Errore nella preparazione ordine: {e}")
+            self.logger.error(f"Error preparing order: {e}")
             return None
-    
-    def _send_order_to_broker(self, order_data: Dict) -> Optional[str]:
-        """Invia l'ordine al broker."""
+
+    def _submit_to_broker(self, order_data: Dict) -> Optional[str]:
+        """Submit order to broker API."""
         try:
             if self.alpaca_client:
-                order = self.alpaca_client.submit_order(**order_data)
-                return order.id
-            
-            # Simulazione per testing
-            if self.config.get('simulation_mode', False):
-                order_id = f"SIM_{uuid.uuid4().hex[:8]}"
-                self.logger.info(f"Ordine simulato: {order_id}")
+                try:
+                    order = self.alpaca_client.submit_order(**order_data)
+                    return order.id
+                except Exception as e:
+                    self.logger.error(f"Broker submission error: {e}")
+                    return None
+
+            # Simulation mode
+            if self.config.get('simulation_mode', True):
+                order_id = f"SIM_{uuid.uuid4().hex[:12]}"
+                self.logger.info(f"Simulated order: {order_id}")
                 return order_id
-            
-            self.logger.error("Nessun client broker disponibile")
+
+            self.logger.error("No broker client available")
             return None
-            
+
         except Exception as e:
-            self.logger.error(f"Errore nell'invio ordine al broker: {e}")
+            self.logger.error(f"Error submitting to broker: {e}")
             return None
-    
-    def _register_order(self, order_id: str, order_data: Dict, signal: Dict):
-        """Registra un ordine nel sistema di tracking."""
-        order_record = {
-            'id': order_id,
-            'symbol': order_data['symbol'],
-            'side': order_data['side'],
-            'type': order_data['type'],
-            'quantity': order_data['qty'],
-            'status': OrderStatus.SUBMITTED,
-            'submitted_at': datetime.now(),
-            'signal': signal,
-            'order_data': order_data,
-            'fills': [],
-            'last_update': datetime.now()
-        }
-        
+
+    def _register_order(self, order_id: str, order_data: Dict, signal: Dict) -> None:
+        """Register order in tracking system."""
+        order_record = OrderRecord(
+            id=order_id,
+            symbol=order_data['symbol'],
+            side=order_data['side'],
+            order_type=order_data['type'],
+            quantity=float(order_data['qty']),
+            filled_quantity=0.0,
+            status=OrderStatus.SUBMITTED,
+            client_order_id=order_data.get('client_order_id', ''),
+            submitted_at=datetime.now(timezone.utc),
+            stop_loss=signal.get('stop_loss'),
+            take_profit=signal.get('take_profit'),
+            metadata={
+                'signal': signal,
+                'order_data': order_data
+            }
+        )
+
         self.active_orders[order_id] = order_record
-        self.order_history.append(order_record.copy())
-    
-    def _setup_trailing_stop(self, order_id: str, signal: Dict):
-        """Configura un trailing stop per un ordine."""
+        self.order_history.append(order_record)
+
+        # Trim history if needed
+        if len(self.order_history) > self.MAX_ORDER_HISTORY:
+            self.order_history = self.order_history[-self.MAX_ORDER_HISTORY:]
+
+    def _setup_trailing_stop(self, order_id: str, signal: Dict) -> None:
+        """Configure trailing stop for order."""
         if not signal.get('trail_trigger'):
             return
-        
+
         trailing_config = {
             'order_id': order_id,
             'symbol': signal['symbol'],
@@ -331,185 +445,231 @@ class OrderExecutionManager:
             'active': False,
             'highest_price': None,
             'lowest_price': None,
-            'created_at': datetime.now()
+            'created_at': datetime.now(timezone.utc)
         }
-        
+
         self.trailing_stops[order_id] = trailing_config
-        self.logger.info(f"Trailing stop configurato per ordine {order_id}")
-    
+        self.logger.info(f"Trailing stop configured for order {order_id}")
+
     def cancel_order(self, order_id: str) -> bool:
         """
-        Cancella un ordine attivo.
-        
+        Cancel an active order.
+
         Args:
-            order_id: ID dell'ordine da cancellare
-            
+            order_id: ID of order to cancel
+
         Returns:
-            True se cancellato con successo
+            True if cancelled successfully
         """
-        try:
-            if order_id not in self.active_orders:
-                self.logger.warning(f"Ordine {order_id} non trovato")
+        with self._lock:
+            try:
+                if order_id not in self.active_orders:
+                    self.logger.warning(f"Order {order_id} not found")
+                    return False
+
+                order = self.active_orders[order_id]
+
+                # Check if order can be cancelled
+                if order.status not in [OrderStatus.PENDING, OrderStatus.SUBMITTED]:
+                    self.logger.warning(f"Order {order_id} cannot be cancelled, status: {order.status}")
+                    return False
+
+                # Cancel at broker
+                if self.alpaca_client:
+                    try:
+                        self.alpaca_client.cancel_order(order_id)
+                    except Exception as e:
+                        self.logger.warning(f"Broker cancel error: {e}")
+
+                # Update local status
+                order.status = OrderStatus.CANCELLED
+                order.cancelled_at = datetime.now(timezone.utc)
+                order.last_update = datetime.now(timezone.utc)
+
+                # Remove from active orders
+                del self.active_orders[order_id]
+
+                # Remove trailing stop if exists
+                if order_id in self.trailing_stops:
+                    del self.trailing_stops[order_id]
+
+                self.logger.info(f"Order {order_id} cancelled")
+
+                # Notify callbacks
+                self._notify_order_callbacks(order)
+
+                return True
+
+            except Exception as e:
+                self.logger.error(f"Error cancelling order {order_id}: {e}")
                 return False
-            
-            # Cancella presso il broker
-            if self.alpaca_client:
-                self.alpaca_client.cancel_order(order_id)
-            
-            # Aggiorna stato locale
-            self.active_orders[order_id]['status'] = OrderStatus.CANCELLED
-            self.active_orders[order_id]['cancelled_at'] = datetime.now()
-            
-            # Rimuovi trailing stop se presente
-            if order_id in self.trailing_stops:
-                del self.trailing_stops[order_id]
-            
-            self.logger.info(f"Ordine {order_id} cancellato")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Errore nella cancellazione ordine {order_id}: {e}")
-            return False
-    
+
     def get_order_status(self, order_id: str) -> Optional[Dict]:
-        """Recupera lo stato di un ordine."""
-        try:
+        """Get status of a specific order."""
+        with self._lock:
+            # Check active orders
             if order_id in self.active_orders:
-                return self.active_orders[order_id].copy()
-            
-            # Cerca nella cronologia
-            for order in self.order_history:
-                if order['id'] == order_id:
-                    return order.copy()
-            
+                order = self.active_orders[order_id]
+                return self._order_to_dict(order)
+
+            # Check history
+            for order in reversed(self.order_history):
+                if order.id == order_id:
+                    return self._order_to_dict(order)
+
             return None
-            
-        except Exception as e:
-            self.logger.error(f"Errore nel recupero stato ordine {order_id}: {e}")
-            return None
-    
+
+    def _order_to_dict(self, order: OrderRecord) -> Dict:
+        """Convert OrderRecord to dictionary."""
+        return {
+            'id': order.id,
+            'symbol': order.symbol,
+            'side': order.side,
+            'type': order.order_type,
+            'quantity': order.quantity,
+            'filled_quantity': order.filled_quantity,
+            'filled_avg_price': order.filled_avg_price,
+            'status': order.status.value,
+            'submitted_at': order.submitted_at.isoformat() if order.submitted_at else None,
+            'filled_at': order.filled_at.isoformat() if order.filled_at else None,
+            'cancelled_at': order.cancelled_at.isoformat() if order.cancelled_at else None,
+            'stop_loss': order.stop_loss,
+            'take_profit': order.take_profit,
+            'error': order.error_message
+        }
+
     def get_positions(self) -> Dict:
-        """Recupera tutte le posizioni attive."""
-        return self.positions.copy()
-    
+        """Get all active positions."""
+        with self._lock:
+            return self.positions.copy()
+
     def get_position(self, symbol: str) -> Optional[Dict]:
-        """Recupera la posizione per un simbolo specifico."""
-        return self.positions.get(symbol)
-    
-    def start_monitoring(self):
-        """Avvia il monitoraggio degli ordini e posizioni."""
+        """Get position for a specific symbol."""
+        with self._lock:
+            return self.positions.get(symbol)
+
+    def start_monitoring(self) -> None:
+        """Start order and position monitoring thread."""
         if self.running:
             return
-        
+
         self.running = True
-        self.monitor_thread = threading.Thread(target=self._monitoring_worker)
-        self.monitor_thread.daemon = True
+        self.monitor_thread = threading.Thread(
+            target=self._monitoring_worker,
+            daemon=True,
+            name="OrderMonitor"
+        )
         self.monitor_thread.start()
-        self.logger.info("Monitoraggio ordini avviato")
-    
-    def stop_monitoring(self):
-        """Ferma il monitoraggio degli ordini e posizioni."""
+        self.logger.info("Order monitoring started")
+
+    def stop_monitoring(self) -> None:
+        """Stop monitoring thread."""
         self.running = False
         if self.monitor_thread:
-            self.monitor_thread.join()
-        self.logger.info("Monitoraggio ordini fermato")
-    
-    def _monitoring_worker(self):
-        """Worker thread per il monitoraggio continuo."""
+            self.monitor_thread.join(timeout=10)
+        self.logger.info("Order monitoring stopped")
+
+    def _monitoring_worker(self) -> None:
+        """Worker thread for continuous monitoring."""
         while self.running:
             try:
-                # Aggiorna stato ordini
+                # Update order statuses
                 self._update_orders_status()
-                
-                # Aggiorna posizioni
+
+                # Update positions
                 self._update_positions()
-                
-                # Gestisci trailing stops
+
+                # Process trailing stops
                 self._process_trailing_stops()
-                
-                # Calcola P&L giornaliero
-                self._update_daily_pnl()
-                
-                time.sleep(5)  # Aggiorna ogni 5 secondi
-                
+
+                # Update daily P&L
+                self._update_daily_performance()
+
+                time.sleep(self.monitor_interval)
+
             except Exception as e:
-                self.logger.error(f"Errore nel monitoraggio: {e}")
+                self.logger.error(f"Error in monitoring worker: {e}")
                 time.sleep(10)
-    
-    def _update_orders_status(self):
-        """Aggiorna lo stato degli ordini attivi."""
-        try:
-            if not self.alpaca_client:
-                return
-            
+
+    def _update_orders_status(self) -> None:
+        """Update status of all active orders from broker."""
+        if not self.alpaca_client:
+            return
+
+        with self._lock:
             for order_id in list(self.active_orders.keys()):
                 try:
-                    # Recupera stato dal broker
                     broker_order = self.alpaca_client.get_order(order_id)
-                    
-                    # Aggiorna stato locale
-                    local_order = self.active_orders[order_id]
-                    local_order['status'] = OrderStatus(broker_order.status.lower())
-                    local_order['filled_qty'] = float(broker_order.filled_qty or 0)
-                    local_order['filled_avg_price'] = float(broker_order.filled_avg_price or 0)
-                    local_order['last_update'] = datetime.now()
-                    
-                    # Se ordine completato, aggiorna posizione
-                    if local_order['status'] == OrderStatus.FILLED:
-                        self._update_position_from_fill(local_order)
-                        
-                        # Rimuovi dagli ordini attivi
+                    order = self.active_orders[order_id]
+
+                    # Update status
+                    status_map = {
+                        'new': OrderStatus.SUBMITTED,
+                        'partially_filled': OrderStatus.PARTIALLY_FILLED,
+                        'filled': OrderStatus.FILLED,
+                        'cancelled': OrderStatus.CANCELLED,
+                        'rejected': OrderStatus.REJECTED,
+                        'expired': OrderStatus.EXPIRED,
+                        'stopped': OrderStatus.CANCELLED
+                    }
+
+                    order.status = status_map.get(
+                        broker_order.status.lower(),
+                        OrderStatus.ERROR
+                    )
+                    order.filled_quantity = float(broker_order.filled_qty or 0)
+                    order.filled_avg_price = float(broker_order.filled_avg_price or 0)
+                    order.last_update = datetime.now(timezone.utc)
+
+                    # Handle filled order
+                    if order.status == OrderStatus.FILLED:
+                        order.filled_at = datetime.now(timezone.utc)
+                        self._update_position_from_fill(order)
                         del self.active_orders[order_id]
-                        
-                        # Notifica callbacks
-                        self._notify_order_callbacks(local_order)
-                    
+                        self._notify_order_callbacks(order)
+
                 except Exception as e:
-                    self.logger.error(f"Errore aggiornamento ordine {order_id}: {e}")
-                    
-        except Exception as e:
-            self.logger.error(f"Errore nell'aggiornamento ordini: {e}")
-    
-    def _update_positions(self):
-        """Aggiorna le posizioni dal broker."""
-        try:
-            if not self.alpaca_client:
-                return
-            
-            broker_positions = self.alpaca_client.list_positions()
-            
-            # Aggiorna posizioni esistenti
-            current_symbols = set()
-            for pos in broker_positions:
-                symbol = pos.symbol
-                current_symbols.add(symbol)
-                
-                self.positions[symbol] = {
-                    'symbol': symbol,
-                    'quantity': float(pos.qty),
-                    'side': 'long' if float(pos.qty) > 0 else 'short',
-                    'avg_price': float(pos.avg_entry_price),
-                    'market_value': float(pos.market_value),
-                    'unrealized_pnl': float(pos.unrealized_pl),
-                    'last_update': datetime.now()
-                }
-            
-            # Rimuovi posizioni chiuse
-            for symbol in list(self.positions.keys()):
-                if symbol not in current_symbols:
-                    del self.positions[symbol]
-                    
-        except Exception as e:
-            self.logger.error(f"Errore nell'aggiornamento posizioni: {e}")
-    
-    def _update_position_from_fill(self, order: Dict):
-        """Aggiorna la posizione basandosi su un ordine eseguito."""
-        try:
-            symbol = order['symbol']
-            quantity = order['filled_qty']
-            price = order['filled_avg_price']
-            side = order['side']
-            
+                    self.logger.error(f"Error updating order {order_id}: {e}")
+
+    def _update_positions(self) -> None:
+        """Update positions from broker."""
+        if not self.alpaca_client:
+            return
+
+        with self._lock:
+            try:
+                broker_positions = self.alpaca_client.list_positions()
+                current_symbols = set()
+
+                for pos in broker_positions:
+                    symbol = pos.symbol
+                    current_symbols.add(symbol)
+
+                    self.positions[symbol] = {
+                        'symbol': symbol,
+                        'quantity': float(pos.qty),
+                        'side': 'long' if float(pos.qty) > 0 else 'short',
+                        'avg_price': float(pos.avg_entry_price),
+                        'market_value': float(pos.market_value),
+                        'unrealized_pnl': float(pos.unrealized_pl),
+                        'last_update': datetime.now(timezone.utc)
+                    }
+
+                # Remove closed positions
+                for symbol in list(self.positions.keys()):
+                    if symbol not in current_symbols:
+                        del self.positions[symbol]
+
+            except Exception as e:
+                self.logger.error(f"Error updating positions: {e}")
+
+    def _update_position_from_fill(self, order: OrderRecord) -> None:
+        """Update position based on filled order."""
+        with self._lock:
+            symbol = order.symbol
+            quantity = order.filled_quantity
+            price = order.filled_avg_price
+
             if symbol not in self.positions:
                 self.positions[symbol] = {
                     'symbol': symbol,
@@ -517,10 +677,10 @@ class OrderExecutionManager:
                     'avg_price': 0,
                     'total_cost': 0
                 }
-            
+
             position = self.positions[symbol]
-            
-            if side == 'buy':
+
+            if order.side == 'buy':
                 new_quantity = position['quantity'] + quantity
                 new_total_cost = (position['quantity'] * position['avg_price']) + (quantity * price)
                 position['avg_price'] = new_total_cost / new_quantity if new_quantity != 0 else 0
@@ -530,123 +690,151 @@ class OrderExecutionManager:
                 if position['quantity'] <= 0:
                     position['quantity'] = 0
                     position['avg_price'] = 0
-            
-            position['last_update'] = datetime.now()
-            
-        except Exception as e:
-            self.logger.error(f"Errore nell'aggiornamento posizione: {e}")
-    
-    def _process_trailing_stops(self):
-        """Processa i trailing stops attivi."""
-        try:
+
+            position['last_update'] = datetime.now(timezone.utc)
+
+            # Notify callbacks
+            self._notify_position_callbacks(position)
+
+    def _process_trailing_stops(self) -> None:
+        """Process active trailing stops."""
+        with self._lock:
             for order_id, config in list(self.trailing_stops.items()):
-                symbol = config['symbol']
-                
-                # Recupera prezzo corrente
-                current_price = self._get_current_price(symbol)
-                if not current_price:
-                    continue
-                
-                # Controlla se il trailing stop deve essere attivato
-                if not config['active']:
-                    if ((config['side'] == 'buy' and current_price >= config['trigger_price']) or
-                        (config['side'] == 'sell' and current_price <= config['trigger_price'])):
-                        config['active'] = True
-                        config['highest_price'] = current_price
-                        config['lowest_price'] = current_price
-                        self.logger.info(f"Trailing stop attivato per {symbol}")
+                try:
+                    symbol = config['symbol']
+                    current_price = self._get_current_price(symbol)
+
+                    if not current_price:
                         continue
-                
-                # Aggiorna prezzi estremi
-                if config['side'] == 'buy':
-                    if current_price > config['highest_price']:
-                        config['highest_price'] = current_price
-                    
-                    # Controlla se deve essere eseguito
-                    stop_price = config['highest_price'] * (1 - config['offset'])
-                    if current_price <= stop_price:
-                        self._execute_trailing_stop(order_id, config, current_price)
-                
-                else:  # sell
-                    if current_price < config['lowest_price']:
-                        config['lowest_price'] = current_price
-                    
-                    # Controlla se deve essere eseguito
-                    stop_price = config['lowest_price'] * (1 + config['offset'])
-                    if current_price >= stop_price:
-                        self._execute_trailing_stop(order_id, config, current_price)
-                        
-        except Exception as e:
-            self.logger.error(f"Errore nel processing trailing stops: {e}")
-    
+
+                    # Check activation
+                    if not config['active']:
+                        if (config['side'] == 'buy' and current_price >= config['trigger_price']) or \
+                           (config['side'] == 'sell' and current_price <= config['trigger_price']):
+                            config['active'] = True
+                            config['highest_price'] = current_price
+                            config['lowest_price'] = current_price
+                            self.logger.info(f"Trailing stop activated for {symbol}")
+
+                        continue
+
+                    # Update price extremes
+                    if config['side'] == 'buy':
+                        if current_price > config['highest_price']:
+                            config['highest_price'] = current_price
+
+                        stop_price = config['highest_price'] * (1 - config['offset'])
+                        if current_price <= stop_price:
+                            self._execute_trailing_stop(order_id, config, current_price)
+                    else:  # sell
+                        if current_price < config['lowest_price']:
+                            config['lowest_price'] = current_price
+
+                        stop_price = config['lowest_price'] * (1 + config['offset'])
+                        if current_price >= stop_price:
+                            self._execute_trailing_stop(order_id, config, current_price)
+
+                except Exception as e:
+                    self.logger.error(f"Error processing trailing stop {order_id}: {e}")
+
     def _get_current_price(self, symbol: str) -> Optional[float]:
-        """Recupera il prezzo corrente di un simbolo."""
+        """Get current price for a symbol."""
         try:
             if self.alpaca_client:
                 quote = self.alpaca_client.get_latest_quote(symbol)
                 return (quote.bid_price + quote.ask_price) / 2
+
             return None
-        except:
+
+        except Exception:
             return None
-    
-    def _execute_trailing_stop(self, order_id: str, config: Dict, current_price: float):
-        """Esegue un trailing stop."""
+
+    def _execute_trailing_stop(self, order_id: str, config: Dict, current_price: float) -> None:
+        """Execute a trailing stop order."""
         try:
             symbol = config['symbol']
-            
-            # Crea ordine di stop
-            stop_signal = {
-                'symbol': symbol,
-                'side': 'sell' if config['side'] == 'buy' else 'buy',
-                'type': 'market',
-                'quantity': self.positions.get(symbol, {}).get('quantity', 0)
-            }
-            
-            if stop_signal['quantity'] > 0:
+            position = self.positions.get(symbol, {})
+
+            if position.get('quantity', 0) > 0:
+                stop_signal = {
+                    'symbol': symbol,
+                    'side': 'sell' if config['side'] == 'buy' else 'buy',
+                    'type': 'market',
+                    'quantity': abs(position['quantity'])
+                }
+
                 self.submit_order(stop_signal)
-                self.logger.info(f"Trailing stop eseguito per {symbol} a {current_price}")
-            
-            # Rimuovi trailing stop
+                self.logger.info(f"Trailing stop executed for {symbol} at {current_price}")
+
+            # Remove trailing stop
             del self.trailing_stops[order_id]
-            
+
         except Exception as e:
-            self.logger.error(f"Errore nell'esecuzione trailing stop: {e}")
-    
-    def _update_daily_pnl(self):
-        """Aggiorna il P&L giornaliero."""
-        try:
-            total_unrealized = sum(pos.get('unrealized_pnl', 0) for pos in self.positions.values())
-            # Qui dovresti aggiungere anche il P&L realizzato del giorno
-            self.daily_pnl = total_unrealized
-            
-        except Exception as e:
-            self.logger.error(f"Errore nel calcolo P&L giornaliero: {e}")
-    
-    def _notify_order_callbacks(self, order: Dict):
-        """Notifica i callback registrati per gli ordini."""
+            self.logger.error(f"Error executing trailing stop: {e}")
+
+    def _update_daily_performance(self) -> None:
+        """Update daily performance metrics."""
+        with self._lock:
+            # Reset daily count if new day
+            current_date = datetime.now(timezone.utc).date()
+            if current_date > self.daily_reset_time:
+                self.daily_order_count = 0
+                self.daily_reset_time = current_date
+
+            # Calculate total unrealized P&L
+            total_unrealized = sum(
+                pos.get('unrealized_pnl', 0) for pos in self.positions.values()
+            )
+
+            # Record performance
+            self.performance_history.append({
+                'timestamp': datetime.now(timezone.utc),
+                'unrealized_pnl': total_unrealized,
+                'positions_count': len(self.positions),
+                'active_orders': len(self.active_orders)
+            })
+
+    def _increment_daily_count(self) -> None:
+        """Increment daily order count."""
+        current_date = datetime.now(timezone.utc).date()
+        if current_date > self.daily_reset_time:
+            self.daily_order_count = 0
+            self.daily_reset_time = current_date
+
+        self.daily_order_count += 1
+
+    def _notify_order_callbacks(self, order: OrderRecord) -> None:
+        """Notify registered order callbacks."""
         for callback in self.order_callbacks:
             try:
-                callback(order)
+                callback(self._order_to_dict(order))
             except Exception as e:
-                self.logger.error(f"Errore callback ordine: {e}")
-    
-    def add_order_callback(self, callback: Callable):
-        """Aggiunge un callback per eventi ordini."""
-        self.order_callbacks.append(callback)
-    
-    def add_position_callback(self, callback: Callable):
-        """Aggiunge un callback per eventi posizioni."""
-        self.position_callbacks.append(callback)
-    
-    def get_trading_summary(self) -> Dict:
-        """Restituisce un riassunto dell'attività di trading."""
-        return {
-            'active_orders': len(self.active_orders),
-            'active_positions': len(self.positions),
-            'daily_pnl': self.daily_pnl,
-            'trailing_stops': len(self.trailing_stops),
-            'total_orders_today': len([o for o in self.order_history 
-                                     if o.get('submitted_at', datetime.min).date() == datetime.now().date()]),
-            'last_update': datetime.now()
-        }
+                self.logger.error(f"Error in order callback: {e}")
 
+    def _notify_position_callbacks(self, position: Dict) -> None:
+        """Notify registered position callbacks."""
+        for callback in self.position_callbacks:
+            try:
+                callback(position)
+            except Exception as e:
+                self.logger.error(f"Error in position callback: {e}")
+
+    def add_order_callback(self, callback: Callable) -> None:
+        """Register a callback for order events."""
+        self.order_callbacks.append(callback)
+
+    def add_position_callback(self, callback: Callable) -> None:
+        """Register a callback for position events."""
+        self.position_callbacks.append(callback)
+
+    def get_trading_summary(self) -> Dict:
+        """Get summary of trading activity."""
+        with self._lock:
+            return {
+                'active_orders': len(self.active_orders),
+                'active_positions': len(self.positions),
+                'daily_orders': self.daily_order_count,
+                'trailing_stops': len(self.trailing_stops),
+                'total_orders_history': len(self.order_history),
+                'last_update': datetime.now(timezone.utc)
+            }

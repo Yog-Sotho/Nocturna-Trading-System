@@ -1,382 +1,375 @@
 """
-Market Data Handler per NOCTURNA v2.0 Trading Bot
-Gestisce l'acquisizione e la pre-elaborazione dei dati di mercato in tempo reale e storici.
+NOCTURNA Trading System - Market Data Handler
+Production-grade market data management with caching.
 """
 
-import asyncio
-import websockets
-import json
+import os
+import sys
 import logging
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional
+from collections import deque
+import threading
+
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Callable
-import yfinance as yf
-from alpaca_trade_api import REST as AlpacaREST
-from polygon import RESTClient as PolygonClient
-import redis
-import threading
-import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
 
 class MarketDataHandler:
     """
-    Gestisce l'acquisizione e la distribuzione dei dati di mercato.
-    Supporta dati in tempo reale e storici da multiple fonti.
+    Production-grade market data handler.
+    Manages data retrieval, caching, and technical indicator calculations.
     """
-    
+
+    # Cache settings
+    CACHE_TTL = 60  # seconds
+    MAX_CACHE_SIZE = 1000
+
     def __init__(self, config: Dict):
         self.config = config
         self.logger = logging.getLogger(__name__)
-        
-        # Inizializzazione client API
+
+        # Data cache
+        self.price_cache: Dict[str, Dict] = {}
+        self.historical_cache: Dict[str, pd.DataFrame] = {}
+        self.cache_lock = threading.RLock()
+
+        # Price history for indicators
+        self.price_history: Dict[str, deque] = {}
+
+        # Real-time subscriptions
+        self.subscriptions: Dict[str, List] = {}
+        self.realtime_enabled = False
+
+        # Data providers
         self.alpaca_client = None
         self.polygon_client = None
-        self.redis_client = None
-        
-        # Cache per dati di mercato
-        self.price_cache = {}
-        self.candle_cache = {}
-        
-        # WebSocket connections
-        self.ws_connections = {}
-        self.subscribers = {}
-        
-        # Threading per aggiornamenti in tempo reale
-        self.data_thread = None
-        self.running = False
-        
-        self._initialize_clients()
-    
-    def _initialize_clients(self):
-        """Inizializza i client API per le diverse fonti di dati."""
-        try:
-            # Alpaca API
-            if self.config.get('alpaca_api_key'):
+        self.yfinance_client = None
+
+        self._initialize_providers()
+
+        self.logger.info("Market Data Handler initialized")
+
+    def _initialize_providers(self) -> None:
+        """Initialize data provider clients."""
+        # Alpaca for real-time data
+        alpaca_key = os.environ.get('ALPACA_API_KEY')
+        if alpaca_key:
+            try:
+                from alpaca_trade_api import REST as AlpacaREST
                 self.alpaca_client = AlpacaREST(
-                    key_id=self.config['alpaca_api_key'],
-                    secret_key=self.config['alpaca_secret_key'],
-                    base_url=self.config.get('alpaca_base_url', 'https://paper-api.alpaca.markets')
+                    key_id=alpaca_key,
+                    secret_key=os.environ.get('ALPACA_SECRET_KEY'),
+                    base_url=os.environ.get('ALPACA_BASE_URL')
                 )
-                self.logger.info("Alpaca client inizializzato")
-            
-            # Polygon API
-            if self.config.get('polygon_api_key'):
-                self.polygon_client = PolygonClient(self.config['polygon_api_key'])
-                self.logger.info("Polygon client inizializzato")
-            
-            # Redis per caching
-            if self.config.get('redis_host'):
-                self.redis_client = redis.Redis(
-                    host=self.config['redis_host'],
-                    port=self.config.get('redis_port', 6379),
-                    db=self.config.get('redis_db', 0)
-                )
-                self.logger.info("Redis client inizializzato")
-                
-        except Exception as e:
-            self.logger.error(f"Errore nell'inizializzazione dei client: {e}")
-    
-    def get_historical_data(self, symbol: str, timeframe: str = '1D', 
-                          start_date: datetime = None, end_date: datetime = None,
-                          limit: int = 1000) -> pd.DataFrame:
+                self.logger.info("Alpaca data client initialized")
+            except ImportError:
+                self.logger.warning("Alpaca SDK not installed")
+            except Exception as e:
+                self.logger.error(f"Failed to initialize Alpaca client: {e}")
+
+        # Polygon for additional market data
+        polygon_key = os.environ.get('POLYGON_API_KEY')
+        if polygon_key:
+            try:
+                from polygon import RESTClient
+                self.polygon_client = RESTClient(polygon_key)
+                self.logger.info("Polygon data client initialized")
+            except ImportError:
+                self.logger.warning("Polygon SDK not installed")
+            except Exception as e:
+                self.logger.error(f"Failed to initialize Polygon client: {e}")
+
+        # Yahoo Finance as fallback
+        try:
+            import yfinance
+            self.yfinance_client = yfinance
+            self.logger.info("Yahoo Finance client available")
+        except ImportError:
+            self.logger.warning("yfinance not installed")
+
+    def start_real_time_feed(self) -> None:
+        """Start real-time market data feed."""
+        if self.alpaca_client:
+            self.realtime_enabled = True
+            self.logger.info("Real-time feed started")
+        else:
+            self.logger.warning("No real-time data provider available")
+
+    def stop_real_time_feed(self) -> None:
+        """Stop real-time market data feed."""
+        self.realtime_enabled = False
+        self.subscriptions.clear()
+        self.logger.info("Real-time feed stopped")
+
+    def subscribe_to_symbol(self, symbol: str, callback) -> None:
+        """Subscribe to real-time updates for a symbol."""
+        if symbol not in self.subscriptions:
+            self.subscriptions[symbol] = []
+            # Initialize price history
+            if symbol not in self.price_history:
+                self.price_history[symbol] = deque(maxlen=500)
+
+        if callback not in self.subscriptions[symbol]:
+            self.subscriptions[symbol].append(callback)
+
+    def unsubscribe_from_symbol(self, symbol: str, callback) -> None:
+        """Unsubscribe from symbol updates."""
+        if symbol in self.subscriptions and callback in self.subscriptions[symbol]:
+            self.subscriptions[symbol].remove(callback)
+
+    def get_historical_data(self, symbol: str, timeframe: str = '1h',
+                           limit: int = 500, start: datetime = None,
+                           end: datetime = None) -> pd.DataFrame:
         """
-        Recupera dati storici per un simbolo specifico.
-        
+        Get historical OHLCV data for a symbol.
+
         Args:
-            symbol: Simbolo del titolo (es. 'AAPL', 'BTC/USD')
-            timeframe: Timeframe dei dati ('1m', '5m', '1h', '1D')
-            start_date: Data di inizio
-            end_date: Data di fine
-            limit: Numero massimo di candele
-            
+            symbol: Stock symbol
+            timeframe: Time interval (1m, 5m, 15m, 1h, 1d, 1w)
+            limit: Number of bars to retrieve
+            start: Start datetime (optional)
+            end: End datetime (optional)
+
         Returns:
-            DataFrame con colonne OHLCV
+            DataFrame with OHLCV data
         """
+        cache_key = f"{symbol}_{timeframe}_{limit}"
+
+        # Check cache
+        with self.cache_lock:
+            if cache_key in self.historical_cache:
+                cached = self.historical_cache[cache_key]
+                if (datetime.now(timezone.utc) - cached.get('timestamp', datetime.min)).total_seconds() < self.CACHE_TTL:
+                    return cached.get('data', pd.DataFrame())
+
+        # Fetch from provider
+        df = self._fetch_historical_data(symbol, timeframe, limit, start, end)
+
+        # Cache result
+        with self.cache_lock:
+            self.historical_cache[cache_key] = {
+                'data': df,
+                'timestamp': datetime.now(timezone.utc)
+            }
+
+        return df
+
+    def _fetch_historical_data(self, symbol: str, timeframe: str,
+                              limit: int, start: datetime = None,
+                              end: datetime = None) -> pd.DataFrame:
+        """Fetch historical data from provider."""
         try:
-            # Determina le date se non specificate
-            if not end_date:
-                end_date = datetime.now()
-            if not start_date:
-                start_date = end_date - timedelta(days=365)
-            
-            # Prova prima con Polygon se disponibile
-            if self.polygon_client and '/' not in symbol:  # Solo per azioni
-                return self._get_polygon_historical(symbol, timeframe, start_date, end_date)
-            
-            # Fallback su yfinance
-            return self._get_yfinance_historical(symbol, timeframe, start_date, end_date)
-            
-        except Exception as e:
-            self.logger.error(f"Errore nel recupero dati storici per {symbol}: {e}")
+            # Try Alpaca first
+            if self.alpaca_client:
+                df = self._fetch_from_alpaca(symbol, timeframe, limit, start, end)
+                if not df.empty:
+                    return df
+
+            # Try Polygon
+            if self.polygon_client:
+                df = self._fetch_from_polygon(symbol, timeframe, limit, start, end)
+                if not df.empty:
+                    return df
+
+            # Fallback to Yahoo Finance
+            if self.yfinance_client:
+                return self._fetch_from_yfinance(symbol, timeframe, limit, start, end)
+
+            self.logger.error(f"No data provider available for {symbol}")
             return pd.DataFrame()
-    
-    def _get_polygon_historical(self, symbol: str, timeframe: str, 
-                               start_date: datetime, end_date: datetime) -> pd.DataFrame:
-        """Recupera dati storici da Polygon API."""
+
+        except Exception as e:
+            self.logger.error(f"Error fetching data for {symbol}: {e}")
+            return pd.DataFrame()
+
+    def _fetch_from_alpaca(self, symbol: str, timeframe: str,
+                          limit: int, start: datetime = None,
+                          end: datetime = None) -> pd.DataFrame:
+        """Fetch data from Alpaca API."""
         try:
-            # Conversione timeframe
-            timespan_map = {
-                '1m': 'minute',
-                '5m': 'minute',
-                '15m': 'minute',
-                '1h': 'hour',
-                '1D': 'day'
+            timeframe_map = {
+                '1m': '1Min', '5m': '5Min', '15m': '15Min',
+                '1h': '1Hour', '1d': '1Day', '1w': '1Week'
             }
-            
-            multiplier_map = {
-                '1m': 1,
-                '5m': 5,
-                '15m': 15,
-                '1h': 1,
-                '1D': 1
-            }
-            
-            timespan = timespan_map.get(timeframe, 'day')
-            multiplier = multiplier_map.get(timeframe, 1)
-            
-            # Chiamata API Polygon
+            tf = timeframe_map.get(timeframe, '1Hour')
+
+            bars = self.alpaca_client.get_bars(
+                symbol,
+                tf,
+                start=start.isoformat() if start else None,
+                end=end.isoformat() if end else None,
+                limit=limit
+            ).df
+
+            if bars.empty:
+                return pd.DataFrame()
+
+            return bars.rename(columns={
+                'open': 'Open', 'high': 'High', 'low': 'Low',
+                'close': 'Close', 'volume': 'Volume'
+            })
+
+        except Exception as e:
+            self.logger.error(f"Alpaca fetch error: {e}")
+            return pd.DataFrame()
+
+    def _fetch_from_polygon(self, symbol: str, timeframe: str,
+                           limit: int, start: datetime = None,
+                           end: datetime = None) -> pd.DataFrame:
+        """Fetch data from Polygon.io API."""
+        try:
+            multiplier, timespan = self._parse_timeframe(timeframe)
+
             aggs = self.polygon_client.get_aggs(
-                ticker=symbol,
-                multiplier=multiplier,
-                timespan=timespan,
-                from_=start_date.strftime('%Y-%m-%d'),
-                to=end_date.strftime('%Y-%m-%d')
+                symbol, multiplier, timespan,
+                start.isoformat() if start else None,
+                end.isoformat() if end else None,
+                limit=limit
             )
-            
-            # Conversione in DataFrame
-            data = []
-            for agg in aggs:
-                data.append({
-                    'timestamp': pd.to_datetime(agg.timestamp, unit='ms'),
-                    'open': agg.open,
-                    'high': agg.high,
-                    'low': agg.low,
-                    'close': agg.close,
-                    'volume': agg.volume
-                })
-            
-            df = pd.DataFrame(data)
-            df.set_index('timestamp', inplace=True)
-            return df
-            
+
+            if not aggs:
+                return pd.DataFrame()
+
+            data = [{
+                'Open': a.open,
+                'High': a.high,
+                'Low': a.low,
+                'Close': a.close,
+                'Volume': a.volume,
+                'timestamp': datetime.fromtimestamp(a.timestamp / 1000, tz=timezone.utc)
+            } for a in aggs]
+
+            return pd.DataFrame(data).set_index('timestamp')
+
         except Exception as e:
-            self.logger.error(f"Errore Polygon API: {e}")
+            self.logger.error(f"Polygon fetch error: {e}")
             return pd.DataFrame()
-    
-    def _get_yfinance_historical(self, symbol: str, timeframe: str,
-                                start_date: datetime, end_date: datetime) -> pd.DataFrame:
-        """Recupera dati storici da Yahoo Finance."""
+
+    def _fetch_from_yfinance(self, symbol: str, timeframe: str,
+                            limit: int, start: datetime = None,
+                            end: datetime = None) -> pd.DataFrame:
+        """Fetch data from Yahoo Finance."""
         try:
-            # Conversione timeframe per yfinance
             interval_map = {
-                '1m': '1m',
-                '5m': '5m',
-                '15m': '15m',
-                '1h': '1h',
-                '1D': '1d'
+                '1m': '1m', '5m': '5m', '15m': '15m',
+                '1h': '1h', '1d': '1d', '1w': '1wk'
             }
-            
-            interval = interval_map.get(timeframe, '1d')
-            
-            # Download dati
-            ticker = yf.Ticker(symbol)
+            interval = interval_map.get(timeframe, '1h')
+
+            ticker = self.yfinance_client.Ticker(symbol)
             df = ticker.history(
-                start=start_date,
-                end=end_date,
-                interval=interval
+                period='max' if not start else None,
+                start=start,
+                end=end,
+                interval=interval,
+                auto_adjust=True
             )
-            
-            # Standardizzazione colonne
-            df.columns = [col.lower() for col in df.columns]
-            df.index.name = 'timestamp'
-            
-            return df
-            
+
+            if df.empty:
+                return pd.DataFrame()
+
+            return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+
         except Exception as e:
-            self.logger.error(f"Errore yfinance: {e}")
+            self.logger.error(f"Yahoo Finance fetch error: {e}")
             return pd.DataFrame()
-    
-    def get_real_time_price(self, symbol: str) -> Optional[float]:
-        """
-        Recupera il prezzo corrente di un simbolo.
-        
-        Args:
-            symbol: Simbolo del titolo
-            
-        Returns:
-            Prezzo corrente o None se non disponibile
-        """
-        try:
-            # Controlla cache Redis
-            if self.redis_client:
-                cached_price = self.redis_client.get(f"price:{symbol}")
-                if cached_price:
-                    return float(cached_price)
-            
-            # Recupera da API
-            if self.alpaca_client and '/' not in symbol:
-                try:
-                    quote = self.alpaca_client.get_latest_quote(symbol)
-                    price = (quote.bid_price + quote.ask_price) / 2
-                    
-                    # Cache il risultato
-                    if self.redis_client:
-                        self.redis_client.setex(f"price:{symbol}", 5, price)
-                    
-                    return price
-                except:
-                    pass
-            
-            # Fallback su yfinance
-            ticker = yf.Ticker(symbol)
-            info = ticker.info
-            return info.get('regularMarketPrice') or info.get('previousClose')
-            
-        except Exception as e:
-            self.logger.error(f"Errore nel recupero prezzo per {symbol}: {e}")
-            return None
-    
+
+    def _parse_timeframe(self, timeframe: str) -> tuple:
+        """Parse timeframe string to multiplier and timespan."""
+        timeframe_map = {
+            '1m': (1, 'minute'), '5m': (5, 'minute'), '15m': (15, 'minute'),
+            '1h': (1, 'hour'), '4h': (4, 'hour'), '1d': (1, 'day'),
+            '1w': (1, 'week')
+        }
+        return timeframe_map.get(timeframe, (1, 'hour'))
+
     def calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Calcola indicatori tecnici sui dati OHLCV.
-        
+        Calculate technical indicators for the DataFrame.
+
         Args:
-            df: DataFrame con dati OHLCV
-            
+            df: DataFrame with OHLCV data
+
         Returns:
-            DataFrame con indicatori aggiunti
+            DataFrame with added indicator columns
         """
-        if df.empty:
+        if df.empty or len(df) < 50:
             return df
-        
+
         try:
-            # EMA (Exponential Moving Averages)
-            df['ema8'] = df['close'].ewm(span=8).mean()
-            df['ema34'] = df['close'].ewm(span=34).mean()
-            df['ema50'] = df['close'].ewm(span=50).mean()
-            df['ema200'] = df['close'].ewm(span=200).mean()
-            
-            # ATR (Average True Range)
-            high_low = df['high'] - df['low']
-            high_close = np.abs(df['high'] - df['close'].shift())
-            low_close = np.abs(df['low'] - df['close'].shift())
-            
-            true_range = np.maximum(high_low, np.maximum(high_close, low_close))
-            df['atr'] = true_range.rolling(window=14).mean()
-            
+            # EMA calculations
+            df['ema8'] = df['Close'].ewm(span=8, adjust=False).mean()
+            df['ema34'] = df['Close'].ewm(span=34, adjust=False).mean()
+            df['ema50'] = df['Close'].ewm(span=50, adjust=False).mean()
+            df['ema200'] = df['Close'].ewm(span=200, adjust=False).mean()
+
             # MACD
-            exp1 = df['close'].ewm(span=12).mean()
-            exp2 = df['close'].ewm(span=26).mean()
+            exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+            exp2 = df['Close'].ewm(span=26, adjust=False).mean()
             df['macd_line'] = exp1 - exp2
-            df['macd_signal'] = df['macd_line'].ewm(span=9).mean()
+            df['macd_signal'] = df['macd_line'].ewm(span=9, adjust=False).mean()
             df['macd_histogram'] = df['macd_line'] - df['macd_signal']
-            
+
+            # ATR (Average True Range)
+            high_low = df['High'] - df['Low']
+            high_close = np.abs(df['High'] - df['Close'].shift())
+            low_close = np.abs(df['Low'] - df['Close'].shift())
+            true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+            df['atr'] = true_range.rolling(14).mean()
+
             # RSI
-            delta = df['close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            delta = df['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
             rs = gain / loss
             df['rsi'] = 100 - (100 / (1 + rs))
-            
+
             # Bollinger Bands
-            df['bb_middle'] = df['close'].rolling(window=20).mean()
-            bb_std = df['close'].rolling(window=20).std()
+            df['bb_middle'] = df['Close'].rolling(20).mean()
+            bb_std = df['Close'].rolling(20).std()
             df['bb_upper'] = df['bb_middle'] + (bb_std * 2)
             df['bb_lower'] = df['bb_middle'] - (bb_std * 2)
-            
+            df['bb_position'] = (df['Close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
+
+            # Stochastic
+            low_14 = df['Low'].rolling(14).min()
+            high_14 = df['High'].rolling(14).max()
+            df['stoch_k'] = 100 * (df['Close'] - low_14) / (high_14 - low_14)
+            df['stoch_d'] = df['stoch_k'].rolling(3).mean()
+
             # Volume indicators
-            df['volume_sma'] = df['volume'].rolling(window=20).mean()
-            df['volume_ratio'] = df['volume'] / df['volume_sma']
-            
+            df['volume_sma'] = df['Volume'].rolling(20).mean()
+            df['volume_ratio'] = df['Volume'] / df['volume_sma']
+
             return df
-            
+
         except Exception as e:
-            self.logger.error(f"Errore nel calcolo degli indicatori: {e}")
+            self.logger.error(f"Error calculating indicators: {e}")
             return df
-    
-    def subscribe_to_symbol(self, symbol: str, callback: Callable):
-        """
-        Sottoscrive agli aggiornamenti in tempo reale per un simbolo.
-        
-        Args:
-            symbol: Simbolo da monitorare
-            callback: Funzione da chiamare per ogni aggiornamento
-        """
-        if symbol not in self.subscribers:
-            self.subscribers[symbol] = []
-        
-        self.subscribers[symbol].append(callback)
-        self.logger.info(f"Sottoscrizione aggiunta per {symbol}")
-    
-    def start_real_time_feed(self):
-        """Avvia il feed di dati in tempo reale."""
-        if self.running:
-            return
-        
-        self.running = True
-        self.data_thread = threading.Thread(target=self._real_time_worker)
-        self.data_thread.daemon = True
-        self.data_thread.start()
-        self.logger.info("Feed dati in tempo reale avviato")
-    
-    def stop_real_time_feed(self):
-        """Ferma il feed di dati in tempo reale."""
-        self.running = False
-        if self.data_thread:
-            self.data_thread.join()
-        self.logger.info("Feed dati in tempo reale fermato")
-    
-    def _real_time_worker(self):
-        """Worker thread per aggiornamenti in tempo reale."""
-        while self.running:
-            try:
-                for symbol in self.subscribers:
-                    price = self.get_real_time_price(symbol)
-                    if price:
-                        # Notifica tutti i subscriber
-                        for callback in self.subscribers[symbol]:
-                            try:
-                                callback(symbol, price, datetime.now())
-                            except Exception as e:
-                                self.logger.error(f"Errore callback per {symbol}: {e}")
-                
-                time.sleep(1)  # Aggiorna ogni secondo
-                
-            except Exception as e:
-                self.logger.error(f"Errore nel worker dati: {e}")
-                time.sleep(5)
-    
-    def get_market_status(self) -> Dict:
-        """
-        Recupera lo stato del mercato (aperto/chiuso).
-        
-        Returns:
-            Dizionario con informazioni sullo stato del mercato
-        """
+
+    def get_current_price(self, symbol: str) -> Optional[float]:
+        """Get current price for a symbol."""
         try:
             if self.alpaca_client:
-                clock = self.alpaca_client.get_clock()
-                return {
-                    'is_open': clock.is_open,
-                    'next_open': clock.next_open,
-                    'next_close': clock.next_close,
-                    'timestamp': datetime.now()
-                }
-            
-            # Fallback: logica semplificata
-            now = datetime.now()
-            weekday = now.weekday()
-            hour = now.hour
-            
-            # Mercato aperto lun-ven 9:30-16:00 EST (approssimativo)
-            is_open = (weekday < 5 and 9 <= hour < 16)
-            
-            return {
-                'is_open': is_open,
-                'timestamp': now
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Errore nel recupero stato mercato: {e}")
-            return {'is_open': False, 'timestamp': datetime.now()}
+                quote = self.alpaca_client.get_latest_quote(symbol)
+                return (quote.bid_price + quote.ask_price) / 2
 
+            if self.yfinance_client:
+                ticker = self.yfinance_client.Ticker(symbol)
+                return ticker.fast_info.last_price
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error getting current price for {symbol}: {e}")
+            return None
+
+    def clear_cache(self) -> None:
+        """Clear all cached data."""
+        with self.cache_lock:
+            self.historical_cache.clear()
+            self.price_cache.clear()
+        self.logger.info("Market data cache cleared")
