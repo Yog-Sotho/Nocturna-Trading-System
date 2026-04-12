@@ -6,7 +6,6 @@ Production-grade SQLAlchemy models for user management and audit logging.
 import os
 import sys
 from datetime import datetime, timezone
-from typing import Optional
 
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -138,7 +137,7 @@ class APIKey(db.Model):
     use_count = Column(Integer, default=0)
 
     # Relationship
-    user = relationship('User', backref='api_keys')
+    user = relationship('User', backref='api_key_records')
 
     def is_expired(self) -> bool:
         """Check if the API key is expired."""
