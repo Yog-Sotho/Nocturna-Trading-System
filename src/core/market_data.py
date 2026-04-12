@@ -6,7 +6,7 @@ Production-grade market data management with caching.
 import os
 import sys
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from collections import deque
 import threading

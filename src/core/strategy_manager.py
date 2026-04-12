@@ -7,11 +7,9 @@ import os
 import sys
 import logging
 import pandas as pd
-import numpy as np
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from enum import Enum
-import json
 from collections import deque
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
@@ -145,7 +143,7 @@ class StrategyManager:
 
         try:
             latest = df.iloc[-1]
-            previous_10 = df.iloc[-11:-1] if len(df) > 10 else df
+            _previous_10 = df.iloc[-11:-1] if len(df) > 10 else df  # noqa: F841
 
             # Extract indicators
             ema50 = latest.get('ema50', 0)

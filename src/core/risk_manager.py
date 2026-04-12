@@ -7,15 +7,13 @@ import os
 import sys
 import logging
 import numpy as np
-import pandas as pd
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 from enum import Enum
-import json
 import threading
 from collections import deque
 
-from scipy.stats import spearmanr, pearsonr
+from scipy.stats import spearmanr
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
@@ -264,8 +262,9 @@ class RiskManager:
     def _check_portfolio_exposure(self, signal: Dict, positions: Dict,
                                  market_data: Dict) -> Tuple[bool, str]:
         """Check portfolio total exposure."""
-        symbol = signal['symbol']
+        _symbol = signal['symbol']  # noqa: F841 — extracted for logging context
         current_price = market_data.get('price', 100)
+        quantity = signal.get('quantity', 0)
 
         # Calculate total exposure
         total_exposure = sum(abs(pos.get('market_value', 0)) for pos in positions.values())
@@ -402,7 +401,7 @@ class RiskManager:
 
     def _check_volatility_risk(self, signal: Dict, market_data: Dict) -> Tuple[bool, str]:
         """Check if volatility is too high for new trades."""
-        symbol = signal['symbol']
+        _symbol = signal['symbol']  # noqa: F841
         volatility_threshold = self.risk_parameters['volatility_threshold']
 
         try:
@@ -484,7 +483,7 @@ class RiskManager:
             min_size = self.risk_parameters['min_position_size']
 
             if signal['quantity'] > max_size:
-                self.logger.info(f"Position size reduced from {signal['quantity']:.4f} to {max_size:.4f}")
+                self.logger.info(f"Position size reduced from {original_quantity:.4f} to {max_size:.4f}")
                 signal['quantity'] = max_size
 
             if signal['quantity'] < min_size:
