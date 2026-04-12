@@ -1,111 +1,116 @@
 <div align="center">
   <img src="src/assets/banner.png" alt="Nocturna Banner" width="420" style="margin-bottom: 20px;">
-  
+
 # NOCTURNA v2.0 - Advanced Trading Bot
 
-## 🚀 Il Bot di Trading Automatico Più Avanzato Mai Creato
+## 🚀 The Most Advanced Automated Trading Bot Ever Created
 
-NOCTURNA v2.0 è un sistema di trading algoritmico di livello enterprise che implementa l'algoritmo quantitativo multi-modale adattivo per trend following e range trading. Combina intelligenza artificiale, machine learning e analisi del sentiment per creare una macchina da trading autonoma e altamente redditizia.
+NOCTURNA v2.0 is an enterprise‑level algorithmic trading system that implements a multi‑modal adaptive quantitative algorithm for trend following and range trading. It combines artificial intelligence, machine learning, and sentiment analysis to create an autonomous, highly profitable trading machine.
 
-## ✨ Caratteristiche Principali
+## ✨ Key Features
 
 ### 🧠 Core Trading Engine
-- **Algoritmo NOCTURNA v2.0**: Implementazione completa dell'algoritmo multi-modale adattivo
-- **4 Modalità di Trading Autonome**:
-  - **EVE**: Grid Trading per mercati laterali
-  - **LUCIFER**: Breakout Trading per rotture di livelli chiave
-  - **REAPER**: Reversal Trading per inversioni di trend
-  - **SENTINEL**: Trend Following per trend forti
-- **Riconoscimento Automatico del Regime di Mercato**: 5 stati (RANGING, TRENDING, REVERSING, BREAKOUT, VOLATILE)
-- **Gestione del Rischio Avanzata**: Stop loss dinamici, position sizing adattivo, controllo del drawdown
+- **NOCTURNA v2.0 Algorithm**: Complete implementation of the adaptive multi‑modal algorithm
+- **4 Autonomous Trading Modes**:
+  - **EVE**: Grid Trading for sideways markets
+  - **LUCIFER**: Breakout Trading for key level breaks
+  - **REAPER**: Reversal Trading for trend reversals
+  - **SENTINEL**: Trend Following for strong trends
+- **Automatic Market Regime Recognition**: 5 states (RANGING, TRENDING, REVERSING, BREAKOUT, VOLATILE)
+- **Advanced Risk Management**: Dynamic stop losses, adaptive position sizing, drawdown control
 
-### 🤖 Intelligenza Artificiale e Machine Learning
-- **ML Optimizer**: Ottimizzazione automatica dei parametri usando Random Forest e Gradient Boosting
-- **Algoritmi Genetici**: Evoluzione continua dei parametri di trading
-- **Backtesting Avanzato**: Monte Carlo analysis, Walk-Forward testing
-- **Sentiment Analysis**: Analisi del sentiment da news e social media
-- **Auto-Tuning**: Adattamento automatico alle condizioni di mercato
+### 🤖 Artificial Intelligence and Machine Learning
+- **ML Optimizer**: Automatic parameter optimization using Random Forest and Gradient Boosting
+- **Genetic Algorithms**: Continuous evolution of trading parameters
+- **Advanced Backtesting**: Monte Carlo analysis, Walk-Forward testing
+- **Sentiment Analysis**: News and social media sentiment analysis
+- **Auto-Tuning**: Automatic adaptation to market conditions
 
-### 📊 Frontend Professionale
-- **Dashboard Real-time**: Monitoraggio live delle performance
-- **Controlli Avanzati**: Start/Stop/Pause/Emergency Stop
-- **Visualizzazioni Interattive**: Grafici di performance, equity curve, drawdown
-- **Gestione Posizioni**: Monitoraggio posizioni attive e ordini
-- **Configurazione Parametri**: Tuning in tempo reale dei parametri
+### 📊 Professional Frontend
+- **Real-time Dashboard**: Live performance monitoring
+- **Advanced Controls**: Start/Stop/Pause/Emergency Stop
+- **Interactive Visualizations**: Performance charts, equity curve, drawdown
+- **Position Management**: Monitor active positions and orders
+- **Parameter Configuration**: Real-time parameter tuning
 
-### 🔗 Integrazione Multi-Broker
-- **Alpaca Markets**: Trading di azioni e ETF
-- **Polygon.io**: Dati di mercato real-time
-- **Yahoo Finance**: Dati storici e fondamentali
-- **Architettura Modulare**: Facile aggiunta di nuovi broker
+### 🔗 Multi-Broker Integration
+- **Alpaca Markets**: Stock and ETF trading
+- **Polygon.io**: Real-time market data
+- **Yahoo Finance**: Historical and fundamental data
+- **Modular Architecture**: Easy addition of new brokers
 
-### 🛡️ Sicurezza e Affidabilità
-- **Risk Management Multi-Livello**: Controlli di rischio a livello di ordine, posizione e portfolio
-- **Emergency Stop**: Arresto immediato di tutte le operazioni
-- **Logging Completo**: Tracciamento dettagliato di tutte le operazioni
-- **Backup Automatico**: Salvataggio automatico dello stato del sistema
+### 🛡️ Security and Reliability
+- **Multi-Level Risk Management**: Risk controls at order, position, and portfolio level
+- **Emergency Stop**: Immediate halt of all operations
+- **Comprehensive Logging**: Detailed tracking of all operations
+- **Automatic Backup**: Automatic system state saving
 
-## 🏗️ Architettura del Sistema
+## 🏗️ System Architecture
 
 ```
+
 NOCTURNA v2.0/
 ├── src/
 │   ├── core/                    # Core Trading Engine
-│   │   ├── trading_engine.py    # Motore principale
-│   │   ├── strategy_manager.py  # Gestione strategie
-│   │   ├── market_data.py       # Gestione dati di mercato
-│   │   ├── order_manager.py     # Gestione ordini
-│   │   └── risk_manager.py      # Gestione del rischio
-│   ├── advanced/                # Funzionalità Avanzate
+│   │   ├── trading_engine.py    # Main engine
+│   │   ├── strategy_manager.py  # Strategy management
+│   │   ├── market_data.py       # Market data handling
+│   │   ├── order_manager.py     # Order management
+│   │   └── risk_manager.py      # Risk management
+│   ├── advanced/                # Advanced Features
 │   │   ├── ml_optimizer.py      # Machine Learning Optimizer
-│   │   ├── backtester.py        # Sistema di Backtesting
-│   │   └── sentiment_analyzer.py # Analisi del Sentiment
+│   │   ├── backtester.py        # Backtesting System
+│   │   └── sentiment_analyzer.py # Sentiment Analysis
 │   ├── routes/                  # API Routes
-│   │   └── trading.py           # Endpoints REST API
-│   └── main.py                  # Applicazione Flask principale
+│   │   └── trading.py           # REST API endpoints
+│   └── main.py                  # Main Flask application
 ├── frontend/                    # React Frontend
 │   ├── src/
-│   │   ├── components/          # Componenti React
-│   │   └── services/            # Servizi API
-│   └── dist/                    # Build di produzione
-└── config/                      # File di configurazione
+│   │   ├── components/          # React components
+│   │   └── services/            # API services
+│   └── dist/                    # Production build
+└── config/                      # Configuration files
+
 ```
 
-## 🚀 Installazione e Setup
+## 🚀 Installation and Setup
 
-### Prerequisiti
+### Prerequisites
 - Python 3.11+
 - Node.js 20+
-- Account Alpaca Markets (per trading live)
-- API Key Polygon.io (per dati real-time)
+- Alpaca Markets account (for live trading)
+- Polygon.io API key (for real-time data)
 
-### 1. Clona il Repository
+### 1. Clone the Repository
 ```bash
 git clone <repository-url>
 cd nocturna_trading_bot
 ```
 
-### 2. Setup Backend
+2. Backend Setup
+
 ```bash
-# Crea ambiente virtuale
+# Create virtual environment
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
-# o
+# or
 venv\\Scripts\\activate  # Windows
 
-# Installa dipendenze
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 3. Setup Frontend
+3. Frontend Setup
+
 ```bash
 cd frontend
 npm install
 npm run build
 ```
 
-### 4. Configurazione
-Crea un file `.env` nella root del progetto:
+4. Configuration
+
+Create a .env file in the project root:
 
 ```env
 # Alpaca Trading
@@ -120,89 +125,95 @@ POLYGON_API_KEY=your_polygon_api_key
 # Database
 DATABASE_URL=sqlite:///nocturna.db
 
-# Redis (opzionale, per caching)
+# Redis (optional, for caching)
 REDIS_URL=redis://localhost:6379
 
-# Configurazione Trading
+# Trading Configuration
 INITIAL_CAPITAL=100000
 MAX_POSITION_SIZE=0.1
 RISK_LEVEL=LOW
 ```
 
-### 5. Avvio del Sistema
+5. Start the System
+
 ```bash
-# Avvia il backend
+# Start the backend
 python src/main.py
 
-# Il frontend è servito automaticamente su http://localhost:5000
+# The frontend is automatically served at http://localhost:5000
 ```
 
-## 📈 Utilizzo
+📈 Usage
 
-### Dashboard Web
-1. Apri il browser su `http://localhost:5000`
-2. Monitora le performance in tempo reale
-3. Controlla il bot con i pulsanti Start/Stop/Pause
-4. Configura i parametri nella sezione Settings
+Web Dashboard
 
-### API REST
-Il sistema espone API REST complete per l'integrazione:
+1. Open your browser at http://localhost:5000
+2. Monitor real-time performance
+3. Control the bot using Start/Stop/Pause buttons
+4. Configure parameters in the Settings section
+
+REST API
+
+The system exposes a complete REST API for integration:
 
 ```bash
-# Status del sistema
+# System status
 GET /api/status
 
-# Avvia il trading engine
+# Start trading engine
 POST /api/start
 
-# Ferma il trading engine
+# Stop trading engine
 POST /api/stop
 
-# Ottieni posizioni attive
+# Get active positions
 GET /api/positions
 
-# Ottieni ordini
+# Get orders
 GET /api/orders
 
 # Performance
 GET /api/performance
 ```
 
-### Configurazione Avanzata
+Advanced Configuration
 
-#### Parametri di Trading
+Trading Parameters
+
 ```python
 TRADING_PARAMS = {
-    'grid_spacing': 0.005,        # Spaziatura grid (0.5%)
-    'atr_mult_sl': 2.0,          # Moltiplicatore ATR per stop loss
-    'atr_mult_tp': 4.0,          # Moltiplicatore ATR per take profit
-    'max_position_size': 0.1,     # Dimensione massima posizione (10%)
-    'volatility_threshold': 2.0,  # Soglia volatilità
-    'trend_strength_threshold': 0.5, # Soglia forza trend
-    'reversal_confirmation_bars': 3, # Barre conferma inversione
-    'breakout_volume_mult': 1.5   # Moltiplicatore volume breakout
+    'grid_spacing': 0.005,        # Grid spacing (0.5%)
+    'atr_mult_sl': 2.0,          # ATR multiplier for stop loss
+    'atr_mult_tp': 4.0,          # ATR multiplier for take profit
+    'max_position_size': 0.1,     # Maximum position size (10%)
+    'volatility_threshold': 2.0,  # Volatility threshold
+    'trend_strength_threshold': 0.5, # Trend strength threshold
+    'reversal_confirmation_bars': 3, # Reversal confirmation bars
+    'breakout_volume_mult': 1.5   # Breakout volume multiplier
 }
 ```
 
-#### Machine Learning
+Machine Learning
+
 ```python
 ML_CONFIG = {
-    'optimization_frequency': 'weekly',  # Frequenza ottimizzazione
-    'n_iterations': 100,                 # Iterazioni per ottimizzazione
-    'validation_split': 0.2,            # Split per validazione
-    'feature_selection': True,          # Selezione automatica features
-    'ensemble_methods': ['rf', 'gb'],   # Metodi ensemble
+    'optimization_frequency': 'weekly',  # Optimization frequency
+    'n_iterations': 100,                 # Optimization iterations
+    'validation_split': 0.2,            # Validation split
+    'feature_selection': True,          # Automatic feature selection
+    'ensemble_methods': ['rf', 'gb'],   # Ensemble methods
 }
 ```
 
-## 🧪 Backtesting
+🧪 Backtesting
 
-### Backtesting Semplice
+Simple Backtesting
+
 ```python
 from src.advanced.backtester import AdvancedBacktester
 from src.core.strategy_manager import StrategyManager
 
-# Configura backtester
+# Configure backtester
 config = {
     'initial_capital': 100000,
     'commission_rate': 0.001,
@@ -212,7 +223,7 @@ config = {
 backtester = AdvancedBacktester(config)
 strategy = StrategyManager(strategy_params)
 
-# Esegui backtest
+# Run backtest
 results = backtester.run_backtest(historical_data, strategy.generate_signals, strategy_params)
 
 print(f"Total Return: {results['total_return']:.2%}")
@@ -220,9 +231,10 @@ print(f"Sharpe Ratio: {results['sharpe_ratio']:.2f}")
 print(f"Max Drawdown: {results['max_drawdown']:.2%}")
 ```
 
-### Monte Carlo Analysis
+Monte Carlo Analysis
+
 ```python
-# Analisi robustezza strategia
+# Strategy robustness analysis
 mc_results = backtester.monte_carlo_analysis(
     data=historical_data,
     strategy_function=strategy.generate_signals,
@@ -230,20 +242,21 @@ mc_results = backtester.monte_carlo_analysis(
     n_simulations=1000
 )
 
-print(f"Probabilità rendimento positivo: {mc_results['probability_positive']:.1%}")
-print(f"VaR 95%: {mc_results['return_stats']['percentile_5']:.2%}")
+print(f"Probability of positive return: {mc_results['probability_positive']:.1%}")
+print(f"95% VaR: {mc_results['return_stats']['percentile_5']:.2%}")
 ```
 
-## 🤖 Machine Learning e Ottimizzazione
+🤖 Machine Learning and Optimization
 
-### Ottimizzazione Automatica
+Automatic Optimization
+
 ```python
 from src.advanced.ml_optimizer import MLOptimizer
 
-# Configura optimizer
+# Configure optimizer
 ml_optimizer = MLOptimizer(config)
 
-# Ottimizza parametri
+# Optimize parameters
 optimized_params = ml_optimizer.optimize_parameters(
     market_data=recent_data,
     current_params=current_params,
@@ -251,50 +264,54 @@ optimized_params = ml_optimizer.optimize_parameters(
     n_iterations=50
 )
 
-print("Parametri ottimizzati:", optimized_params)
+print("Optimized parameters:", optimized_params)
 ```
 
-### Sentiment Analysis
+Sentiment Analysis
+
 ```python
 from src.advanced.sentiment_analyzer import SentimentAnalyzer
 
-# Analizza sentiment
+# Analyze sentiment
 sentiment_analyzer = SentimentAnalyzer(config)
 
-# Aggiungi dati di sentiment
+# Add sentiment data
 sentiment_analyzer.add_sentiment_data(
     source='news',
     symbol='AAPL',
     text='Apple reports record quarterly earnings...'
 )
 
-# Ottieni segnale sentiment
+# Get sentiment signal
 signal = sentiment_analyzer.get_market_sentiment_signal('AAPL')
 print(f"Sentiment Signal: {signal['signal']} (strength: {signal['strength']:.2f})")
 ```
 
-## 📊 Metriche di Performance
+📊 Performance Metrics
 
-### Metriche Principali
-- **Total Return**: Rendimento totale del portfolio
-- **Sharpe Ratio**: Rendimento aggiustato per il rischio
-- **Sortino Ratio**: Rendimento aggiustato per downside risk
-- **Calmar Ratio**: Rendimento annualizzato / Max Drawdown
-- **Win Rate**: Percentuale di trade vincenti
-- **Profit Factor**: Profitti / Perdite
-- **Maximum Drawdown**: Massima perdita dal picco
+Key Metrics
 
-### Analisi del Rischio
-- **VaR (Value at Risk)**: Perdita massima attesa con confidenza 95%
-- **CVaR (Conditional VaR)**: Perdita media oltre il VaR
-- **Beta**: Correlazione con il mercato
-- **Volatilità**: Deviazione standard dei rendimenti
+· Total Return: Overall portfolio return
+· Sharpe Ratio: Risk-adjusted return
+· Sortino Ratio: Downside risk-adjusted return
+· Calmar Ratio: Annualized return / Max Drawdown
+· Win Rate: Percentage of winning trades
+· Profit Factor: Gross profits / Gross losses
+· Maximum Drawdown: Peak-to-trough decline
 
-## 🔧 Configurazione Avanzata
+Risk Analysis
 
-### Modalità di Trading
+· VaR (Value at Risk): Maximum expected loss at 95% confidence
+· CVaR (Conditional VaR): Average loss beyond VaR
+· Beta: Correlation with the market
+· Volatility: Standard deviation of returns
+
+🔧 Advanced Configuration
+
+Trading Modes
+
 ```python
-# Configurazione modalità EVE (Grid Trading)
+# EVE Mode configuration (Grid Trading)
 EVE_CONFIG = {
     'grid_levels': 10,
     'grid_spacing_pct': 0.5,
@@ -302,7 +319,7 @@ EVE_CONFIG = {
     'profit_target_pct': 1.0
 }
 
-# Configurazione modalità LUCIFER (Breakout)
+# LUCIFER Mode configuration (Breakout)
 LUCIFER_CONFIG = {
     'breakout_threshold': 2.0,
     'volume_confirmation': True,
@@ -310,14 +327,14 @@ LUCIFER_CONFIG = {
     'max_breakout_age': 5
 }
 
-# Configurazione modalità REAPER (Reversal)
+# REAPER Mode configuration (Reversal)
 REAPER_CONFIG = {
     'reversal_signals': ['rsi_divergence', 'support_resistance'],
     'confirmation_bars': 3,
     'risk_reward_ratio': 2.0
 }
 
-# Configurazione modalità SENTINEL (Trend Following)
+# SENTINEL Mode configuration (Trend Following)
 SENTINEL_CONFIG = {
     'trend_indicators': ['ema_cross', 'adx', 'macd'],
     'trend_strength_min': 0.6,
@@ -325,23 +342,25 @@ SENTINEL_CONFIG = {
 }
 ```
 
-### Risk Management
+Risk Management
+
 ```python
 RISK_CONFIG = {
-    'max_portfolio_risk': 0.02,      # 2% rischio massimo portfolio
-    'max_position_risk': 0.005,      # 0.5% rischio massimo per posizione
-    'correlation_limit': 0.7,        # Limite correlazione tra posizioni
-    'sector_concentration': 0.3,     # Concentrazione massima per settore
-    'daily_loss_limit': 0.01,       # Limite perdita giornaliera (1%)
-    'drawdown_stop': 0.1,           # Stop a 10% di drawdown
+    'max_portfolio_risk': 0.02,      # 2% maximum portfolio risk
+    'max_position_risk': 0.005,      # 0.5% maximum risk per position
+    'correlation_limit': 0.7,        # Correlation limit between positions
+    'sector_concentration': 0.3,     # Maximum concentration per sector
+    'daily_loss_limit': 0.01,       # Daily loss limit (1%)
+    'drawdown_stop': 0.1,           # Stop at 10% drawdown
 }
 ```
 
-## 🚀 Deployment in Produzione
+🚀 Production Deployment
 
-### Docker Deployment
+Docker Deployment
+
 ```dockerfile
-# Dockerfile incluso per deployment containerizzato
+# Included Dockerfile for containerized deployment
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -354,137 +373,152 @@ EXPOSE 5000
 CMD ["python", "src/main.py"]
 ```
 
-### Cloud Deployment
-Il sistema è ottimizzato per deployment su:
-- **AWS EC2/ECS**: Con supporto per Auto Scaling
-- **Google Cloud Run**: Deployment serverless
-- **Azure Container Instances**: Deployment rapido
-- **DigitalOcean Droplets**: Soluzione economica
+Cloud Deployment
 
-### Monitoraggio
-- **Prometheus**: Metriche di sistema
-- **Grafana**: Dashboard di monitoraggio
-- **Sentry**: Error tracking
-- **CloudWatch**: Logging e alerting
+The system is optimized for deployment on:
 
-## 📚 Documentazione API
+· AWS EC2/ECS: With Auto Scaling support
+· Google Cloud Run: Serverless deployment
+· Azure Container Instances: Rapid deployment
+· DigitalOcean Droplets: Cost-effective solution
 
-### Endpoints Principali
+Monitoring
 
-#### Sistema
-- `GET /api/status` - Status del sistema
-- `POST /api/start` - Avvia trading engine
-- `POST /api/stop` - Ferma trading engine
-- `POST /api/pause` - Pausa trading engine
-- `POST /api/emergency-stop` - Arresto di emergenza
+· Prometheus: System metrics
+· Grafana: Monitoring dashboards
+· Sentry: Error tracking
+· CloudWatch: Logging and alerting
 
-#### Trading
-- `GET /api/positions` - Posizioni attive
-- `GET /api/orders` - Ordini attivi
-- `POST /api/orders` - Crea nuovo ordine
-- `DELETE /api/orders/{id}` - Cancella ordine
+📚 API Documentation
 
-#### Performance
-- `GET /api/performance` - Metriche di performance
-- `GET /api/equity-curve` - Curva dell'equity
-- `GET /api/trades` - Storico trade
+Main Endpoints
 
-#### Configurazione
-- `GET /api/config` - Configurazione attuale
-- `PUT /api/config` - Aggiorna configurazione
-- `POST /api/optimize` - Avvia ottimizzazione ML
+System
 
-## 🔒 Sicurezza
+· GET /api/status - System status
+· POST /api/start - Start trading engine
+· POST /api/stop - Stop trading engine
+· POST /api/pause - Pause trading engine
+· POST /api/emergency-stop - Emergency stop
 
-### Misure di Sicurezza
-- **Autenticazione API**: Token JWT per accesso API
-- **Crittografia**: Dati sensibili crittografati
-- **Rate Limiting**: Protezione contro abusi
-- **Audit Logging**: Log completo delle operazioni
-- **Backup Automatico**: Backup automatico dello stato
+Trading
 
-### Best Practices
-- Usa sempre paper trading per test iniziali
-- Monitora costantemente le performance
-- Imposta sempre limiti di rischio appropriati
-- Mantieni aggiornate le API keys
-- Esegui backup regolari della configurazione
+· GET /api/positions - Active positions
+· GET /api/orders - Active orders
+· POST /api/orders - Create new order
+· DELETE /api/orders/{id} - Cancel order
 
-## 🆘 Troubleshooting
+Performance
 
-### Problemi Comuni
+· GET /api/performance - Performance metrics
+· GET /api/equity-curve - Equity curve
+· GET /api/trades - Trade history
 
-#### Bot non si avvia
+Configuration
+
+· GET /api/config - Current configuration
+· PUT /api/config - Update configuration
+· POST /api/optimize - Start ML optimization
+
+🔒 Security
+
+Security Measures
+
+· API Authentication: JWT tokens for API access
+· Encryption: Sensitive data encrypted
+· Rate Limiting: Abuse protection
+· Audit Logging: Complete operation logs
+· Automatic Backup: Automatic system state backup
+
+Best Practices
+
+· Always use paper trading for initial tests
+· Constantly monitor performance
+· Always set appropriate risk limits
+· Keep API keys up to date
+· Perform regular configuration backups
+
+🆘 Troubleshooting
+
+Common Issues
+
+Bot does not start
+
 ```bash
-# Verifica configurazione
+# Verify configuration
 python -c "from src.core.trading_engine import TradingEngine; print('OK')"
 
-# Controlla log
+# Check logs
 tail -f logs/nocturna.log
 ```
 
-#### Errori di connessione API
+API connection errors
+
 ```bash
-# Testa connessione Alpaca
+# Test Alpaca connection
 python -c "import alpaca_trade_api as tradeapi; api = tradeapi.REST(); print(api.get_account())"
 
-# Testa connessione Polygon
+# Test Polygon connection
 python -c "from polygon import RESTClient; client = RESTClient(); print('OK')"
 ```
 
-#### Performance scarse
-1. Verifica parametri di trading
-2. Esegui backtesting su dati recenti
-3. Ottimizza parametri con ML
-4. Controlla condizioni di mercato
+Poor performance
 
-## 📞 Supporto
+1. Verify trading parameters
+2. Run backtesting on recent data
+3. Optimize parameters with ML
+4. Check market conditions
 
-### Documentazione
-- **Wiki**: Documentazione completa nel wiki del progetto
-- **Examples**: Esempi di utilizzo nella cartella `examples/`
-- **API Docs**: Documentazione API generata automaticamente
+📞 Support
 
-### Community
-- **Discord**: Server Discord per supporto real-time
-- **GitHub Issues**: Segnalazione bug e richieste feature
-- **Forum**: Discussioni e condivisione strategie
+Documentation
 
-## 📄 Licenza
+· Wiki: Complete documentation in the project wiki
+· Examples: Usage examples in the examples/ folder
+· API Docs: Automatically generated API documentation
 
-Questo progetto è rilasciato sotto licenza MIT. Vedi il file `LICENSE` per i dettagli.
+Community
 
-## 🙏 Ringraziamenti
+· Discord: Real-time support on Discord server
+· GitHub Issues: Bug reports and feature requests
+· Forum: Discussions and strategy sharing
 
-- **FMZ Quant**: Per l'algoritmo NOCTURNA originale
-- **Alpaca Markets**: Per le API di trading
-- **Polygon.io**: Per i dati di mercato real-time
-- **Community Open Source**: Per le librerie utilizzate
+📄 License
+
+This project is released under the MIT license. See the LICENSE file for details.
+
+🙏 Acknowledgements
+
+· FMZ Quant: For the original NOCTURNA algorithm
+· Alpaca Markets: For trading APIs
+· Polygon.io: For real-time market data
+· Open Source Community: For the libraries used
 
 ---
 
-## ⚡ Quick Start
+⚡ Quick Start
 
 ```bash
-# Clone e setup
+# Clone and setup
 git clone <repo-url> && cd nocturna_trading_bot
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
-# Configura .env con le tue API keys
+# Configure .env with your API keys
 cp .env.example .env
-# Modifica .env con le tue credenziali
+# Edit .env with your credentials
 
-# Avvia il sistema
+# Start the system
 python src/main.py
 
-# Apri browser su http://localhost:5000
+# Open browser at http://localhost:5000
 ```
 
-**🎯 NOCTURNA v2.0 - Il Futuro del Trading Algoritmico è Qui!**
+🎯 NOCTURNA v2.0 - The Future of Algorithmic Trading is Here!
+
+---
+
+Disclaimer: Trading involves significant risk. This software is provided "as-is" without warranties. Always use paper trading for initial tests and only invest what you can afford to lose.
 
 Yog-Sotho ❤️
 ---
-
-*Disclaimer: Il trading comporta rischi significativi. Questo software è fornito "as-is" senza garanzie. Usa sempre il paper trading per test iniziali e investi solo quello che puoi permetterti di perdere.*
-
