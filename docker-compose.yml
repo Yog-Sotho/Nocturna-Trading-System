@@ -1,153 +1,127 @@
-# NOCTURNA v2.0 Trading Bot - Docker Compose Configuration
-# Complete production deployment with database and caching
+# =============================================================================
+# NOCTURNA Trading System - Docker Compose Configuration
+# =============================================================================
 
 version: '3.8'
 
 services:
-  # =============================================================================
-  # NOCTURNA Trading Bot Application
-  # =============================================================================
-  nocturna-bot:
-    build: .
-    container_name: nocturna-v2-bot
+  # ---------------------------------------------------------------------------
+  # Flask Application
+  # ---------------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: nocturna-app
     restart: unless-stopped
     ports:
       - "5000:5000"
     environment:
-      # Database connection
-      - DATABASE_URL=postgresql://nocturna:nocturna_password@postgres:5432/nocturna_db
-      # Redis connection
-      - REDIS_URL=redis://redis:6379/0
-      # Flask settings
+      # Flask Settings
       - FLASK_ENV=production
       - FLASK_DEBUG=false
       - HOST=0.0.0.0
       - PORT=5000
-      # Trading settings (override in .env file)
-      - TRADING_MODE=PAPER
-      - INITIAL_CAPITAL=100000
-      - MAX_POSITION_SIZE=0.1
-      - RISK_LEVEL=LOW
+
+      # Security
+      - SECURE_COOKIES=true
+      - SESSION_COOKIE_SAMESITE=Lax
+
+      # Database
+      - DATABASE_URL=postgresql://nocturna:${DB_PASSWORD}@postgres:5432/nocturna
+
+      # Redis
+      - REDIS_URL=redis://redis:6379/0
+
+      # Logging
+      - LOG_LEVEL=INFO
+      - LOG_TO_FILE=true
+      - LOG_TO_CONSOLE=true
+
+      # Trading (loaded from env or secrets)
+      - TRADING_MODE=${TRADING_MODE:-PAPER}
+
     env_file:
       - .env
-    volumes:
-      # Persistent data storage
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./backups:/app/backups
-      # Configuration files
-      - ./config:/app/config
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+      - ./database:/app/database
     networks:
       - nocturna-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
 
-  # =============================================================================
+  # ---------------------------------------------------------------------------
   # PostgreSQL Database
-  # =============================================================================
+  # ---------------------------------------------------------------------------
   postgres:
     image: postgres:15-alpine
     container_name: nocturna-postgres
     restart: unless-stopped
     environment:
-      - POSTGRES_DB=nocturna_db
       - POSTGRES_USER=nocturna
-      - POSTGRES_PASSWORD=nocturna_password
-      - POSTGRES_INITDB_ARGS=--encoding=UTF-8 --lc-collate=C --lc-ctype=C
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=nocturna
     volumes:
-      # Persistent database storage
-      - postgres_data:/var/lib/postgresql/data
-      # Database initialization scripts
-      - ./database/init:/docker-entrypoint-initdb.d
-    ports:
-      - "5432:5432"
+      - postgres-data:/var/lib/postgresql/data
+      - ./config/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     networks:
       - nocturna-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U nocturna -d nocturna_db"]
+      test: ["CMD-SHELL", "pg_isready -U nocturna -d nocturna"]
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
 
-  # =============================================================================
+  # ---------------------------------------------------------------------------
   # Redis Cache
-  # =============================================================================
+  # ---------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
     container_name: nocturna-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-}
     volumes:
-      # Persistent cache storage
-      - redis_data:/data
-    ports:
-      - "6379:6379"
+      - redis-data:/data
     networks:
       - nocturna-network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
 
-  # =============================================================================
-  # Prometheus Monitoring (Optional)
-  # =============================================================================
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: nocturna-prometheus
-    restart: unless-stopped
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus_data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-      - '--storage.tsdb.retention.time=200h'
-      - '--web.enable-lifecycle'
-    networks:
-      - nocturna-network
-    profiles:
-      - monitoring
-
-  # =============================================================================
-  # Grafana Dashboard (Optional)
-  # =============================================================================
-  grafana:
-    image: grafana/grafana:latest
-    container_name: nocturna-grafana
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=nocturna_admin
-      - GF_USERS_ALLOW_SIGN_UP=false
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
-      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
-    networks:
-      - nocturna-network
-    profiles:
-      - monitoring
-
-  # =============================================================================
-  # Nginx Reverse Proxy (Optional)
-  # =============================================================================
+  # ---------------------------------------------------------------------------
+  # Nginx Reverse Proxy (Production)
+  # ---------------------------------------------------------------------------
   nginx:
     image: nginx:alpine
     container_name: nocturna-nginx
@@ -156,36 +130,55 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
-      - ./nginx/ssl:/etc/nginx/ssl
+      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./config/ssl:/etc/nginx/ssl:ro
+      - nginx-logs:/var/log/nginx
     depends_on:
-      - nocturna-bot
+      - app
     networks:
       - nocturna-network
     profiles:
       - production
 
-  # =============================================================================
-  # Backup Service (Optional)
-  # =============================================================================
-  backup:
-    image: postgres:15-alpine
-    container_name: nocturna-backup
-    restart: "no"
-    environment:
-      - POSTGRES_DB=nocturna_db
-      - POSTGRES_USER=nocturna
-      - POSTGRES_PASSWORD=nocturna_password
+  # ---------------------------------------------------------------------------
+  # Prometheus Metrics (Optional)
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: nocturna-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
     volumes:
-      - ./backups:/backups
-      - ./scripts/backup.sh:/backup.sh
-    command: /backup.sh
-    depends_on:
-      - postgres
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
     networks:
       - nocturna-network
     profiles:
-      - backup
+      - monitoring
+
+  # ---------------------------------------------------------------------------
+  # Grafana Dashboard (Optional)
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    container_name: nocturna-grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-changeme}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - nocturna-network
+    depends_on:
+      - prometheus
+    profiles:
+      - monitoring
 
 # =============================================================================
 # Networks
@@ -195,87 +188,19 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.20.0.0/16
+        - subnet: 172.28.0.0/16
 
 # =============================================================================
 # Volumes
 # =============================================================================
 volumes:
-  postgres_data:
+  postgres-data:
     driver: local
-  redis_data:
+  redis-data:
     driver: local
-  prometheus_data:
+  prometheus-data:
     driver: local
-  grafana_data:
+  grafana-data:
     driver: local
-
-# =============================================================================
-# Usage Instructions:
-# =============================================================================
-#
-# 1. Basic deployment (bot + database + cache):
-#    docker-compose up -d
-#
-# 2. With monitoring (includes Prometheus + Grafana):
-#    docker-compose --profile monitoring up -d
-#
-# 3. Production deployment (includes Nginx):
-#    docker-compose --profile production up -d
-#
-# 4. Full deployment with all services:
-#    docker-compose --profile monitoring --profile production up -d
-#
-# 5. Run backup:
-#    docker-compose --profile backup run --rm backup
-#
-# 6. View logs:
-#    docker-compose logs -f nocturna-bot
-#
-# 7. Scale the application (if needed):
-#    docker-compose up -d --scale nocturna-bot=2
-#
-# 8. Stop all services:
-#    docker-compose down
-#
-# 9. Stop and remove volumes (WARNING: This will delete all data):
-#    docker-compose down -v
-#
-# 10. Update and restart:
-#     docker-compose pull
-#     docker-compose up -d --force-recreate
-#
-# =============================================================================
-# Environment Variables:
-# =============================================================================
-#
-# Create a .env file in the same directory with your configuration:
-#
-# # Trading API Keys
-# ALPACA_API_KEY=your_alpaca_api_key
-# ALPACA_SECRET_KEY=your_alpaca_secret_key
-# POLYGON_API_KEY=your_polygon_api_key
-#
-# # Trading Settings
-# TRADING_MODE=PAPER
-# INITIAL_CAPITAL=100000
-# MAX_POSITION_SIZE=0.1
-# RISK_LEVEL=LOW
-#
-# # Security
-# FLASK_SECRET_KEY=your-super-secret-key
-# JWT_SECRET_KEY=your-jwt-secret-key
-#
-# # Notifications (optional)
-# SLACK_WEBHOOK_URL=your_slack_webhook
-# DISCORD_WEBHOOK_URL=your_discord_webhook
-#
-# =============================================================================
-# Directory Structure:
-# =============================================================================
-#
-# Create these directories before running:
-# mkdir -p data logs backups config monitoring/grafana/dashboards nginx/ssl scripts
-#
-# =============================================================================
-
+  nginx-logs:
+    driver: local
