@@ -1,3 +1,6 @@
+<div align="center">
+  <img src="src/assets/banner.png" alt="Nocturna Banner" width="420" style="margin-bottom: 20px;">
+  
 # NOCTURNA v2.0 - Advanced Trading Bot
 
 ## 🚀 Il Bot di Trading Automatico Più Avanzato Mai Creato
@@ -480,6 +483,7 @@ python src/main.py
 
 **🎯 NOCTURNA v2.0 - Il Futuro del Trading Algoritmico è Qui!**
 
+Yog-Sotho ❤️
 ---
 
 *Disclaimer: Il trading comporta rischi significativi. Questo software è fornito "as-is" senza garanzie. Usa sempre il paper trading per test iniziali e investi solo quello che puoi permetterti di perdere.*
