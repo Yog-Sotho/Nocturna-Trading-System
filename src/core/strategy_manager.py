@@ -3,16 +3,12 @@ NOCTURNA Trading System - Strategy Manager
 Production-grade market analysis and trading strategy management.
 """
 
-import os
-import sys
 import logging
 import pandas as pd
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from enum import Enum
 from collections import deque
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 
 class TradingMode(Enum):
@@ -58,14 +54,21 @@ class StrategyManager:
         self.analysis_cache: Dict[str, Dict] = {}
         self.mode_history: List[Dict] = []
 
-        # Grid levels for EVE mode
-        self.grid_levels: List[Dict] = []
-        self.grid_base_price: Optional[float] = None
+        # Grid levels for EVE mode — per-symbol
+        self.grid_levels: Dict[str, List[Dict]] = {}
+        self.grid_base_prices: Dict[str, float] = {}
+
+        # Current positions — set by engine before signal generation (5d)
+        self.current_positions: Dict[str, Dict] = {}
 
         # Signal history for validation
         self.signal_history = deque(maxlen=100)
 
         self.logger.info("Strategy Manager initialized")
+
+    def set_current_positions(self, positions: Dict[str, Dict]) -> None:
+        """Update current positions from the engine for position-aware signal generation."""
+        self.current_positions = positions
 
     def _load_parameters(self) -> Dict:
         """Load and validate strategy parameters."""
@@ -143,7 +146,6 @@ class StrategyManager:
 
         try:
             latest = df.iloc[-1]
-            _previous_10 = df.iloc[-11:-1] if len(df) > 10 else df  # noqa: F841
 
             # Extract indicators
             ema50 = latest.get('ema50', 0)
@@ -286,6 +288,9 @@ class StrategyManager:
             # Apply risk filters
             signals = self._apply_risk_filters(signals, df, symbol)
 
+            # Filter out signals that conflict with existing positions (5d)
+            signals = self._filter_position_conflicts(signals, symbol)
+
             return signals
 
         except Exception as e:
@@ -304,12 +309,14 @@ class StrategyManager:
             current_price = latest['close']
             atr = latest.get('atr', 0)
 
-            # Initialize grid if needed
-            if not self.grid_levels or self.grid_base_price is None:
-                self._initialize_grid(current_price, atr)
+            # Initialize grid if needed — per-symbol
+            symbol_grid = self.grid_levels.get(symbol, [])
+            if not symbol_grid or symbol not in self.grid_base_prices:
+                self._initialize_grid(current_price, atr, symbol)
+                symbol_grid = self.grid_levels.get(symbol, [])
 
             # Check if price crossed grid levels
-            for level in self.grid_levels:
+            for level in symbol_grid:
                 if level['filled']:
                     continue
 
@@ -507,10 +514,10 @@ class StrategyManager:
             self.logger.error(f"Error generating SENTINEL signals: {e}")
             return []
 
-    def _initialize_grid(self, base_price: float, atr: float) -> None:
-        """Initialize grid levels for EVE mode."""
-        self.grid_base_price = base_price
-        self.grid_levels = []
+    def _initialize_grid(self, base_price: float, atr: float, symbol: str) -> None:
+        """Initialize grid levels for EVE mode — per-symbol."""
+        self.grid_base_prices[symbol] = base_price
+        levels = []
 
         grid_spacing = self.parameters['grid_spacing']
         num_levels = self.parameters['grid_levels']
@@ -519,7 +526,7 @@ class StrategyManager:
         for i in range(1, num_levels + 1):
             # Sell levels (above)
             sell_price = base_price * (1 + grid_spacing * i)
-            self.grid_levels.append({
+            levels.append({
                 'id': f"sell_{i}",
                 'price': sell_price,
                 'side': 'sell',
@@ -528,14 +535,15 @@ class StrategyManager:
 
             # Buy levels (below)
             buy_price = base_price * (1 - grid_spacing * i)
-            self.grid_levels.append({
+            levels.append({
                 'id': f"buy_{i}",
                 'price': buy_price,
                 'side': 'buy',
                 'filled': False
             })
 
-        self.logger.info(f"Grid initialized with {len(self.grid_levels)} levels")
+        self.grid_levels[symbol] = levels
+        self.logger.info(f"Grid initialized for {symbol} with {len(levels)} levels")
 
     def _apply_risk_filters(self, signals: List[Dict], df: pd.DataFrame,
                             symbol: str) -> List[Dict]:
@@ -552,17 +560,48 @@ class StrategyManager:
             if signal.get('quantity', 0) > self.parameters['max_position_size']:
                 signal['quantity'] = self.parameters['max_position_size']
 
-            # Add trailing stop parameters
-            if signal.get('side') == 'buy':
-                signal['trail_trigger'] = signal.get('take_profit', 0) * (1 - self.parameters['trail_trigger'])
+            # Add trailing stop parameters — trigger based on entry price + profit threshold
+            current_price = signal.get('price', df.iloc[-1].get('close', 0))
+            trail_pct = self.parameters['trail_trigger']
+
+            if signal.get('side') == 'buy' and current_price > 0:
+                signal['trail_trigger'] = current_price * (1 + trail_pct)
                 signal['trail_offset'] = self.parameters['trail_offset']
-            elif signal.get('side') == 'sell':
-                signal['trail_trigger'] = signal.get('take_profit', 0) * (1 + self.parameters['trail_trigger'])
+            elif signal.get('side') == 'sell' and current_price > 0:
+                signal['trail_trigger'] = current_price * (1 - trail_pct)
                 signal['trail_offset'] = self.parameters['trail_offset']
 
             filtered_signals.append(signal)
 
         return filtered_signals
+
+    def _filter_position_conflicts(self, signals: List[Dict], symbol: str) -> List[Dict]:
+        """
+        Filter out signals that would add to an already max-sized position.
+        Prevents buying when already max long, or selling when already max short.
+        """
+        position = self.current_positions.get(symbol, {})
+        current_qty = position.get('quantity', 0)
+
+        filtered = []
+        for signal in signals:
+            # Skip buy signals if already at max long position
+            if signal['side'] == 'buy' and current_qty > 0:
+                self.logger.debug(
+                    f"Buy signal filtered for {symbol}: already long {current_qty}"
+                )
+                continue
+
+            # Skip sell signals if already at max short position
+            if signal['side'] == 'sell' and current_qty < 0:
+                self.logger.debug(
+                    f"Sell signal filtered for {symbol}: already short {current_qty}"
+                )
+                continue
+
+            filtered.append(signal)
+
+        return filtered
 
     def update_strategy(self, df: pd.DataFrame, symbol: str) -> Dict:
         """
@@ -604,7 +643,7 @@ class StrategyManager:
                 'trading_mode': new_mode.value,
                 'signals': signals,
                 'timestamp': self.last_analysis_time,
-                'grid_levels_count': len(self.grid_levels) if self.grid_levels else 0
+                'grid_levels_count': len(self.grid_levels.get(symbol, []))
             }
 
         except Exception as e:
@@ -620,12 +659,13 @@ class StrategyManager:
 
     def get_strategy_status(self) -> Dict:
         """Get current strategy status."""
+        total_grid_levels = sum(len(lvls) for lvls in self.grid_levels.values())
         return {
             'current_mode': self.current_mode.value,
             'current_market_state': self.current_market_state.value,
             'last_analysis_time': self.last_analysis_time,
-            'grid_levels_count': len(self.grid_levels) if self.grid_levels else 0,
-            'grid_base_price': self.grid_base_price,
+            'grid_levels_count': total_grid_levels,
+            'grid_base_prices': self.grid_base_prices.copy(),
             'mode_history': self.mode_history[-10:],
             'parameters': self.parameters.copy()
         }

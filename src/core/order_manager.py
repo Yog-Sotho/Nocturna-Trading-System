@@ -4,7 +4,6 @@ Production-grade order management with enhanced error handling and validation.
 """
 
 import os
-import sys
 import logging
 import time
 from datetime import datetime, timezone
@@ -14,8 +13,6 @@ import threading
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 
 class OrderStatus(Enum):
@@ -122,10 +119,11 @@ class OrderExecutionManager:
     def _initialize_broker_client(self) -> None:
         """Initialize broker API client with proper error handling."""
         try:
-            alpaca_api_key = self.config.get('alpaca_api_key')
-            alpaca_secret_key = self.config.get('alpaca_secret_key')
-            alpaca_base_url = self.config.get(
-                'alpaca_base_url',
+            # Load secrets directly from environment — never pass through config dicts
+            alpaca_api_key = os.environ.get('ALPACA_API_KEY')
+            alpaca_secret_key = os.environ.get('ALPACA_SECRET_KEY')
+            alpaca_base_url = os.environ.get(
+                'ALPACA_BASE_URL',
                 'https://paper-api.alpaca.markets'
             )
 
@@ -200,9 +198,16 @@ class OrderExecutionManager:
                 if not self._check_risk_limits(signal):
                     return None
 
+                # Check for duplicate signal (5j: idempotency)
+                if self._is_duplicate_signal(signal):
+                    self.logger.info(
+                        f"Duplicate signal rejected for {signal['symbol']} {signal['side']}"
+                    )
+                    return None
+
                 # Check market hours
                 if not self._is_market_open():
-                    self.logger.warning("Market closed, order rejected")
+                    self.logger.info("Market closed, order queued for next session")
                     return None
 
                 # Prepare order data
@@ -328,11 +333,16 @@ class OrderExecutionManager:
                 clock = self.alpaca_client.get_clock()
                 return clock.is_open
 
-            # Fallback: simple time-based check
-            now = datetime.now(timezone.utc)
-            # Convert to US Eastern time for market hours
-            # This is simplified - in production use proper timezone handling
-            return now.weekday() < 5 and 9 <= now.hour < 16
+            # Fallback: proper US Eastern time market hours (9:30-16:00 ET)
+            from zoneinfo import ZoneInfo
+            eastern = ZoneInfo("America/New_York")
+            now_et = datetime.now(eastern)
+            # Weekday (0=Mon, 4=Fri) and between 9:30 and 16:00 ET
+            if now_et.weekday() > 4:  # Weekend
+                return False
+            market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+            market_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+            return market_open <= now_et < market_close
 
         except Exception as e:
             self.logger.warning(f"Error checking market hours: {e}, assuming market open")
@@ -358,19 +368,39 @@ class OrderExecutionManager:
             if signal['type'] in ['stop', 'stop_limit']:
                 order_data['stop_price'] = signal['stop_price']
 
-            # Add bracket orders (take profit / stop loss)
-            if 'stop_loss' in signal or 'take_profit' in signal:
-                order_data['order_class'] = 'bracket'
+            # Add bracket orders (take profit / stop loss) with validation
+            has_sl = signal.get('stop_loss') and signal['stop_loss'] > 0
+            has_tp = signal.get('take_profit') and signal['take_profit'] > 0
 
-                if 'stop_loss' in signal:
-                    order_data['stop_loss'] = {
-                        'stop_price': signal['stop_loss']
-                    }
+            if has_sl or has_tp:
+                # Validate bracket price logic before submitting
+                bracket_valid = True
+                if has_sl and has_tp:
+                    if signal['side'] == 'buy':
+                        # For buy: stop_loss < current price < take_profit
+                        if signal['stop_loss'] >= signal.get('take_profit', float('inf')):
+                            bracket_valid = False
+                    elif signal['side'] == 'sell':
+                        # For sell: take_profit < current price < stop_loss
+                        if signal['take_profit'] >= signal.get('stop_loss', float('inf')):
+                            bracket_valid = False
 
-                if 'take_profit' in signal:
-                    order_data['take_profit'] = {
-                        'limit_price': signal['take_profit']
-                    }
+                if bracket_valid:
+                    order_data['order_class'] = 'bracket'
+                    if has_sl:
+                        order_data['stop_loss'] = {
+                            'stop_price': signal['stop_loss']
+                        }
+                    if has_tp:
+                        order_data['take_profit'] = {
+                            'limit_price': signal['take_profit']
+                        }
+                else:
+                    self.logger.warning(
+                        f"Invalid bracket prices for {signal['symbol']} "
+                        f"(SL={signal.get('stop_loss')}, TP={signal.get('take_profit')}), "
+                        f"submitting without bracket"
+                    )
 
             return order_data
 
@@ -389,10 +419,15 @@ class OrderExecutionManager:
                     self.logger.error(f"Broker submission error: {e}")
                     return None
 
-            # Simulation mode
+            # Simulation mode — immediately fill market orders
             if self.config.get('simulation_mode', True):
                 order_id = f"SIM_{uuid.uuid4().hex[:12]}"
                 self.logger.info(f"Simulated order: {order_id}")
+
+                # Schedule simulated fill for market orders
+                if order_data.get('type') == 'market':
+                    self._schedule_simulated_fill(order_id, order_data)
+
                 return order_id
 
             self.logger.error("No broker client available")
@@ -401,6 +436,42 @@ class OrderExecutionManager:
         except Exception as e:
             self.logger.error(f"Error submitting to broker: {e}")
             return None
+
+    def _schedule_simulated_fill(self, order_id: str, order_data: Dict) -> None:
+        """Simulate immediate fill for market orders in sim mode."""
+        def _fill():
+            time.sleep(0.5)  # Simulate brief execution delay
+            with self._lock:
+                if order_id in self.active_orders:
+                    order = self.active_orders[order_id]
+                    order.status = OrderStatus.FILLED
+                    order.filled_quantity = order.quantity
+                    # Use a simulated price (last known or limit price)
+                    sim_price = float(order_data.get('limit_price', 100.0))
+                    order.filled_avg_price = sim_price
+                    order.filled_at = datetime.now(timezone.utc)
+                    self._update_position_from_fill(order)
+                    del self.active_orders[order_id]
+                    self._notify_order_callbacks(order)
+                    self.logger.info(f"Simulated fill: {order_id} at {sim_price}")
+
+        fill_thread = threading.Thread(target=_fill, daemon=True, name=f"SimFill-{order_id}")
+        fill_thread.start()
+
+    def _is_duplicate_signal(self, signal: Dict) -> bool:
+        """
+        Check if a signal is a duplicate of a recent active order.
+        Prevents double-submission from retries or repeated signals.
+        """
+        symbol = signal['symbol']
+        side = signal['side']
+        for order in self.active_orders.values():
+            if (order.symbol == symbol and
+                    order.side == side and
+                    order.status in [OrderStatus.PENDING, OrderStatus.SUBMITTED] and
+                    (datetime.now(timezone.utc) - order.submitted_at).total_seconds() < 60):
+                return True
+        return False
 
     def _register_order(self, order_id: str, order_data: Dict, signal: Dict) -> None:
         """Register order in tracking system."""
@@ -748,24 +819,44 @@ class OrderExecutionManager:
             return None
 
     def _execute_trailing_stop(self, order_id: str, config: Dict, current_price: float) -> None:
-        """Execute a trailing stop order."""
+        """
+        Execute a trailing stop order.
+        Submits directly to broker, bypassing market hours and risk limits,
+        because trailing stops are protective exits that must execute.
+        """
         try:
             symbol = config['symbol']
             position = self.positions.get(symbol, {})
+            qty = abs(position.get('quantity', 0))
 
-            if position.get('quantity', 0) > 0:
-                stop_signal = {
-                    'symbol': symbol,
-                    'side': 'sell' if config['side'] == 'buy' else 'buy',
+            if qty > 0:
+                close_side = 'sell' if config['side'] == 'buy' else 'buy'
+                order_data = {
+                    'symbol': symbol.upper(),
+                    'qty': str(qty),
+                    'side': close_side,
                     'type': 'market',
-                    'quantity': abs(position['quantity'])
+                    'time_in_force': 'day',
+                    'client_order_id': str(uuid.uuid4())
                 }
 
-                self.submit_order(stop_signal)
-                self.logger.info(f"Trailing stop executed for {symbol} at {current_price}")
+                result_id = self._submit_to_broker(order_data)
+                if result_id:
+                    self._register_order(result_id, order_data, {
+                        'symbol': symbol, 'side': close_side,
+                        'type': 'market', 'quantity': qty
+                    })
+                    self.logger.info(
+                        f"Trailing stop executed for {symbol} at {current_price}, order {result_id}"
+                    )
+                else:
+                    self.logger.error(
+                        f"Trailing stop FAILED for {symbol} — position may be unprotected"
+                    )
 
             # Remove trailing stop
-            del self.trailing_stops[order_id]
+            if order_id in self.trailing_stops:
+                del self.trailing_stops[order_id]
 
         except Exception as e:
             self.logger.error(f"Error executing trailing stop: {e}")

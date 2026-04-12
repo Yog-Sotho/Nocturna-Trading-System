@@ -3,8 +3,6 @@ Trading Engine for NOCTURNA v2.0 Trading System
 Production-grade core trading engine with event-driven architecture.
 """
 
-import os
-import sys
 import logging
 import threading
 import time
@@ -13,7 +11,6 @@ from typing import Dict, List, Optional, Callable, Any
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from enum import Enum
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from .market_data import MarketDataHandler
 from .strategy_manager import StrategyManager
@@ -75,6 +72,7 @@ class TradingEngine:
 
         # Cache and state
         self.symbol_data: Dict[str, Dict] = {}
+        self._symbol_data_lock = threading.Lock()
         self.active_signals: Dict[str, Dict] = {}
         self.performance_history: List[Dict] = []
         self.performance_metrics: Dict[str, Dict] = {}
@@ -105,14 +103,32 @@ class TradingEngine:
         # Position update callback
         self.order_manager.add_position_callback(self._on_position_update)
 
-        # Risk events callback
-        self.risk_manager.risk_events.append = lambda event: self._on_risk_event(event)
+        # Risk events callback — use proper observer pattern
+        self.risk_manager.add_risk_callback(self._on_risk_event)
 
     def _on_order_filled(self, order: Dict) -> None:
-        """Handle order filled event."""
+        """Handle order filled event — track wins/losses on realized P&L only."""
         try:
+            realized_pnl = order.get('realized_pnl', None)
+
             with self._stats_lock:
                 self.stats['total_trades'] += 1
+
+                # Only count win/loss when we have realized P&L (trade closed)
+                if realized_pnl is not None:
+                    if realized_pnl > 0:
+                        self.stats['winning_trades'] += 1
+                    elif realized_pnl < 0:
+                        self.stats['losing_trades'] += 1
+                    self.stats['total_pnl'] += realized_pnl
+
+                    # Record trade in risk manager
+                    self.risk_manager.record_trade({
+                        'symbol': order.get('symbol'),
+                        'side': order.get('side'),
+                        'pnl': realized_pnl,
+                        'quantity': order.get('filled_quantity', 0)
+                    })
 
             # Remove from active signals
             order_id = order.get('id')
@@ -126,18 +142,9 @@ class TradingEngine:
             self.logger.error(f"Error handling order filled: {e}")
 
     def _on_position_update(self, position: Dict) -> None:
-        """Handle position update event."""
+        """Handle position update event — track unrealized P&L without counting wins/losses."""
         try:
-            pnl = position.get('unrealized_pnl', 0)
-
-            with self._stats_lock:
-                if pnl > 0:
-                    self.stats['winning_trades'] += 1
-                elif pnl < 0:
-                    self.stats['losing_trades'] += 1
-
-                self.stats['total_pnl'] += pnl
-
+            # Update portfolio value in risk manager from position data
             self._notify_event('position_updated', {'position': position})
 
         except Exception as e:
@@ -218,6 +225,8 @@ class TradingEngine:
                 # Wait for main thread
                 if self.main_thread and self.main_thread.is_alive():
                     self.main_thread.join(timeout=30)
+                    if self.main_thread.is_alive():
+                        self.logger.warning("Main loop thread did not stop within 30s timeout")
 
                 # Shutdown executor
                 with self._executor_lock:
@@ -269,32 +278,35 @@ class TradingEngine:
         Execute emergency stop of the trading system.
         Immediately halts all trading activity and closes positions if configured.
         """
-        try:
-            self.logger.critical(f"EMERGENCY STOP: {reason}")
+        with self._state_lock:
+            try:
+                self.logger.critical(f"EMERGENCY STOP: {reason}")
 
-            # Cancel all active orders
-            self._cancel_all_orders()
+                # Signal main loop to stop first
+                self.running = False
 
-            # Close all positions if configured
-            if self.config.get('emergency_close_positions', False):
-                self._close_all_positions()
+                # Cancel all active orders
+                self._cancel_all_orders()
 
-            # Update state
-            self.state = TradingEngineState.EMERGENCY_STOP
-            self.running = False
+                # Close all positions if configured
+                if self.config.get('emergency_close_positions', False):
+                    self._close_all_positions()
 
-            # Shutdown executor
-            with self._executor_lock:
-                if self.executor:
-                    self.executor.shutdown(wait=False, cancel_futures=True)
+                # Update state
+                self.state = TradingEngineState.EMERGENCY_STOP
 
-            self._notify_event('emergency_stop', {
-                'reason': reason,
-                'timestamp': datetime.now(timezone.utc)
-            })
+                # Shutdown executor
+                with self._executor_lock:
+                    if self.executor:
+                        self.executor.shutdown(wait=False, cancel_futures=True)
 
-        except Exception as e:
-            self.logger.error(f"Error in emergency stop: {e}")
+                self._notify_event('emergency_stop', {
+                    'reason': reason,
+                    'timestamp': datetime.now(timezone.utc)
+                })
+
+            except Exception as e:
+                self.logger.error(f"Error in emergency stop: {e}")
 
     # =========================================================================
     # COMPONENT MANAGEMENT
@@ -419,15 +431,20 @@ class TradingEngine:
             # Calculate indicators
             df = self.market_data.calculate_technical_indicators(df)
 
+            # Pass current positions for position-aware signal generation
+            positions = self.order_manager.get_positions()
+            self.strategy_manager.set_current_positions(positions)
+
             # Update strategy
             strategy_result = self.strategy_manager.update_strategy(df, symbol)
 
-            # Cache data
-            self.symbol_data[symbol] = {
-                'data': df,
-                'strategy_result': strategy_result,
-                'last_update': datetime.now(timezone.utc)
-            }
+            # Cache data — thread-safe write
+            with self._symbol_data_lock:
+                self.symbol_data[symbol] = {
+                    'data': df,
+                    'strategy_result': strategy_result,
+                    'last_update': datetime.now(timezone.utc)
+                }
 
             return strategy_result
 
@@ -451,6 +468,11 @@ class TradingEngine:
     def _process_trading_signal(self, signal: Dict) -> None:
         """Process a trading signal through risk validation."""
         try:
+            # Guard: do not submit orders if engine is not running
+            if self.state != TradingEngineState.RUNNING:
+                self.logger.info(f"Signal dropped — engine state is {self.state.value}")
+                return
+
             # Get positions and market data
             positions = self.order_manager.get_positions()
             market_data = self._get_market_data_for_risk(signal['symbol'])
@@ -479,9 +501,19 @@ class TradingEngine:
             self.logger.error(f"Error processing signal: {e}")
 
     def _monitor_risk(self) -> None:
-        """Monitor portfolio risk."""
+        """Monitor portfolio risk and update portfolio value from broker."""
         try:
             positions = self.order_manager.get_positions()
+
+            # Update portfolio value from actual positions (5h fix)
+            if self.order_manager.alpaca_client:
+                try:
+                    account = self.order_manager.alpaca_client.get_account()
+                    equity = float(account.equity)
+                    self.risk_manager.update_portfolio_value(equity)
+                except Exception as e:
+                    self.logger.debug(f"Could not update portfolio equity from broker: {e}")
+
             market_data = {
                 symbol: self._get_market_data_for_risk(symbol)
                 for symbol in self.symbols
@@ -520,18 +552,21 @@ class TradingEngine:
         try:
             import pandas as pd
 
-            symbol_cache = self.symbol_data.get(symbol, {})
-            df = symbol_cache.get('data', pd.DataFrame())
+            with self._symbol_data_lock:
+                symbol_cache = self.symbol_data.get(symbol, {})
+                df = symbol_cache.get('data', pd.DataFrame())
 
             if df.empty:
                 return {}
 
             latest = df.iloc[-1]
+            close_price = latest.get('close', 0)
+            atr_value = latest.get('atr', 0)
 
             return {
-                'price': latest.get('close', 0),
-                'atr': latest.get('atr', 0),
-                'volatility': latest.get('atr', 0) / latest.get('close', 1) if latest.get('close', 0) > 0 else 0,
+                'price': close_price,
+                'atr': atr_value,
+                'volatility': atr_value / close_price if close_price > 0 else 0,
                 'avg_atr': df['atr'].tail(20).mean() if 'atr' in df.columns else 0
             }
 
@@ -542,11 +577,12 @@ class TradingEngine:
     def _on_price_update(self, symbol: str, price: float, timestamp: datetime) -> None:
         """Handle price update from market data feed."""
         try:
-            if symbol not in self.symbol_data:
-                self.symbol_data[symbol] = {}
+            with self._symbol_data_lock:
+                if symbol not in self.symbol_data:
+                    self.symbol_data[symbol] = {}
 
-            self.symbol_data[symbol]['last_price'] = price
-            self.symbol_data[symbol]['last_price_update'] = timestamp
+                self.symbol_data[symbol]['last_price'] = price
+                self.symbol_data[symbol]['last_price_update'] = timestamp
 
             # Update price history for correlation calculations
             self.risk_manager._update_price_history(symbol, price)
@@ -743,7 +779,15 @@ class TradingEngine:
             'strategy_status': self.strategy_manager.get_strategy_status(),
             'risk_report': self.risk_manager.get_risk_report(),
             'trading_summary': self.order_manager.get_trading_summary(),
-            'symbol_data': {
+            'symbol_data': self._get_symbol_data_snapshot()
+        })
+
+        return basic_status
+
+    def _get_symbol_data_snapshot(self) -> Dict:
+        """Get a thread-safe snapshot of symbol data for status reporting."""
+        with self._symbol_data_lock:
+            return {
                 symbol: {
                     'last_price': data.get('last_price'),
                     'last_update': data.get('last_price_update'),
@@ -751,9 +795,6 @@ class TradingEngine:
                 }
                 for symbol, data in self.symbol_data.items()
             }
-        })
-
-        return basic_status
 
     def update_config(self, new_config: Dict) -> bool:
         """Update engine configuration."""

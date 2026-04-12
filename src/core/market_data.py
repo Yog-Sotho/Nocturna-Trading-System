@@ -4,7 +4,6 @@ Production-grade market data management with caching.
 """
 
 import os
-import sys
 import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
@@ -13,8 +12,6 @@ import threading
 
 import pandas as pd
 import numpy as np
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 
 class MarketDataHandler:
@@ -142,7 +139,8 @@ class MarketDataHandler:
         with self.cache_lock:
             if cache_key in self.historical_cache:
                 cached = self.historical_cache[cache_key]
-                if (datetime.now(timezone.utc) - cached.get('timestamp', datetime.min)).total_seconds() < self.CACHE_TTL:
+                cache_ts = cached.get('timestamp', datetime.min.replace(tzinfo=timezone.utc))
+                if (datetime.now(timezone.utc) - cache_ts).total_seconds() < self.CACHE_TTL:
                     return cached.get('data', pd.DataFrame())
 
         # Fetch from provider
@@ -207,10 +205,9 @@ class MarketDataHandler:
             if bars.empty:
                 return pd.DataFrame()
 
-            return bars.rename(columns={
-                'open': 'Open', 'high': 'High', 'low': 'Low',
-                'close': 'Close', 'volume': 'Volume'
-            })
+            # Normalize to lowercase column names for pipeline consistency
+            bars.columns = bars.columns.str.lower()
+            return bars
 
         except Exception as e:
             self.logger.error(f"Alpaca fetch error: {e}")
@@ -234,11 +231,11 @@ class MarketDataHandler:
                 return pd.DataFrame()
 
             data = [{
-                'Open': a.open,
-                'High': a.high,
-                'Low': a.low,
-                'Close': a.close,
-                'Volume': a.volume,
+                'open': a.open,
+                'high': a.high,
+                'low': a.low,
+                'close': a.close,
+                'volume': a.volume,
                 'timestamp': datetime.fromtimestamp(a.timestamp / 1000, tz=timezone.utc)
             } for a in aggs]
 
@@ -271,7 +268,9 @@ class MarketDataHandler:
             if df.empty:
                 return pd.DataFrame()
 
-            return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+            result = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+            result.columns = result.columns.str.lower()
+            return result
 
         except Exception as e:
             self.logger.error(f"Yahoo Finance fetch error: {e}")
@@ -291,7 +290,7 @@ class MarketDataHandler:
         Calculate technical indicators for the DataFrame.
 
         Args:
-            df: DataFrame with OHLCV data
+            df: DataFrame with OHLCV data (lowercase column names: open, high, low, close, volume)
 
         Returns:
             DataFrame with added indicator columns
@@ -300,49 +299,67 @@ class MarketDataHandler:
             return df
 
         try:
+            # Normalize column names to lowercase for consistency
+            df.columns = df.columns.str.lower()
+
             # EMA calculations
-            df['ema8'] = df['Close'].ewm(span=8, adjust=False).mean()
-            df['ema34'] = df['Close'].ewm(span=34, adjust=False).mean()
-            df['ema50'] = df['Close'].ewm(span=50, adjust=False).mean()
-            df['ema200'] = df['Close'].ewm(span=200, adjust=False).mean()
+            df['ema8'] = df['close'].ewm(span=8, adjust=False).mean()
+            df['ema34'] = df['close'].ewm(span=34, adjust=False).mean()
+            df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
+            df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
 
             # MACD
-            exp1 = df['Close'].ewm(span=12, adjust=False).mean()
-            exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+            exp1 = df['close'].ewm(span=12, adjust=False).mean()
+            exp2 = df['close'].ewm(span=26, adjust=False).mean()
             df['macd_line'] = exp1 - exp2
             df['macd_signal'] = df['macd_line'].ewm(span=9, adjust=False).mean()
             df['macd_histogram'] = df['macd_line'] - df['macd_signal']
 
             # ATR (Average True Range)
-            high_low = df['High'] - df['Low']
-            high_close = np.abs(df['High'] - df['Close'].shift())
-            low_close = np.abs(df['Low'] - df['Close'].shift())
+            high_low = df['high'] - df['low']
+            high_close = np.abs(df['high'] - df['close'].shift())
+            low_close = np.abs(df['low'] - df['close'].shift())
             true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
             df['atr'] = true_range.rolling(14).mean()
 
-            # RSI
-            delta = df['Close'].diff()
+            # RSI — guard against division by zero when loss is 0
+            delta = df['close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-            rs = gain / loss
+            rs = gain / loss.replace(0, np.nan)
             df['rsi'] = 100 - (100 / (1 + rs))
+            df['rsi'] = df['rsi'].fillna(100.0)  # All gains, no losses → RSI = 100
 
-            # Bollinger Bands
-            df['bb_middle'] = df['Close'].rolling(20).mean()
-            bb_std = df['Close'].rolling(20).std()
+            # Bollinger Bands — guard against zero-width bands in flat markets
+            df['bb_middle'] = df['close'].rolling(20).mean()
+            bb_std = df['close'].rolling(20).std()
             df['bb_upper'] = df['bb_middle'] + (bb_std * 2)
             df['bb_lower'] = df['bb_middle'] - (bb_std * 2)
-            df['bb_position'] = (df['Close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
+            bb_width = df['bb_upper'] - df['bb_lower']
+            df['bb_position'] = np.where(
+                bb_width > 0,
+                (df['close'] - df['bb_lower']) / bb_width,
+                0.5  # Midpoint when bands are flat
+            )
 
-            # Stochastic
-            low_14 = df['Low'].rolling(14).min()
-            high_14 = df['High'].rolling(14).max()
-            df['stoch_k'] = 100 * (df['Close'] - low_14) / (high_14 - low_14)
-            df['stoch_d'] = df['stoch_k'].rolling(3).mean()
+            # Stochastic — guard against zero range in flat markets
+            low_14 = df['low'].rolling(14).min()
+            high_14 = df['high'].rolling(14).max()
+            stoch_range = high_14 - low_14
+            df['stoch_k'] = np.where(
+                stoch_range > 0,
+                100 * (df['close'] - low_14) / stoch_range,
+                50.0  # Midpoint when range is zero
+            )
+            df['stoch_d'] = pd.Series(df['stoch_k'], index=df.index).rolling(3).mean()
 
-            # Volume indicators
-            df['volume_sma'] = df['Volume'].rolling(20).mean()
-            df['volume_ratio'] = df['Volume'] / df['volume_sma']
+            # Volume indicators — guard against zero average volume
+            df['volume_sma'] = df['volume'].rolling(20).mean()
+            df['volume_ratio'] = np.where(
+                df['volume_sma'] > 0,
+                df['volume'] / df['volume_sma'],
+                1.0
+            )
 
             return df
 

@@ -3,8 +3,6 @@ Risk Management Module for NOCTURNA v2.0 Trading System
 Production-grade risk management with real correlation calculations.
 """
 
-import os
-import sys
 import logging
 import numpy as np
 from datetime import datetime, timedelta, timezone
@@ -14,8 +12,6 @@ import threading
 from collections import deque
 
 from scipy.stats import spearmanr
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 
 class RiskLevel(Enum):
@@ -45,9 +41,6 @@ class RiskManager:
     Implements comprehensive risk controls, position sizing, and portfolio monitoring.
     """
 
-    # Thread-safe correlation cache
-    _correlation_cache: Dict[str, Tuple[float, datetime]] = {}
-    _cache_lock = threading.Lock()
     _correlation_cache_ttl = timedelta(hours=1)
 
     def __init__(self, config: Dict):
@@ -59,12 +52,16 @@ class RiskManager:
 
         # Risk state
         self.current_risk_level = RiskLevel.LOW
-        self.risk_events: List[RiskEvent] = []
+        self.risk_events: deque = deque(maxlen=10000)
         self.daily_stats = {
             'trades': [],
             'realized_pnl': 0.0,
-            'started_at': datetime.now(timezone.utc)
+            'started_at': datetime.now(timezone.utc),
+            'last_reset': datetime.now(timezone.utc).date()
         }
+
+        # Risk event callbacks (observer pattern)
+        self._risk_callbacks: List = []
 
         # Portfolio tracking
         self.portfolio_value = float(self.config.get('initial_capital', 100000))
@@ -72,7 +69,9 @@ class RiskManager:
         self.current_drawdown = 0.0
         self.max_drawdown = 0.0
 
-        # Correlation tracking
+        # Correlation tracking — instance-level, not class-level
+        self._correlation_cache: Dict[str, Tuple[float, datetime]] = {}
+        self._cache_lock = threading.Lock()
         self.correlation_history: Dict[str, List[float]] = {}
         self.position_correlations: Dict[str, float] = {}
 
@@ -87,6 +86,41 @@ class RiskManager:
         self._lock = threading.RLock()
 
         self.logger.info("Risk Manager initialized with production-grade settings")
+
+    def add_risk_callback(self, callback) -> None:
+        """Register a callback for risk events (observer pattern)."""
+        self._risk_callbacks.append(callback)
+
+    def _notify_risk_callbacks(self, event) -> None:
+        """Notify all registered risk callbacks."""
+        for callback in self._risk_callbacks:
+            try:
+                callback(event)
+            except Exception as e:
+                self.logger.error(f"Error in risk callback: {e}")
+
+    def update_portfolio_value(self, equity: float) -> None:
+        """
+        Update portfolio value from broker account equity.
+        Should be called periodically to keep risk calculations accurate.
+        """
+        with self._lock:
+            if equity > 0:
+                self.portfolio_value = equity
+                if equity > self.max_portfolio_value:
+                    self.max_portfolio_value = equity
+
+    def _reset_daily_stats_if_needed(self) -> None:
+        """Reset daily stats at midnight UTC."""
+        today = datetime.now(timezone.utc).date()
+        if today > self.daily_stats.get('last_reset', today):
+            self.daily_stats = {
+                'trades': [],
+                'realized_pnl': 0.0,
+                'started_at': datetime.now(timezone.utc),
+                'last_reset': today
+            }
+            self.logger.info("Daily risk stats reset")
 
     def _load_risk_parameters(self) -> Dict:
         """
@@ -185,7 +219,7 @@ class RiskManager:
                     return False, "Basic constraints not met", signal
 
                 # Step 2: Position limit check
-                valid, reason = self._check_position_limits(signal, current_positions)
+                valid, reason = self._check_position_limits(signal, current_positions, market_data)
                 if not valid:
                     return False, reason, signal
 
@@ -241,28 +275,39 @@ class RiskManager:
 
         return True
 
-    def _check_position_limits(self, signal: Dict, positions: Dict) -> Tuple[bool, str]:
-        """Check if trade would exceed position limits."""
+    def _check_position_limits(self, signal: Dict, positions: Dict,
+                               market_data: Dict) -> Tuple[bool, str]:
+        """Check if trade would exceed position limits as fraction of portfolio."""
         symbol = signal['symbol']
         quantity = signal['quantity']
+        current_price = market_data.get('price', 0)
 
-        # Calculate new position
-        current_position = positions.get(symbol, {}).get('quantity', 0)
+        if current_price <= 0:
+            return True, "Position limits check skipped — no price data"
+
+        # Calculate new position in portfolio fraction terms
+        current_position_qty = positions.get(symbol, {}).get('quantity', 0)
         if signal['side'] == 'buy':
-            new_position = current_position + quantity
+            new_position_qty = current_position_qty + quantity
         else:
-            new_position = current_position - quantity
+            new_position_qty = current_position_qty - quantity
+
+        portfolio_value = self.portfolio_value if self.portfolio_value > 0 else 100000
+        new_position_value = abs(new_position_qty) * current_price
+        position_fraction = new_position_value / portfolio_value
 
         max_position = self.risk_parameters['max_position_size']
-        if abs(new_position) > max_position:
-            return False, f"Position limit exceeded for {symbol}: {abs(new_position):.2%} > {max_position:.2%}"
+        if position_fraction > max_position:
+            return False, (
+                f"Position limit exceeded for {symbol}: "
+                f"{position_fraction:.2%} > {max_position:.2%}"
+            )
 
         return True, "Position limits OK"
 
     def _check_portfolio_exposure(self, signal: Dict, positions: Dict,
                                  market_data: Dict) -> Tuple[bool, str]:
         """Check portfolio total exposure."""
-        _symbol = signal['symbol']  # noqa: F841 — extracted for logging context
         current_price = market_data.get('price', 100)
         quantity = signal.get('quantity', 0)
 
@@ -317,8 +362,8 @@ class RiskManager:
             return True, "Correlation risk OK"
 
         except Exception as e:
-            self.logger.warning(f"Correlation check error: {e}. Allowing trade by default.")
-            return True, "Correlation check skipped due to error"
+            self.logger.warning(f"Correlation check error: {e}. Rejecting trade conservatively.")
+            return False, "Correlation check failed — trade rejected for safety"
 
     def _calculate_real_correlation(self, symbol1: str, symbol2: str) -> float:
         """
@@ -335,7 +380,7 @@ class RiskManager:
         cache_key = f"{symbol1}_{symbol2}"
 
         # Check cache
-        with self._correlation_cache:
+        with self._cache_lock:
             if cache_key in self._correlation_cache:
                 correlation, timestamp = self._correlation_cache[cache_key]
                 if datetime.now(timezone.utc) - timestamp < self._correlation_cache_ttl:
@@ -364,7 +409,7 @@ class RiskManager:
                 correlation = 0.0
 
             # Cache the result
-            with self._correlation_cache:
+            with self._cache_lock:
                 self._correlation_cache[cache_key] = (correlation, datetime.now(timezone.utc))
 
             return correlation
@@ -401,7 +446,6 @@ class RiskManager:
 
     def _check_volatility_risk(self, signal: Dict, market_data: Dict) -> Tuple[bool, str]:
         """Check if volatility is too high for new trades."""
-        _symbol = signal['symbol']  # noqa: F841
         volatility_threshold = self.risk_parameters['volatility_threshold']
 
         try:
@@ -414,7 +458,10 @@ class RiskManager:
             volatility_ratio = current_volatility / avg_volatility
 
             if volatility_ratio > volatility_threshold:
-                return False, f"Volatility too high: ratio {volatility_ratio:.2f} > threshold {volatility_threshold:.2f}"
+                return False, (
+                    f"Volatility too high: ratio {volatility_ratio:.2f} "
+                    f"> threshold {volatility_threshold:.2f}"
+                )
 
             return True, "Volatility OK"
 
@@ -478,7 +525,7 @@ class RiskManager:
             elif method == 'fixed':
                 pass  # Keep original size
 
-            # Apply max and min limits
+            # Apply max and min limits (in portfolio fraction space)
             max_size = self.risk_parameters['max_position_size']
             min_size = self.risk_parameters['min_position_size']
 
@@ -488,6 +535,18 @@ class RiskManager:
 
             if signal['quantity'] < min_size:
                 signal['quantity'] = min_size
+
+            # Convert portfolio fraction to share count
+            current_price = market_data.get('price', 0)
+            if current_price > 0 and self.portfolio_value > 0:
+                dollar_amount = signal['quantity'] * self.portfolio_value
+                share_count = int(dollar_amount / current_price)
+                if share_count < 1:
+                    share_count = 1
+                signal['quantity'] = share_count
+            else:
+                self.logger.warning("Cannot convert fraction to shares — missing price or portfolio value")
+                signal['quantity'] = 1  # Minimum safe default
 
             return signal
 
@@ -519,9 +578,28 @@ class RiskManager:
             return signal
 
     def _kelly_position_sizing(self, signal: Dict, market_data: Dict) -> Dict:
-        """Calculate position size using Kelly criterion."""
+        """
+        Calculate position size using Kelly criterion.
+        Falls back to volatility sizing if insufficient trade history.
+        Requires at least MIN_KELLY_TRADES realized trades for valid estimation.
+        """
+        MIN_KELLY_TRADES = 30
+
         try:
             symbol = signal['symbol']
+
+            # Check if we have enough trade history for reliable Kelly estimation
+            symbol_trades = [
+                t for t in self.daily_stats['trades'][-200:]
+                if t.get('symbol') == symbol and 'pnl' in t
+            ]
+
+            if len(symbol_trades) < MIN_KELLY_TRADES:
+                self.logger.debug(
+                    f"Insufficient trades for Kelly sizing ({len(symbol_trades)}/{MIN_KELLY_TRADES}), "
+                    f"falling back to volatility sizing"
+                )
+                return self._volatility_position_sizing(signal, market_data)
 
             # Estimate win rate and average win/loss from recent trades
             win_rate = self._estimate_win_rate(symbol)
@@ -553,43 +631,43 @@ class RiskManager:
             return signal
 
     def _estimate_win_rate(self, symbol: str) -> float:
-        """Estimate win rate from recent trades."""
+        """Estimate win rate from recent realized trades."""
         recent_trades = [
-            t for t in self.daily_stats['trades'][-50:]
-            if t.get('symbol') == symbol
+            t for t in self.daily_stats['trades'][-200:]
+            if t.get('symbol') == symbol and 'pnl' in t
         ]
 
         if not recent_trades:
-            return 0.55  # Default assumption
+            return 0.50  # Conservative default (coin flip)
 
         winning_trades = sum(1 for t in recent_trades if t.get('pnl', 0) > 0)
         return winning_trades / len(recent_trades)
 
     def _estimate_avg_win(self, symbol: str) -> float:
-        """Estimate average winning trade size."""
+        """Estimate average winning trade size as fraction of portfolio."""
         recent_trades = [
-            t for t in self.daily_stats['trades'][-50:]
+            t for t in self.daily_stats['trades'][-200:]
             if t.get('symbol') == symbol and t.get('pnl', 0) > 0
         ]
 
         if not recent_trades:
-            return 0.02  # Default 2%
+            return 0.01  # Conservative default 1%
 
         avg_win = sum(t['pnl'] for t in recent_trades) / len(recent_trades)
-        return avg_win / self.portfolio_value if self.portfolio_value > 0 else 0.02
+        return avg_win / self.portfolio_value if self.portfolio_value > 0 else 0.01
 
     def _estimate_avg_loss(self, symbol: str) -> float:
-        """Estimate average losing trade size."""
+        """Estimate average losing trade size as fraction of portfolio."""
         recent_trades = [
-            t for t in self.daily_stats['trades'][-50:]
+            t for t in self.daily_stats['trades'][-200:]
             if t.get('symbol') == symbol and t.get('pnl', 0) < 0
         ]
 
         if not recent_trades:
-            return -0.015  # Default 1.5%
+            return -0.01  # Conservative default 1%
 
         avg_loss = sum(t['pnl'] for t in recent_trades) / len(recent_trades)
-        return avg_loss / self.portfolio_value if self.portfolio_value > 0 else -0.015
+        return avg_loss / self.portfolio_value if self.portfolio_value > 0 else -0.01
 
     def _adjust_risk_levels(self, signal: Dict, market_data: Dict) -> Dict:
         """Adjust stop loss and take profit based on ATR."""
@@ -632,6 +710,9 @@ class RiskManager:
         """
         with self._lock:
             try:
+                # Reset daily stats at midnight UTC
+                self._reset_daily_stats_if_needed()
+
                 risk_metrics = {}
 
                 # Calculate all risk metrics
@@ -649,6 +730,10 @@ class RiskManager:
                 # Check for risk events
                 risk_events = self._check_risk_events(risk_metrics, positions)
                 self.risk_events.extend(risk_events)
+
+                # Notify registered risk callbacks
+                for event in risk_events:
+                    self._notify_risk_callbacks(event)
 
                 # Record metrics history
                 self.metrics_history.append({
@@ -697,29 +782,34 @@ class RiskManager:
 
     def _calculate_var(self, positions: Dict, market_data: Dict, confidence: float) -> float:
         """
-        Calculate Value at Risk using historical simulation method.
-        More robust than parametric VaR.
+        Calculate Value at Risk using parametric method.
+        VaR = z_score * portfolio_volatility * portfolio_value * sqrt(horizon)
+
+        Args:
+            positions: Current portfolio positions
+            market_data: Current market data per symbol
+            confidence: Confidence level (e.g. 0.95 for 95%)
+
+        Returns:
+            VaR in absolute dollar terms
         """
         try:
             if self.portfolio_value == 0:
                 return 0.0
 
-            # Get historical returns from metrics
-            returns = []
-            for record in list(self.metrics_history)[-252:]:  # ~1 year of data
-                if 'metrics' in record and 'portfolio_volatility' in record['metrics']:
-                    returns.append(record['metrics']['portfolio_volatility'])
-
-            if len(returns) < 30:
+            # Calculate current portfolio volatility
+            portfolio_vol = self._calculate_portfolio_volatility(positions, market_data)
+            if portfolio_vol <= 0:
                 return 0.0
 
-            returns = np.array(returns)
+            # Z-score for the given confidence level
+            from scipy.stats import norm
+            z_score = norm.ppf(confidence)
 
-            # Calculate VaR
-            var = np.percentile(returns, (1 - confidence) * 100)
-            var_abs = abs(var * self.portfolio_value)
+            # 1-day VaR (horizon = 1 day)
+            var_abs = z_score * portfolio_vol * self.portfolio_value
 
-            return var_abs
+            return abs(var_abs)
 
         except Exception as e:
             self.logger.error(f"Error calculating VaR: {e}")
@@ -752,7 +842,7 @@ class RiskManager:
 
         correlations = []
         for i, sym1 in enumerate(symbols):
-            for sym2 in symbols[i+1:]:
+            for sym2 in symbols[i + 1:]:
                 correlation = self._calculate_real_correlation(sym1, sym2)
                 correlations.append(abs(correlation))
 
