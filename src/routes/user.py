@@ -7,20 +7,18 @@ import os
 import sys
 import logging
 from datetime import datetime, timezone, timedelta
-from functools import wraps
 
 from flask import Blueprint, request, jsonify, g
 from flask_cors import cross_origin
-from werkzeug.security import check_password_hash
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from src.models.user import db, User, AuditLog
 from src.middleware.auth import (
     token_manager, create_token, require_auth, require_admin,
-    generate_api_key, hash_api_key, api_key_manager
+    generate_api_key, hash_api_key
 )
-from src.middleware.security import ip_manager, InputSanitizer
+from src.middleware.security import ip_manager
 from src.utils.validators import validate_login, validate_registration
 from src.utils.logger import get_audit_logger
 

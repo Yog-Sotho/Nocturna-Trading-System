@@ -6,22 +6,15 @@ Production-grade endpoints with authentication, validation, and rate limiting.
 import os
 import sys
 import logging
-import json
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+from typing import Any, Optional
 
 from flask import Blueprint, request, jsonify, g
-from flask_cors import cross_origin
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from src.core.trading_engine import TradingEngine, TradingEngineState
-from src.core.market_data import MarketDataHandler
-from src.core.strategy_manager import StrategyManager, TradingMode, MarketState
-from src.core.order_manager import OrderExecutionManager
-from src.core.risk_manager import RiskManager, RiskLevel
 from src.middleware.auth import require_auth, require_admin, require_trading_permissions
-from src.middleware.security import InputSanitizer, ip_manager
 from src.utils.validators import (
     validate_config_input,
     validate_trading_signal,
