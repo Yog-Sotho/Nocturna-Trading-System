@@ -36,8 +36,8 @@ class SecureLogFormatter(logging.Formatter):
     # Date format for logs
     DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
 
-    def __init__(self, include_caller_info: bool = True):
-        super().__init__(datefmt=self.DATE_FORMAT)
+    def __init__(self, fmt: str = None, include_caller_info: bool = True):
+        super().__init__(fmt=fmt, datefmt=self.DATE_FORMAT)
         self.include_caller_info = include_caller_info
 
     def format(self, record: logging.LogRecord) -> str:
@@ -45,9 +45,11 @@ class SecureLogFormatter(logging.Formatter):
         # Sanitize the message
         record.msg = self._sanitize_message(str(record.msg))
 
-        # Add caller info if enabled
+        # Add caller info (always set to avoid KeyError in format string)
         if self.include_caller_info:
             record.caller_info = self._get_caller_info(record)
+        else:
+            record.caller_info = ""
 
         return super().format(record)
 
@@ -193,7 +195,7 @@ def setup_secure_logging(app):
     )
 
     # Create secure formatter
-    secure_formatter = SecureLogFormatter(include_caller_info=True)
+    secure_formatter = SecureLogFormatter(fmt=log_format, include_caller_info=True)
 
     # Configure root logger
     root_logger = logging.getLogger()

@@ -6,11 +6,10 @@ Production-grade input validation using Pydantic schemas.
 import os
 import sys
 import re
-from typing import Any, Dict, List, Optional, Union
-from datetime import datetime
+from typing import Dict, List, Optional
 from enum import Enum
 
-from pydantic import BaseModel, Field, field_validator, model_validator, ValidationError, ConfigError
+from pydantic import BaseModel, Field, field_validator, model_validator, ValidationError
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
@@ -454,10 +453,10 @@ def validate_config_input(data: Dict) -> tuple[bool, Optional[ConfigurationSchem
         return True, config, []
     except ValidationError as e:
         errors = [{
-            'field': '.'.join(str(p) for p in e['loc']),
-            'message': e['msg'],
-            'type': e['type']
-        } for e in e.errors()]
+            'field': '.'.join(str(p) for p in err['loc']),
+            'message': err['msg'],
+            'type': err['type']
+        } for err in e.errors()]
         return False, None, errors
 
 
