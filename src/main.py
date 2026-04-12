@@ -9,23 +9,17 @@ import logging
 import secrets
 import time as time_module
 from datetime import datetime, timedelta, timezone
-from functools import wraps
 
 # DON'T CHANGE THIS !!!
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from flask import Flask, request, g, jsonify
+from flask import Flask, request, g, jsonify, send_from_directory
 from flask_cors import CORS
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
-from werkzeug.security import safe_str_cmp
 
 from src.models.user import db
 from src.routes.user import user_bp
 from src.routes.trading import trading_bp
-from src.middleware.auth import require_auth, require_admin, create_token, verify_token
 from src.middleware.security import setup_security_headers, setup_rate_limiting
-from src.utils.validators import validate_config_input
 from src.utils.logger import setup_secure_logging
 
 
@@ -315,7 +309,6 @@ if __name__ == '__main__':
     # PRODUCTION WARNING
     # =============================================================================
     if os.environ.get('FLASK_ENV') == 'production':
-        import logging
         logging.critical(
             "=" * 80 + "\n"
             "WARNING: Running Flask development server in PRODUCTION mode!\n"
@@ -329,6 +322,5 @@ if __name__ == '__main__':
         host=os.environ.get('HOST', '0.0.0.0'),
         port=int(os.environ.get('PORT', 5000)),
         debug=app.config['DEBUG'],
-        threaded=True,
-        request_timeout=120
+        threaded=True
     )
