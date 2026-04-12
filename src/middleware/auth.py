@@ -5,17 +5,14 @@ Production-grade JWT authentication and authorization.
 
 import os
 import sys
-import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from typing import Optional, Dict, Any, Callable
 
 from flask import request, g, jsonify, current_app
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 import jwt
-from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.security import generate_password_hash
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
@@ -281,7 +278,7 @@ def require_auth(f: Callable) -> Callable:
 
         try:
             # Verify and decode token
-            payload = token_manager.verify_token(token, token_type='access')
+            payload = token_manager.verify_token(token, token_type=token_type)
 
             # Set user context
             g.user_id = payload.get('sub')
@@ -494,7 +491,7 @@ class APIKeyManager:
         # Check expiration
         if metadata.get('expires_at'):
             if datetime.now(timezone.utc) > metadata['expires_at']:
-                current_app.logger.warning(f"Expired API key used")
+                current_app.logger.warning("Expired API key used")
                 return None
 
         # Update usage statistics

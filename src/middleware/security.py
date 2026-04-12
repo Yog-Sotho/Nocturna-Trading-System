@@ -5,15 +5,13 @@ Production-grade security headers, rate limiting, and protection mechanisms.
 
 import os
 import sys
-import logging
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 from functools import wraps
 
 from flask import Flask, request, g, jsonify, current_app
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-from werkzeug.security import safe_str_cmp
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
