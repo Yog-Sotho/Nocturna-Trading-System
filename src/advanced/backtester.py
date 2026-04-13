@@ -5,12 +5,11 @@ Sistema completo per il backtesting delle strategie di trading.
 
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 import logging
 from dataclasses import dataclass
 from enum import Enum
-import json
 
 class OrderType(Enum):
     MARKET = "market"
@@ -84,6 +83,7 @@ class AdvancedBacktester:
         self.commission_rate = config.get('commission_rate', 0.001)  # 0.1%
         self.slippage_rate = config.get('slippage_rate', 0.0005)  # 0.05%
         self.min_trade_size = config.get('min_trade_size', 100.0)
+        self.annualization_factor = config.get('trading_days_per_year', 252)  # 252 for equities, 365 for crypto
         
         # Stato del backtest
         self.reset()
@@ -211,8 +211,7 @@ class AdvancedBacktester:
         high = market_data['high']
         low = market_data['low']
         open_price = market_data['open']
-        close = market_data['close']
-        
+
         if order.type == OrderType.MARKET:
             return open_price  # Market orders si riempiono al prezzo di apertura
         
@@ -278,20 +277,22 @@ class AdvancedBacktester:
         else:
             new_quantity = position.quantity - quantity
         
-        # Calcola nuovo prezzo medio
+        # Calculate new average price
         if new_quantity == 0:
-            # Posizione chiusa - calcola PnL realizzato
-            if position.quantity > 0:  # Era long
-                realized_pnl = (price - position.avg_price) * quantity
-            else:  # Era short
-                realized_pnl = (position.avg_price - price) * quantity
-            
+            # Position closed — calculate realized P&L
+            entry_price = position.avg_price  # Save BEFORE zeroing
+            if position.quantity > 0:  # Was long
+                realized_pnl = (price - entry_price) * quantity
+            else:  # Was short
+                realized_pnl = (entry_price - price) * quantity
+
             position.realized_pnl += realized_pnl
-            position.avg_price = 0
-            
-            # Crea trade record
-            self._record_trade(symbol, side, quantity, position.avg_price, 
+
+            # Record trade with correct entry price
+            self._record_trade(symbol, side, quantity, entry_price,
                              price, realized_pnl)
+
+            position.avg_price = 0  # Zero AFTER recording
             
         elif (position.quantity > 0 and new_quantity > 0) or \
              (position.quantity < 0 and new_quantity < 0):
@@ -391,23 +392,24 @@ class AdvancedBacktester:
             return None
     
     def _update_equity_curve(self, market_data: pd.Series):
-        """Aggiorna la curva dell'equity."""
-        # Calcola valore totale portfolio
+        """Update equity curve with correct portfolio valuation."""
+        # Total portfolio value = cash + sum(qty * current_price)
         total_value = self.current_capital
-        
+
         for position in self.positions.values():
             if position.quantity != 0:
-                position_value = position.quantity * market_data['close']
-                total_value += position_value + position.unrealized_pnl
-        
-        # Aggiorna drawdown
+                # Market value IS the position value — do not add unrealized_pnl separately
+                total_value += position.quantity * market_data['close']
+
+        # Update drawdown
         if total_value > self.peak_equity:
             self.peak_equity = total_value
-        
-        current_drawdown = (self.peak_equity - total_value) / self.peak_equity
+
+        current_drawdown = (self.peak_equity - total_value) / self.peak_equity if self.peak_equity > 0 else 0
+
         self.max_drawdown = max(self.max_drawdown, current_drawdown)
-        
-        # Aggiungi punto alla curva
+
+        # Add point to curve
         self.equity_curve.append({
             'timestamp': self.current_time,
             'equity': total_value,
@@ -429,16 +431,16 @@ class AdvancedBacktester:
             equity_series = pd.Series([point['equity'] for point in self.equity_curve])
             returns = equity_series.pct_change().dropna()
             
-            # Sharpe ratio (assumendo risk-free rate = 0)
+            # Sharpe ratio (assuming risk-free rate = 0)
             if len(returns) > 1 and returns.std() > 0:
-                sharpe_ratio = returns.mean() / returns.std() * np.sqrt(252)
+                sharpe_ratio = returns.mean() / returns.std() * np.sqrt(self.annualization_factor)
             else:
                 sharpe_ratio = 0.0
             
             # Sortino ratio
             negative_returns = returns[returns < 0]
             if len(negative_returns) > 1 and negative_returns.std() > 0:
-                sortino_ratio = returns.mean() / negative_returns.std() * np.sqrt(252)
+                sortino_ratio = returns.mean() / negative_returns.std() * np.sqrt(self.annualization_factor)
             else:
                 sortino_ratio = 0.0
             
@@ -568,35 +570,45 @@ class AdvancedBacktester:
     
     def _shuffle_data_blocks(self, data: pd.DataFrame, block_size: int = 20) -> pd.DataFrame:
         """
-        Shuffle dei dati in blocchi per mantenere correlazioni temporali locali.
-        
+        Shuffle data in blocks to maintain local temporal correlations
+        while creating genuinely different return sequences for Monte Carlo.
+
         Args:
-            data: Dati originali
-            block_size: Dimensione dei blocchi
-            
+            data: Original data
+            block_size: Block size
+
         Returns:
-            Dati shuffled
+            Shuffled data with synthetic sequential index
         """
         try:
-            # Dividi in blocchi
+            # Split into blocks
             blocks = []
             for i in range(0, len(data), block_size):
                 block = data.iloc[i:i+block_size].copy()
                 blocks.append(block)
-            
-            # Shuffle dei blocchi
+
+            # Shuffle blocks
             np.random.shuffle(blocks)
-            
-            # Ricostruisci DataFrame
-            shuffled_data = pd.concat(blocks, ignore_index=False)
-            
-            # Riordina index temporalmente
-            shuffled_data = shuffled_data.sort_index()
-            
+
+            # Reconstruct DataFrame with new sequential index
+            # Do NOT sort_index — that would undo the shuffle
+            shuffled_data = pd.concat(blocks, ignore_index=True)
+
+            # Create synthetic sequential timestamps for the backtester
+            if len(data.index) > 0 and hasattr(data.index[0], 'timestamp'):
+                # Preserve the original time spacing but in new block order
+                original_freq = pd.infer_freq(data.index)
+                if original_freq:
+                    shuffled_data.index = pd.date_range(
+                        start=data.index[0],
+                        periods=len(shuffled_data),
+                        freq=original_freq
+                    )
+
             return shuffled_data
-            
+
         except Exception as e:
-            self.logger.error(f"Errore nello shuffle dati: {e}")
+            self.logger.error(f"Error in data block shuffle: {e}")
             return data
     
     def walk_forward_analysis(self, data: pd.DataFrame, strategy_function: callable,
@@ -622,9 +634,9 @@ class AdvancedBacktester:
             start_idx = 0
             
             while start_idx + train_period + test_period <= len(data):
-                # Dati di training
+                # Training data (reserved for parameter optimization in future)
                 train_end = start_idx + train_period
-                train_data = data.iloc[start_idx:train_end]
+                _train_data = data.iloc[start_idx:train_end]  # noqa: F841 — needed for optimization
                 
                 # Dati di test
                 test_end = train_end + test_period

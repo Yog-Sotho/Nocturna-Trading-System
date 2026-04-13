@@ -6,12 +6,10 @@ Utilizza algoritmi di ML per ottimizzare automaticamente i parametri di trading.
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_squared_error, r2_score
 import logging
-from typing import Dict, List, Tuple, Optional
-from datetime import datetime, timedelta
+from typing import Dict, List
+from datetime import datetime, timezone
 import json
 
 class MLOptimizer:
@@ -78,109 +76,125 @@ class MLOptimizer:
         """
         try:
             features = []
-            
-            # Features di mercato
+
+            # Market features
             if len(market_data) > 0:
-                # Volatilità
+                # Volatility
                 returns = market_data['close'].pct_change().dropna()
-                volatility = returns.std() * np.sqrt(252)  # Annualizzata
+                volatility = returns.std() * np.sqrt(252)  # Annualized
                 features.append(volatility)
-                
+
                 # Trend strength
                 sma_20 = market_data['close'].rolling(20).mean()
                 sma_50 = market_data['close'].rolling(50).mean()
-                trend_strength = (sma_20.iloc[-1] - sma_50.iloc[-1]) / sma_50.iloc[-1]
+                sma_50_last = sma_50.iloc[-1]
+                trend_strength = (sma_20.iloc[-1] - sma_50_last) / sma_50_last if sma_50_last != 0 else 0.0
                 features.append(trend_strength)
-                
+
                 # Volume profile
                 avg_volume = market_data['volume'].rolling(20).mean().iloc[-1]
                 current_volume = market_data['volume'].iloc[-1]
                 volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
                 features.append(volume_ratio)
-                
-                # ATR normalizzato
+
+                # Normalized ATR
                 high_low = market_data['high'] - market_data['low']
                 high_close = np.abs(market_data['high'] - market_data['close'].shift())
                 low_close = np.abs(market_data['low'] - market_data['close'].shift())
                 true_range = np.maximum(high_low, np.maximum(high_close, low_close))
                 atr = true_range.rolling(14).mean().iloc[-1]
-                atr_normalized = atr / market_data['close'].iloc[-1]
+                close_price = market_data['close'].iloc[-1]
+                atr_normalized = atr / close_price if close_price > 0 else 0.0
                 features.append(atr_normalized)
-                
-                # RSI
+
+                # RSI — with division-by-zero guard
                 delta = market_data['close'].diff()
                 gain = (delta.where(delta > 0, 0)).rolling(14).mean()
                 loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-                rs = gain / loss
+                rs = gain / loss.replace(0, np.nan)
                 rsi = 100 - (100 / (1 + rs))
-                features.append(rsi.iloc[-1] / 100.0)  # Normalizzato 0-1
-                
-                # Bollinger Bands position
+                rsi_value = rsi.iloc[-1]
+                features.append(rsi_value / 100.0 if not np.isnan(rsi_value) else 0.5)
+
+                # Bollinger Bands position — with zero-width guard
                 bb_middle = market_data['close'].rolling(20).mean()
                 bb_std = market_data['close'].rolling(20).std()
                 bb_upper = bb_middle + (bb_std * 2)
                 bb_lower = bb_middle - (bb_std * 2)
-                bb_position = (market_data['close'].iloc[-1] - bb_lower.iloc[-1]) / (bb_upper.iloc[-1] - bb_lower.iloc[-1])
+                bb_width = bb_upper.iloc[-1] - bb_lower.iloc[-1]
+                if bb_width > 0:
+                    bb_position = (close_price - bb_lower.iloc[-1]) / bb_width
+                else:
+                    bb_position = 0.5  # Midpoint when bands are flat
                 features.append(bb_position)
-                
+
             else:
-                # Valori di default se non ci sono dati
+                # Default values when no data available
                 features.extend([0.2, 0.0, 1.0, 0.02, 0.5, 0.5])
-            
-            # Features dei parametri attuali
+
+            # Current parameter features (normalized to 0-1)
             for param_name in self.parameter_ranges:
                 if param_name in current_params:
                     param_value = current_params[param_name]
                     param_min, param_max = self.parameter_ranges[param_name]
-                    normalized_value = (param_value - param_min) / (param_max - param_min)
+                    param_range = param_max - param_min
+                    normalized_value = (param_value - param_min) / param_range if param_range > 0 else 0.5
                     features.append(normalized_value)
                 else:
-                    features.append(0.5)  # Valore medio se parametro mancante
-            
-            # Features temporali
-            now = datetime.now()
-            hour_of_day = now.hour / 24.0
-            day_of_week = now.weekday() / 6.0
-            features.extend([hour_of_day, day_of_week])
-            
+                    features.append(0.5)
+
+            # NOTE: Time-of-optimization features (hour, day_of_week) intentionally
+            # removed — they caused data leakage by correlating wall-clock time with
+            # performance, which is pure noise that leads to overfitting.
+
             return np.array(features).reshape(1, -1)
-            
+
         except Exception as e:
-            self.logger.error(f"Errore nella generazione features: {e}")
-            # Ritorna features di default
-            return np.zeros((1, len(self.parameter_ranges) + 8)).reshape(1, -1)
+            self.logger.error(f"Error generating features: {e}")
+            # Return default features (6 market + N params)
+            n_features = 6 + len(self.parameter_ranges)
+            return np.zeros((1, n_features)).reshape(1, -1)
     
     def calculate_performance_score(self, backtest_results: Dict) -> float:
         """
-        Calcola uno score di performance dai risultati di backtest.
-        
-        Args:
-            backtest_results: Risultati del backtest
-            
+        Calculate performance score from backtest results.
+        All components normalized to [0,1] before weighting to prevent scale bias.
+
         Returns:
-            Score di performance (più alto = migliore)
+            Score (higher = better)
         """
         try:
-            # Componenti dello score
             total_return = backtest_results.get('total_return', 0.0)
             sharpe_ratio = backtest_results.get('sharpe_ratio', 0.0)
             max_drawdown = backtest_results.get('max_drawdown', 0.0)
             win_rate = backtest_results.get('win_rate', 0.0)
             profit_factor = backtest_results.get('profit_factor', 1.0)
-            
-            # Score composito con pesi
+
+            # Normalize each component to [0, 1]
+            # Return: clip to [-1, 2] then map to [0, 1]
+            norm_return = np.clip((total_return + 1.0) / 3.0, 0, 1)
+            # Sharpe: clip to [-2, 4] then map to [0, 1]
+            norm_sharpe = np.clip((sharpe_ratio + 2.0) / 6.0, 0, 1)
+            # Drawdown: 0% = perfect (1.0), 50% = terrible (0.0)
+            norm_drawdown = np.clip(1.0 - abs(max_drawdown) * 2.0, 0, 1)
+            # Win rate: already 0-1
+            norm_win_rate = np.clip(win_rate, 0, 1)
+            # Profit factor: clip to [0, 5] then map to [0, 1]
+            norm_pf = np.clip(profit_factor / 5.0, 0, 1)
+
+            # Weighted composite score (all inputs now on same scale)
             score = (
-                total_return * 0.3 +
-                sharpe_ratio * 0.25 +
-                (1.0 - abs(max_drawdown)) * 0.2 +  # Penalizza drawdown
-                win_rate * 0.15 +
-                (profit_factor - 1.0) * 0.1
+                norm_return * 0.30 +
+                norm_sharpe * 0.25 +
+                norm_drawdown * 0.20 +
+                norm_win_rate * 0.15 +
+                norm_pf * 0.10
             )
-            
+
             return score
-            
+
         except Exception as e:
-            self.logger.error(f"Errore nel calcolo score: {e}")
+            self.logger.error(f"Error calculating performance score: {e}")
             return -1.0
     
     def optimize_parameters(self, market_data: pd.DataFrame, 
@@ -251,7 +265,7 @@ class MLOptimizer:
             
             # Aggiungi alla storia
             self.optimization_history.append({
-                'timestamp': datetime.now(),
+                'timestamp': datetime.now(timezone.utc),
                 'best_params': best_params,
                 'best_score': best_score,
                 'iterations': n_iterations
@@ -339,21 +353,28 @@ class MLOptimizer:
         try:
             adjusted_params = current_params.copy()
             
-            # Analizza performance
+            # Analyze performance
             win_rate = recent_performance.get('win_rate', 0.5)
             avg_return = recent_performance.get('avg_return', 0.0)
             volatility = recent_performance.get('volatility', 0.0)
-            
-            # Aggiustamenti adattivi
-            if win_rate < 0.4:  # Win rate basso
-                # Aumenta conservatività
+
+            # Adaptive adjustments based on win rate
+            if win_rate < 0.4:
+                # Low win rate — increase conservatism
                 adjusted_params['max_position_size'] *= 0.9
-                adjusted_params['atr_mult_sl'] *= 1.1  # Stop loss più stretto
-                
-            elif win_rate > 0.7:  # Win rate alto
-                # Aumenta aggressività
+                adjusted_params['atr_mult_sl'] *= 1.1
+            elif win_rate > 0.7:
+                # High win rate — increase aggressiveness slightly
                 adjusted_params['max_position_size'] *= 1.05
-                adjusted_params['atr_mult_tp'] *= 1.1  # Take profit più ampio
+                adjusted_params['atr_mult_tp'] *= 1.1
+
+            # Adjust based on average return
+            if avg_return < -0.02:
+                # Negative returns — tighten risk controls
+                adjusted_params['max_position_size'] *= 0.85
+            elif avg_return > 0.05:
+                # Strong positive returns — widen take profit
+                adjusted_params['atr_mult_tp'] *= 1.05
             
             if volatility > 0.3:  # Alta volatilità
                 # Parametri più conservativi
@@ -404,12 +425,11 @@ class MLOptimizer:
             # Feature importance
             importance = model.feature_importances_
             
-            # Mappa alle feature names
-            feature_names = list(self.parameter_ranges.keys()) + [
-                'volatility', 'trend_strength', 'volume_ratio', 
-                'atr_normalized', 'rsi', 'bb_position',
-                'hour_of_day', 'day_of_week'
-            ]
+            # Map to feature names (6 market features + N param features, no time features)
+            feature_names = [
+                'volatility', 'trend_strength', 'volume_ratio',
+                'atr_normalized', 'rsi', 'bb_position'
+            ] + list(self.parameter_ranges.keys())
             
             importance_dict = {}
             for i, name in enumerate(feature_names[:len(importance)]):

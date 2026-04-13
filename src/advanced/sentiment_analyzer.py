@@ -4,12 +4,10 @@ Analizza il sentiment del mercato da news, social media e altri dati testuali.
 """
 
 import numpy as np
-import pandas as pd
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import re
-import json
 from dataclasses import dataclass
 from enum import Enum
 
@@ -29,7 +27,7 @@ class SentimentData:
     score: float
     confidence: float
     timestamp: datetime
-    metadata: Dict = None
+    metadata: Optional[Dict] = None
 
 class SentimentAnalyzer:
     """
@@ -40,13 +38,22 @@ class SentimentAnalyzer:
     def __init__(self, config: Dict):
         self.config = config
         self.logger = logging.getLogger(__name__)
-        
-        # Dizionari di sentiment
+
+        # Primary scorer: VADER (if available)
+        self.vader_analyzer = None
+        try:
+            from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+            self.vader_analyzer = SentimentIntensityAnalyzer()
+            self.logger.info("VADER sentiment analyzer loaded as primary scorer")
+        except ImportError:
+            self.logger.warning("vaderSentiment not installed — using word-list fallback only")
+
+        # Supplemental word-list dictionaries
         self.positive_words = self._load_positive_words()
         self.negative_words = self._load_negative_words()
         self.financial_terms = self._load_financial_terms()
-        
-        # Pesi per diverse fonti
+
+        # Source weights for aggregation
         self.source_weights = {
             'news': 1.0,
             'twitter': 0.7,
@@ -54,12 +61,12 @@ class SentimentAnalyzer:
             'analyst_reports': 1.2,
             'earnings_calls': 1.1
         }
-        
-        # Cache per sentiment
+
+        # Cache and history
         self.sentiment_cache = {}
         self.sentiment_history = []
-        
-        self.logger.info("Sentiment Analyzer inizializzato")
+
+        self.logger.info("Sentiment Analyzer initialized")
     
     def _load_positive_words(self) -> set:
         """Carica dizionario di parole positive."""
@@ -73,14 +80,14 @@ class SentimentAnalyzer:
         return positive_words
     
     def _load_negative_words(self) -> set:
-        """Carica dizionario di parole negative."""
+        """Load negative sentiment words (financial context)."""
         negative_words = {
             'bearish', 'negative', 'decline', 'loss', 'fall', 'decrease',
             'weak', 'miss', 'underperform', 'downgrade', 'sell', 'crash',
             'plunge', 'collapse', 'concern', 'worry', 'risk', 'threat',
             'disappointing', 'poor', 'terrible', 'awful', 'pessimistic',
             'recession', 'crisis', 'volatility', 'uncertainty', 'correction',
-            'breakdown', 'resistance', 'support', 'oversold', 'overbought'
+            'breakdown'
         }
         return negative_words
     
@@ -105,20 +112,20 @@ class SentimentAnalyzer:
     
     def analyze_text(self, text: str, symbol: str = None) -> Dict:
         """
-        Analizza il sentiment di un testo.
-        
+        Analyze text sentiment using VADER (primary) + financial word-list (supplemental).
+
         Args:
-            text: Testo da analizzare
-            symbol: Simbolo del titolo (opzionale)
-            
+            text: Text to analyze
+            symbol: Stock symbol (optional)
+
         Returns:
-            Risultati dell'analisi sentiment
+            Sentiment analysis results
         """
         try:
-            # Preprocessing del testo
+            # Preprocessing
             cleaned_text = self._preprocess_text(text)
             words = cleaned_text.split()
-            
+
             if not words:
                 return {
                     'score': 0.0,
@@ -126,55 +133,69 @@ class SentimentAnalyzer:
                     'classification': SentimentScore.NEUTRAL.name,
                     'word_count': 0
                 }
-            
-            # Calcola score base
+
+            # VADER score (primary — if available)
+            vader_score = 0.0
+            vader_available = False
+            if self.vader_analyzer:
+                vader_result = self.vader_analyzer.polarity_scores(text)
+                vader_score = vader_result['compound']  # Already -1 to +1
+                vader_available = True
+
+            # Word-list score (supplemental)
             positive_score = 0
             negative_score = 0
             total_weight = 0
-            
+
             for word in words:
                 word_lower = word.lower()
                 weight = 1.0
-                
-                # Applica peso per termini finanziari
+
+                # Apply financial term weight
                 if word_lower in self.financial_terms:
                     weight = self.financial_terms[word_lower]
-                
+
                 if word_lower in self.positive_words:
                     positive_score += weight
                     total_weight += weight
                 elif word_lower in self.negative_words:
                     negative_score += weight
                     total_weight += weight
-            
-            # Calcola score normalizzato
+
             if total_weight > 0:
-                raw_score = (positive_score - negative_score) / total_weight
+                wordlist_score = (positive_score - negative_score) / total_weight
             else:
-                raw_score = 0.0
-            
-            # Applica modificatori contestuali
-            raw_score = self._apply_contextual_modifiers(cleaned_text, raw_score)
-            
-            # Normalizza score tra -1 e 1
-            normalized_score = np.tanh(raw_score)
-            
-            # Calcola confidence
+                wordlist_score = 0.0
+
+            # Apply contextual modifiers to word-list score
+            wordlist_score = self._apply_contextual_modifiers(cleaned_text, wordlist_score)
+            wordlist_score = np.tanh(wordlist_score)
+
+            # Blend: 70% VADER + 30% word-list (if VADER available)
+            if vader_available:
+                final_score = vader_score * 0.7 + wordlist_score * 0.3
+            else:
+                final_score = wordlist_score
+
+            # Confidence based on word coverage
             confidence = min(total_weight / len(words), 1.0)
-            
-            # Classifica sentiment
-            classification = self._classify_sentiment(normalized_score)
-            
+            if vader_available:
+                confidence = min(confidence + 0.3, 1.0)  # Boost confidence with VADER
+
+            # Classify
+            classification = self._classify_sentiment(final_score)
+
             result = {
-                'score': normalized_score,
+                'score': final_score,
                 'confidence': confidence,
                 'classification': classification.name,
                 'word_count': len(words),
                 'positive_words': positive_score,
                 'negative_words': negative_score,
-                'financial_relevance': total_weight / len(words) if words else 0.0
+                'financial_relevance': total_weight / len(words) if words else 0.0,
+                'scorer': 'vader+wordlist' if vader_available else 'wordlist'
             }
-            
+
             return result
             
         except Exception as e:
@@ -206,40 +227,36 @@ class SentimentAnalyzer:
         return text.strip()
     
     def _apply_contextual_modifiers(self, text: str, base_score: float) -> float:
-        """Applica modificatori contestuali al score."""
+        """Apply contextual modifiers to sentiment score. Each modifier type applied once."""
         modified_score = base_score
-        
-        # Negazioni
+
+        # Negation — count occurrences, apply once (partial inversion)
         negation_patterns = [
-            r'not\s+\w+',
-            r'no\s+\w+',
-            r'never\s+\w+',
-            r'nothing\s+\w+',
-            r'none\s+\w+'
+            r'not\s+\w+', r'no\s+\w+', r'never\s+\w+',
+            r'nothing\s+\w+', r'none\s+\w+'
         ]
-        
-        for pattern in negation_patterns:
-            if re.search(pattern, text):
-                modified_score *= -0.5  # Inverte parzialmente il sentiment
-        
-        # Intensificatori
+        has_negation = any(re.search(p, text) for p in negation_patterns)
+        if has_negation:
+            modified_score *= -0.5  # Apply once regardless of how many negations
+
+        # Intensifiers — detect presence, apply single max boost
         intensifiers = ['very', 'extremely', 'highly', 'significantly', 'substantially']
-        for intensifier in intensifiers:
-            if intensifier in text:
-                modified_score *= 1.3
-        
-        # Diminutivi
+        has_intensifier = any(word in text for word in intensifiers)
+        if has_intensifier:
+            modified_score *= 1.3  # Single application
+
+        # Diminishers — detect presence, apply single reduction
         diminishers = ['slightly', 'somewhat', 'barely', 'hardly', 'scarcely']
-        for diminisher in diminishers:
-            if diminisher in text:
-                modified_score *= 0.7
-        
-        # Incertezza
+        has_diminisher = any(word in text for word in diminishers)
+        if has_diminisher:
+            modified_score *= 0.7  # Single application
+
+        # Uncertainty — detect presence, apply single dampening
         uncertainty_words = ['maybe', 'perhaps', 'possibly', 'might', 'could']
-        for word in uncertainty_words:
-            if word in text:
-                modified_score *= 0.8
-        
+        has_uncertainty = any(word in text for word in uncertainty_words)
+        if has_uncertainty:
+            modified_score *= 0.8  # Single application
+
         return modified_score
     
     def _classify_sentiment(self, score: float) -> SentimentScore:
@@ -275,7 +292,7 @@ class SentimentAnalyzer:
                 symbol = article.get('symbol', 'UNKNOWN')
                 title = article.get('title', '')
                 content = article.get('content', '')
-                timestamp = article.get('timestamp', datetime.now())
+                timestamp = article.get('timestamp', datetime.now(timezone.utc))
                 
                 # Combina titolo e contenuto
                 full_text = f"{title} {content}"
@@ -327,7 +344,7 @@ class SentimentAnalyzer:
                 'success': True,
                 'symbols': aggregated_results,
                 'total_articles': len(news_articles),
-                'analysis_timestamp': datetime.now().isoformat()
+                'analysis_timestamp': datetime.now(timezone.utc).isoformat()
             }
             
         except Exception as e:
@@ -348,7 +365,7 @@ class SentimentAnalyzer:
         """
         try:
             # Filtra sentiment history per simbolo e timeframe
-            cutoff_time = datetime.now() - timedelta(hours=lookback_hours)
+            cutoff_time = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
             
             relevant_sentiments = [
                 s for s in self.sentiment_history
@@ -364,7 +381,7 @@ class SentimentAnalyzer:
                 }
             
             # Calcola sentiment aggregato con decay temporale
-            current_time = datetime.now()
+            current_time = datetime.now(timezone.utc)
             weighted_scores = []
             weights = []
             
@@ -441,7 +458,7 @@ class SentimentAnalyzer:
                 text=text,
                 score=sentiment_result['score'],
                 confidence=sentiment_result['confidence'],
-                timestamp=datetime.now(),
+                timestamp=datetime.now(timezone.utc),
                 metadata=metadata or {}
             )
             
@@ -450,7 +467,7 @@ class SentimentAnalyzer:
             
             # Mantieni solo ultimi N giorni
             max_age = timedelta(days=7)
-            cutoff_time = datetime.now() - max_age
+            cutoff_time = datetime.now(timezone.utc) - max_age
             
             self.sentiment_history = [
                 s for s in self.sentiment_history
@@ -475,7 +492,7 @@ class SentimentAnalyzer:
         """
         try:
             # Filtra dati per simbolo e timeframe
-            cutoff_time = datetime.now() - timedelta(days=days)
+            cutoff_time = datetime.now(timezone.utc) - timedelta(days=days)
             
             symbol_sentiments = [
                 s for s in self.sentiment_history
@@ -571,7 +588,7 @@ class SentimentAnalyzer:
             for symbol, sentiments in symbol_groups.items():
                 recent_sentiments = [
                     s for s in sentiments
-                    if s.timestamp >= datetime.now() - timedelta(hours=24)
+                    if s.timestamp >= datetime.now(timezone.utc) - timedelta(hours=24)
                 ]
                 
                 if recent_sentiments:
@@ -589,7 +606,7 @@ class SentimentAnalyzer:
             # Statistiche globali
             all_recent = [
                 s for s in self.sentiment_history
-                if s.timestamp >= datetime.now() - timedelta(hours=24)
+                if s.timestamp >= datetime.now(timezone.utc) - timedelta(hours=24)
             ]
             
             global_stats = {
@@ -622,7 +639,7 @@ class SentimentAnalyzer:
             
             return {
                 'status': 'active',
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
                 'global_stats': global_stats,
                 'symbol_summaries': symbol_summaries
             }
