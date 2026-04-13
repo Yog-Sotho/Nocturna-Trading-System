@@ -4,14 +4,12 @@ Production-grade authentication and user management endpoints.
 """
 
 import os
-import sys
 import logging
 from datetime import datetime, timezone, timedelta
 
 from flask import Blueprint, request, jsonify, g
 from flask_cors import cross_origin
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from src.models.user import db, User, AuditLog
 from src.middleware.auth import (
@@ -439,9 +437,27 @@ def change_password(user_id):
             if not user.check_password(current_password):
                 return format_response(False, error='Current password incorrect', status_code=400)
 
-        # Validate new password strength
+        # Validate new password strength (same rules as registration)
+        import re
+        password_errors = []
         if len(new_password) < 12:
-            return format_response(False, error='New password must be at least 12 characters', status_code=400)
+            password_errors.append('Password must be at least 12 characters')
+        if not re.search(r'[A-Z]', new_password):
+            password_errors.append('Must contain at least one uppercase letter')
+        if not re.search(r'[a-z]', new_password):
+            password_errors.append('Must contain at least one lowercase letter')
+        if not re.search(r'\d', new_password):
+            password_errors.append('Must contain at least one number')
+        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', new_password):
+            password_errors.append('Must contain at least one special character')
+
+        if password_errors:
+            return format_response(
+                False,
+                error='Password does not meet strength requirements',
+                data={'password_errors': password_errors},
+                status_code=400
+            )
 
         user.set_password(new_password)
         db.session.commit()
