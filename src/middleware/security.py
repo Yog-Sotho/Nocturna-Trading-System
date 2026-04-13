@@ -4,7 +4,6 @@ Production-grade security headers, rate limiting, and protection mechanisms.
 """
 
 import os
-import sys
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional
 from functools import wraps
@@ -13,7 +12,6 @@ from flask import Flask, request, g, jsonify, current_app
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 
 # =============================================================================
@@ -142,11 +140,11 @@ def setup_security_headers(app: Flask) -> None:
         """Set security headers on all responses."""
 
         # =============================================================================
-        # CONTENT SECURITY POLICY
+        # CONTENT SECURITY POLICY — no unsafe-inline/unsafe-eval in script-src
         # =============================================================================
         csp_parts = [
             "default-src 'self'",
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+            "script-src 'self'",
             "style-src 'self' 'unsafe-inline'",
             "img-src 'self' data: https:",
             "font-src 'self' data:",
@@ -157,13 +155,20 @@ def setup_security_headers(app: Flask) -> None:
             "object-src 'none'",
         ]
 
-        # Add API domain if configured
+        # Add API domain if configured — use proper connect-src directive
         api_domain = os.environ.get('API_DOMAIN')
         if api_domain:
-            csp_parts.append(f"api {api_domain}")
-            csp_parts.append(f"ws {api_domain.replace('https', 'wss')}")
+            # Replace the connect-src to include the API domain
+            csp_parts = [p for p in csp_parts if not p.startswith("connect-src")]
+            ws_domain = api_domain.replace('https', 'wss').replace('http', 'ws')
+            csp_parts.append(f"connect-src 'self' {api_domain} {ws_domain}")
 
         response.headers['Content-Security-Policy'] = '; '.join(csp_parts)
+
+        # =============================================================================
+        # HSTS — enforce HTTPS
+        # =============================================================================
+        response.headers['Strict-Transport-Security'] = 'max-age=63072000; includeSubDomains; preload'
 
         # =============================================================================
         # OTHER SECURITY HEADERS

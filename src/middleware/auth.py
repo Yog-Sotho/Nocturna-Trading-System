@@ -4,7 +4,6 @@ Production-grade JWT authentication and authorization.
 """
 
 import os
-import sys
 import secrets
 from datetime import datetime, timedelta, timezone
 from functools import wraps
@@ -14,7 +13,6 @@ from flask import request, g, jsonify, current_app
 import jwt
 from werkzeug.security import generate_password_hash
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 
 # =============================================================================
@@ -24,7 +22,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 class TokenManager:
     """
     Manages JWT token creation, validation, and refresh operations.
-    Implements secure token handling with blacklist support.
+    Implements secure token handling with Redis-backed blacklist.
+    Falls back to in-memory set if Redis is unavailable.
     """
 
     def __init__(self, app=None):
@@ -33,7 +32,8 @@ class TokenManager:
         self.algorithm = 'HS256'
         self.access_token_expires = timedelta(hours=24)
         self.refresh_token_expires = timedelta(days=30)
-        self.token_blacklist = set()
+        self._token_blacklist_memory = set()  # Fallback
+        self._redis_client = None
         self.max_token_age = timedelta(hours=24)
 
         if app is not None:
@@ -51,6 +51,39 @@ class TokenManager:
             'JWT_REFRESH_TOKEN_EXPIRES',
             timedelta(days=30)
         )
+
+        # Initialize Redis for token blacklist (shared across workers)
+        redis_url = os.environ.get('REDIS_URL')
+        if redis_url:
+            try:
+                import redis
+                self._redis_client = redis.from_url(redis_url, decode_responses=True)
+                self._redis_client.ping()
+                app.logger.info("Token blacklist using Redis backend")
+            except Exception as e:
+                app.logger.warning(f"Redis unavailable for token blacklist, using in-memory: {e}")
+                self._redis_client = None
+        else:
+            app.logger.warning("REDIS_URL not set — token blacklist is in-memory only (not shared across workers)")
+
+    def _is_blacklisted(self, jti: str) -> bool:
+        """Check if a JTI is blacklisted (Redis or memory)."""
+        if self._redis_client:
+            try:
+                return self._redis_client.exists(f"token_blacklist:{jti}") > 0
+            except Exception:
+                pass
+        return jti in self._token_blacklist_memory
+
+    def _add_to_blacklist(self, jti: str, ttl_seconds: int = 86400) -> None:
+        """Add JTI to blacklist (Redis with TTL, or memory)."""
+        if self._redis_client:
+            try:
+                self._redis_client.setex(f"token_blacklist:{jti}", ttl_seconds, "1")
+                return
+            except Exception:
+                pass
+        self._token_blacklist_memory.add(jti)
 
     def create_access_token(self, identity: str, user_data: Optional[Dict] = None,
                            additional_claims: Optional[Dict] = None) -> str:
@@ -136,7 +169,7 @@ class TokenManager:
                 raise jwt.InvalidTokenError(f"Token type mismatch: expected {token_type}")
 
             # Check if token is blacklisted
-            if payload.get('jti') in self.token_blacklist:
+            if self._is_blacklisted(payload.get('jti', '')):
                 raise jwt.InvalidTokenError("Token has been revoked")
 
             # Check if token is not yet valid
@@ -173,7 +206,10 @@ class TokenManager:
             )
             jti = payload.get('jti')
             if jti:
-                self.token_blacklist.add(jti)
+                # TTL = remaining token lifetime (max 24h for access, 30d for refresh)
+                exp = payload.get('exp', 0)
+                ttl = max(int(exp - datetime.now(timezone.utc).timestamp()), 3600)
+                self._add_to_blacklist(jti, ttl_seconds=ttl)
                 current_app.logger.info(f"Token revoked: {jti}")
                 return True
             return False
@@ -474,6 +510,7 @@ class APIKeyManager:
     def validate_key(self, key: str) -> Optional[Dict]:
         """
         Validate an API key and return its metadata.
+        Uses check_password_hash for proper comparison (pbkdf2 salts differ per hash).
 
         Args:
             key: The API key to validate
@@ -481,12 +518,19 @@ class APIKeyManager:
         Returns:
             Key metadata dict if valid, None if invalid
         """
-        key_hash = hash_api_key(key)
+        from werkzeug.security import check_password_hash
 
-        if key_hash not in self.valid_keys:
+        # Iterate stored hashes and compare properly
+        matched_hash = None
+        for stored_hash in self.valid_keys:
+            if check_password_hash(stored_hash, key):
+                matched_hash = stored_hash
+                break
+
+        if matched_hash is None:
             return None
 
-        metadata = self.key_metadata.get(key_hash, {})
+        metadata = self.key_metadata.get(matched_hash, {})
 
         # Check expiration
         if metadata.get('expires_at'):
@@ -499,7 +543,7 @@ class APIKeyManager:
         metadata['use_count'] = metadata.get('use_count', 0) + 1
 
         return {
-            'user_id': self.valid_keys[key_hash],
+            'user_id': self.valid_keys[matched_hash],
             'permissions': metadata.get('permissions', []),
             'created_at': metadata.get('created_at'),
             'last_used': metadata.get('last_used'),
@@ -508,12 +552,14 @@ class APIKeyManager:
 
     def revoke_key(self, key: str) -> bool:
         """Revoke an API key."""
-        key_hash = hash_api_key(key)
-        if key_hash in self.valid_keys:
-            del self.valid_keys[key_hash]
-            if key_hash in self.key_metadata:
-                del self.key_metadata[key_hash]
-            return True
+        from werkzeug.security import check_password_hash
+
+        for stored_hash in list(self.valid_keys.keys()):
+            if check_password_hash(stored_hash, key):
+                del self.valid_keys[stored_hash]
+                if stored_hash in self.key_metadata:
+                    del self.key_metadata[stored_hash]
+                return True
         return False
 
 
