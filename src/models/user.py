@@ -4,7 +4,6 @@ Production-grade SQLAlchemy models for user management and audit logging.
 """
 
 import os
-import sys
 from datetime import datetime, timezone
 
 from flask_sqlalchemy import SQLAlchemy
@@ -12,7 +11,6 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text, Float, ForeignKey, JSON
 from sqlalchemy.orm import relationship
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 db = SQLAlchemy()
 
@@ -309,15 +307,21 @@ def create_default_admin(app=None):
     if admin_password:
         admin.set_password(admin_password)
     else:
-        # Generate a random password and log it (for initial setup)
+        # Generate a random password — print to stderr ONCE, never persist in logs
         import secrets
+        import sys as _sys
         temp_password = secrets.token_urlsafe(16)
         admin.set_password(temp_password)
-        if app:
-            app.logger.warning(
-                f"Default admin created with temporary password: {temp_password}. "
-                "Change this immediately!"
-            )
+        print(
+            f"\n{'='*60}\n"
+            f"DEFAULT ADMIN CREATED\n"
+            f"Username: {admin_username}\n"
+            f"Password: {temp_password}\n"
+            f"CHANGE THIS IMMEDIATELY!\n"
+            f"{'='*60}\n",
+            file=_sys.stderr,
+            flush=True
+        )
 
     db.session.add(admin)
     db.session.commit()
