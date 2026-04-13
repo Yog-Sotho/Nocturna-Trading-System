@@ -46,21 +46,11 @@ WORKDIR /app
 # -----------------------------------------------------------------------------
 FROM base AS dependencies
 
-# Install TA-Lib for technical analysis
-RUN wget https://launchpad.net/ta-lib/trunk/0.4.0/+download/ta-lib-0.4.0.tar.gz && \
-    tar -xzf ta-lib-0.4.0.tar.gz && \
-    cd TA-Lib && \
-    ./configure --prefix=/usr/local && \
-    make && \
-    make install && \
-    cd .. && \
-    rm -rf ta-lib-0.4.0.tar.gz TA-Lib
-
 # Copy and install requirements
 COPY requirements.txt /app/
 RUN pip install --upgrade pip && \
     pip install -r requirements.txt --no-cache-dir --break-system-packages && \
-    pip check || true
+    pip check
 
 # -----------------------------------------------------------------------------
 # Production Stage - Final application image

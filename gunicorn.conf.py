@@ -20,7 +20,14 @@ bind = os.environ.get('GUNICORN_BIND', '0.0.0.0:5000')
 # =============================================================================
 
 # Number of worker processes
-workers = int(os.environ.get('GUNICORN_WORKERS', multiprocessing.cpu_count() * 2 + 1))
+# Number of worker processes
+# IMPORTANT: Trading engine uses in-memory singleton state (positions, orders, risk).
+# Multiple workers would create divergent copies. Force workers=1 when trading is active.
+trading_mode = os.environ.get('TRADING_MODE', 'PAPER')
+if trading_mode in ('PAPER', 'LIVE'):
+    workers = 1  # Trading engine requires single worker for state consistency
+else:
+    workers = int(os.environ.get('GUNICORN_WORKERS', multiprocessing.cpu_count() * 2 + 1))
 
 # Number of threads per worker
 threads = int(os.environ.get('GUNICORN_THREADS', 4))
