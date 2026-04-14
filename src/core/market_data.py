@@ -122,38 +122,55 @@ class MarketDataHandler:
                            end: datetime = None) -> pd.DataFrame:
         """
         Get historical OHLCV data for a symbol.
-
-        Args:
-            symbol: Stock symbol
-            timeframe: Time interval (1m, 5m, 15m, 1h, 1d, 1w)
-            limit: Number of bars to retrieve
-            start: Start datetime (optional)
-            end: End datetime (optional)
-
-        Returns:
-            DataFrame with OHLCV data
+        Cache invalidates when a new bar period begins (not just by TTL).
         """
-        cache_key = f"{symbol}_{timeframe}_{limit}"
+        # Include current bar period in cache key so cache invalidates on new bars
+        now = datetime.now(timezone.utc)
+        bar_period = self._get_bar_period_key(now, timeframe)
+        cache_key = f"{symbol}_{timeframe}_{limit}_{bar_period}"
 
         # Check cache
         with self.cache_lock:
             if cache_key in self.historical_cache:
                 cached = self.historical_cache[cache_key]
                 cache_ts = cached.get('timestamp', datetime.min.replace(tzinfo=timezone.utc))
-                if (datetime.now(timezone.utc) - cache_ts).total_seconds() < self.CACHE_TTL:
+                if (now - cache_ts).total_seconds() < self.CACHE_TTL:
                     return cached.get('data', pd.DataFrame())
 
         # Fetch from provider
         df = self._fetch_historical_data(symbol, timeframe, limit, start, end)
 
-        # Cache result
+        # Cache result — also prune old keys for this symbol/timeframe
         with self.cache_lock:
+            # Remove stale cache entries for this symbol/timeframe
+            stale_prefix = f"{symbol}_{timeframe}_{limit}_"
+            stale_keys = [k for k in self.historical_cache if k.startswith(stale_prefix) and k != cache_key]
+            for k in stale_keys:
+                del self.historical_cache[k]
+
             self.historical_cache[cache_key] = {
                 'data': df,
-                'timestamp': datetime.now(timezone.utc)
+                'timestamp': now
             }
 
         return df
+
+    @staticmethod
+    def _get_bar_period_key(now: datetime, timeframe: str) -> str:
+        """Get a cache key component that changes when a new bar period begins."""
+        if timeframe in ('1m',):
+            return now.strftime('%Y%m%d%H%M')
+        elif timeframe in ('5m',):
+            return now.strftime('%Y%m%d%H') + str(now.minute // 5)
+        elif timeframe in ('15m',):
+            return now.strftime('%Y%m%d%H') + str(now.minute // 15)
+        elif timeframe in ('1h',):
+            return now.strftime('%Y%m%d%H')
+        elif timeframe in ('4h',):
+            return now.strftime('%Y%m%d') + str(now.hour // 4)
+        elif timeframe in ('1d', '1w'):
+            return now.strftime('%Y%m%d')
+        return now.strftime('%Y%m%d%H')
 
     def _fetch_historical_data(self, symbol: str, timeframe: str,
                               limit: int, start: datetime = None,

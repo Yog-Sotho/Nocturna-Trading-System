@@ -7,9 +7,9 @@ import logging
 import threading
 import time
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Callable, Any
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from enum import Enum
 
 
@@ -30,6 +30,12 @@ try:
     _ML_AVAILABLE = True
 except ImportError:
     _ML_AVAILABLE = False
+
+try:
+    from .external_signals import ExternalSignalAggregator
+    _EXTERNAL_SIGNALS_AVAILABLE = True
+except ImportError:
+    _EXTERNAL_SIGNALS_AVAILABLE = False
 
 
 class TradingEngineState(Enum):
@@ -90,6 +96,19 @@ class TradingEngine:
             except Exception as e:
                 self.logger.warning(f"ML Optimizer init failed: {e}")
 
+        # F16: External signal aggregator
+        self.external_signals = None
+        if _EXTERNAL_SIGNALS_AVAILABLE:
+            try:
+                self.external_signals = ExternalSignalAggregator(config.get('external_signals', {}))
+                self.logger.info("External Signal Aggregator wired into engine")
+            except Exception as e:
+                self.logger.warning(f"External Signal Aggregator init failed: {e}")
+
+        # Execution quality tracking
+        self._execution_latencies: List[float] = []
+        self._max_latency_samples = 1000
+
         # Configuration
         self.symbols = config.get('symbols', ['AAPL', 'MSFT', 'GOOGL'])
         self.update_interval = config.get('update_interval', self.DEFAULT_UPDATE_INTERVAL)
@@ -123,6 +142,20 @@ class TradingEngine:
             'uptime': 0
         }
         self._stats_lock = threading.RLock()
+
+        # F11: Circuit breaker for API failures
+        self._api_failure_count = 0
+        self._api_failure_threshold = 3      # Pause after 3 consecutive failures
+        self._api_pause_duration = 300       # 5 minute pause
+        self._api_paused_until: Optional[datetime] = None
+
+        # F13: Trade journal — persistent signal log
+        self.trade_journal: List[Dict] = []
+        self._journal_lock = threading.Lock()
+
+        # F4: Higher timeframe data for multi-TF confirmation
+        self._htf_timeframes = config.get('higher_timeframes', ['4h'])
+        self._htf_cache: Dict[str, Dict[str, pd.DataFrame]] = {}
 
         # Setup callbacks
         self._setup_callbacks()
@@ -322,6 +355,9 @@ class TradingEngine:
                 # Cancel all active orders
                 self._cancel_all_orders()
 
+                # S4: Stop order monitoring to prevent pending sim fills from completing
+                self.order_manager.stop_monitoring()
+
                 # Close all positions if configured
                 if self.config.get('emergency_close_positions', False):
                     self._close_all_positions()
@@ -384,7 +420,7 @@ class TradingEngine:
     # =========================================================================
 
     def _main_loop(self) -> None:
-        """Main trading loop executed in separate thread."""
+        """Main trading loop with bar-boundary alignment (F9)."""
         self.logger.info("Main trading loop started")
 
         while self.running:
@@ -398,6 +434,18 @@ class TradingEngine:
 
                 if self.state == TradingEngineState.EMERGENCY_STOP:
                     break
+
+                # F11: Check circuit breaker
+                if self._api_paused_until:
+                    if datetime.now(timezone.utc) < self._api_paused_until:
+                        remaining = (self._api_paused_until - datetime.now(timezone.utc)).total_seconds()
+                        self.logger.debug(f"API circuit breaker active, {remaining:.0f}s remaining")
+                        time.sleep(min(10, remaining))
+                        continue
+                    else:
+                        self._api_paused_until = None
+                        self._api_failure_count = 0
+                        self.logger.info("API circuit breaker reset")
 
                 # Update market analysis
                 self._update_market_analysis()
@@ -414,9 +462,10 @@ class TradingEngine:
                 # Update timestamp
                 self.last_update = datetime.now(timezone.utc)
 
-                # Calculate sleep time
+                # F9: Bar-boundary aligned sleep
+                # For 1h strategies, sleep until just after the next hour boundary
                 loop_time = time.time() - loop_start
-                sleep_time = max(0, self.update_interval - loop_time)
+                sleep_time = self._calc_bar_boundary_sleep(loop_time)
 
                 if sleep_time > 0:
                     time.sleep(sleep_time)
@@ -427,39 +476,94 @@ class TradingEngine:
 
         self.logger.info("Main trading loop terminated")
 
-    def _update_market_analysis(self) -> None:
-        """Update market analysis for all symbols."""
+    def _calc_bar_boundary_sleep(self, elapsed: float) -> float:
+        """
+        F9: Calculate sleep time aligned to the next bar boundary.
+        For 1h timeframe: wake up at :00:10 of each hour (10s after bar close).
+        Falls back to standard interval if bar-boundary alignment is not meaningful.
+        """
         try:
-            futures = []
+            now = datetime.now(timezone.utc)
+            # Next hour boundary + 10 seconds (allow bar to finalize)
+            next_bar = now.replace(minute=0, second=10, microsecond=0) + timedelta(hours=1)
+            sleep_secs = (next_bar - now).total_seconds()
+
+            # Cap: don't sleep more than the configured interval
+            max_sleep = max(0, self.update_interval - elapsed)
+            return min(sleep_secs, max_sleep)
+
+        except Exception:
+            return max(0, self.update_interval - elapsed)
+
+    def _update_market_analysis(self) -> None:
+        """Update market analysis for all symbols using as_completed() (F12/V3)."""
+        try:
+            futures_map = {}
 
             for symbol in self.symbols:
                 if self.executor:
                     future = self.executor.submit(self._analyze_symbol, symbol)
-                    futures.append((symbol, future))
+                    futures_map[future] = symbol
 
-            # Collect results
-            for symbol, future in futures:
+            # F12: Process results as they complete, not sequentially
+            for future in as_completed(futures_map, timeout=self.MAX_ANALYSIS_TIMEOUT):
+                symbol = futures_map[future]
                 try:
-                    result = future.result(timeout=self.MAX_ANALYSIS_TIMEOUT)
+                    result = future.result(timeout=5)  # Short timeout since already completed
                     if result:
                         self._process_analysis_result(symbol, result)
+                        self._api_failure_count = 0  # F11: Reset on success
 
                 except FuturesTimeoutError:
                     self.logger.warning(f"Analysis timeout for {symbol}")
+                    self._record_api_failure()
                 except Exception as e:
                     self.logger.error(f"Error analyzing {symbol}: {e}")
+                    self._record_api_failure()
 
+        except FuturesTimeoutError:
+            self.logger.warning("Global analysis timeout — some symbols may have been skipped")
+            self._record_api_failure()
         except Exception as e:
             self.logger.error(f"Error updating market analysis: {e}")
 
+    def _record_api_failure(self) -> None:
+        """F11: Track API failures and trigger circuit breaker if threshold exceeded."""
+        self._api_failure_count += 1
+        if self._api_failure_count >= self._api_failure_threshold:
+            self._api_paused_until = datetime.now(timezone.utc) + timedelta(seconds=self._api_pause_duration)
+            self.logger.warning(
+                f"Circuit breaker triggered: {self._api_failure_count} consecutive failures. "
+                f"Pausing API calls for {self._api_pause_duration}s"
+            )
+
+    def _fetch_higher_tf_data(self, symbol: str) -> Dict[str, pd.DataFrame]:
+        """F4: Fetch higher timeframe data for multi-TF confirmation."""
+        htf_data = {}
+        for tf in self._htf_timeframes:
+            try:
+                df = self.market_data.get_historical_data(
+                    symbol=symbol, timeframe=tf, limit=250
+                )
+                if not df.empty:
+                    df = self.market_data.calculate_technical_indicators(df)
+                    htf_data[tf] = df
+            except Exception as e:
+                self.logger.debug(f"HTF {tf} data unavailable for {symbol}: {e}")
+        return htf_data
+
     def _analyze_symbol(self, symbol: str) -> Optional[Dict]:
-        """Analyze a single symbol with full pipeline: data → indicators → sentiment → strategy."""
+        """
+        Analyze a single symbol with full pipeline.
+        F3: Thread-safe — passes all mutable context as arguments.
+        F4: Fetches higher TF data for multi-timeframe confirmation.
+        F16: Merges external signal data into sentiment.
+        """
+        analysis_start = time.time()
         try:
             # Get historical data
             df = self.market_data.get_historical_data(
-                symbol=symbol,
-                timeframe='1h',
-                limit=500
+                symbol=symbol, timeframe='1h', limit=500
             )
 
             if df.empty:
@@ -468,29 +572,73 @@ class TradingEngine:
             # Calculate indicators
             df = self.market_data.calculate_technical_indicators(df)
 
-            # Pass current positions for position-aware signal generation
+            # Get current positions (snapshot — thread-safe read)
             positions = self.order_manager.get_positions()
-            self.strategy_manager.set_current_positions(positions)
 
-            # Feed sentiment data to strategy manager (if available)
+            # Get sentiment data (if available)
+            sentiment = {}
             if self.sentiment_analyzer:
                 try:
-                    sentiment_signal = self.sentiment_analyzer.get_market_sentiment_signal(
+                    signal = self.sentiment_analyzer.get_market_sentiment_signal(
                         symbol, lookback_hours=24
                     )
-                    self.strategy_manager.set_sentiment_data({symbol: sentiment_signal})
+                    sentiment = {symbol: signal}
                 except Exception as e:
                     self.logger.debug(f"Sentiment unavailable for {symbol}: {e}")
 
-            # Update strategy
-            strategy_result = self.strategy_manager.update_strategy(df, symbol)
+            # F16: Merge external signal into sentiment data
+            if self.external_signals:
+                try:
+                    ext = self.external_signals.get_composite_signal(symbol)
+                    if ext and ext.get('confidence', 0) > 0.2:
+                        # Merge external score into sentiment (blend 50/50 with internal)
+                        sym_sent = sentiment.get(symbol, {})
+                        internal_score = sym_sent.get('sentiment_score', 0.0)
+                        internal_conf = sym_sent.get('confidence', 0.0)
+                        ext_score = ext['score']
+                        ext_conf = ext['confidence']
+
+                        # Weighted blend
+                        total_w = internal_conf + ext_conf
+                        if total_w > 0:
+                            blended_score = (internal_score * internal_conf + ext_score * ext_conf) / total_w
+                            blended_conf = min(total_w / 2.0, 1.0)
+                        else:
+                            blended_score = ext_score
+                            blended_conf = ext_conf
+
+                        sentiment[symbol] = {
+                            'sentiment_score': blended_score,
+                            'confidence': blended_conf,
+                            'internal_score': internal_score,
+                            'external_score': ext_score,
+                            'external_sources': ext.get('source_count', 0),
+                        }
+                except Exception as e:
+                    self.logger.debug(f"External signals unavailable for {symbol}: {e}")
+
+            # F4: Fetch higher timeframe data
+            higher_tf = self._fetch_higher_tf_data(symbol)
+
+            # F3: Pass all context as arguments — no shared mutable state
+            strategy_result = self.strategy_manager.update_strategy(
+                df, symbol,
+                positions=positions,
+                sentiment=sentiment,
+                higher_tf_data=higher_tf
+            )
+
+            # Track analysis latency
+            latency_ms = (time.time() - analysis_start) * 1000
+            self._track_latency(latency_ms, symbol)
 
             # Cache data — thread-safe write
             with self._symbol_data_lock:
                 self.symbol_data[symbol] = {
                     'data': df,
                     'strategy_result': strategy_result,
-                    'last_update': datetime.now(timezone.utc)
+                    'last_update': datetime.now(timezone.utc),
+                    'analysis_latency_ms': latency_ms,
                 }
 
             return strategy_result
@@ -498,6 +646,14 @@ class TradingEngine:
         except Exception as e:
             self.logger.error(f"Error analyzing {symbol}: {e}")
             return None
+
+    def _track_latency(self, latency_ms: float, symbol: str) -> None:
+        """Track execution latency for monitoring."""
+        self._execution_latencies.append(latency_ms)
+        if len(self._execution_latencies) > self._max_latency_samples:
+            self._execution_latencies = self._execution_latencies[-self._max_latency_samples:]
+        if latency_ms > 5000:  # Log slow analyses
+            self.logger.warning(f"Slow analysis for {symbol}: {latency_ms:.0f}ms")
 
     def _process_analysis_result(self, symbol: str, result: Dict) -> None:
         """Process analysis result for a symbol."""
@@ -513,11 +669,12 @@ class TradingEngine:
             self.logger.error(f"Error processing result for {symbol}: {e}")
 
     def _process_trading_signal(self, signal: Dict) -> None:
-        """Process a trading signal through risk validation."""
+        """Process a trading signal through risk validation. F13: Log to trade journal."""
         try:
             # Guard: do not submit orders if engine is not running
             if self.state != TradingEngineState.RUNNING:
                 self.logger.info(f"Signal dropped — engine state is {self.state.value}")
+                self._journal_log(signal, 'DROPPED', f'engine_state={self.state.value}')
                 return
 
             # Get positions and market data
@@ -531,6 +688,7 @@ class TradingEngine:
 
             if not is_valid:
                 self.logger.info(f"Signal rejected for {signal['symbol']}: {reason}")
+                self._journal_log(signal, 'REJECTED', reason)
                 return
 
             # Submit order
@@ -539,13 +697,35 @@ class TradingEngine:
             if order_id:
                 self.active_signals[order_id] = adjusted_signal
                 self.logger.info(f"Order submitted: {order_id}")
+                self._journal_log(adjusted_signal, 'EXECUTED', f'order_id={order_id}')
                 self._notify_event('signal_executed', {
                     'signal': adjusted_signal,
                     'order_id': order_id
                 })
+            else:
+                self._journal_log(signal, 'SUBMIT_FAILED', 'order_manager returned None')
 
         except Exception as e:
             self.logger.error(f"Error processing signal: {e}")
+            self._journal_log(signal, 'ERROR', str(e))
+
+    def _journal_log(self, signal: Dict, outcome: str, detail: str = '') -> None:
+        """F13: Append entry to trade journal for analytics."""
+        entry = {
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'symbol': signal.get('symbol', ''),
+            'side': signal.get('side', ''),
+            'mode': signal.get('mode', ''),
+            'signal_type': signal.get('signal_type', ''),
+            'confidence': signal.get('confidence', 0),
+            'outcome': outcome,
+            'detail': detail,
+        }
+        with self._journal_lock:
+            self.trade_journal.append(entry)
+            # Cap journal size
+            if len(self.trade_journal) > 10000:
+                self.trade_journal = self.trade_journal[-5000:]
 
     def _monitor_risk(self) -> None:
         """Monitor portfolio risk and update portfolio value from broker."""
@@ -597,8 +777,6 @@ class TradingEngine:
     def _get_market_data_for_risk(self, symbol: str) -> Dict:
         """Get market data for risk calculations."""
         try:
-            import pandas as pd
-
             with self._symbol_data_lock:
                 symbol_cache = self.symbol_data.get(symbol, {})
                 df = symbol_cache.get('data', pd.DataFrame())
@@ -797,10 +975,11 @@ class TradingEngine:
             self._ml_last_optimization = now
 
             # Gather recent performance for adaptive tuning
+            risk_level_map = {'LOW': 0.1, 'MEDIUM': 0.2, 'HIGH': 0.35, 'CRITICAL': 0.5}
             recent_performance = {
                 'win_rate': self.stats.get('win_rate', 0.5),
                 'avg_return': self.stats.get('total_pnl', 0) / max(self.stats.get('total_trades', 1), 1),
-                'volatility': self.risk_manager.current_risk_level.value,
+                'volatility': risk_level_map.get(self.risk_manager.current_risk_level.value, 0.2),
             }
 
             # Get market data for first symbol as representative
@@ -869,8 +1048,16 @@ class TradingEngine:
         }
 
     def get_detailed_status(self) -> Dict:
-        """Get detailed engine status."""
+        """Get detailed engine status including trade journal stats."""
         basic_status = self.get_status()
+
+        # F13: Trade journal summary
+        with self._journal_lock:
+            journal_len = len(self.trade_journal)
+            recent_outcomes = {}
+            for entry in self.trade_journal[-100:]:
+                outcome = entry.get('outcome', 'UNKNOWN')
+                recent_outcomes[outcome] = recent_outcomes.get(outcome, 0) + 1
 
         basic_status.update({
             'positions': self.order_manager.get_positions(),
@@ -881,10 +1068,42 @@ class TradingEngine:
             'strategy_status': self.strategy_manager.get_strategy_status(),
             'risk_report': self.risk_manager.get_risk_report(),
             'trading_summary': self.order_manager.get_trading_summary(),
-            'symbol_data': self._get_symbol_data_snapshot()
+            'symbol_data': self._get_symbol_data_snapshot(),
+            'trade_journal': {
+                'total_entries': journal_len,
+                'recent_outcomes': recent_outcomes,
+            },
+            'circuit_breaker': {
+                'failure_count': self._api_failure_count,
+                'paused_until': self._api_paused_until.isoformat() if self._api_paused_until else None,
+            },
+            'execution_quality': self._get_execution_quality(),
+            'external_signals': self.external_signals.get_status() if self.external_signals else None,
         })
 
         return basic_status
+
+    def get_trade_journal(self, last_n: int = 100) -> List[Dict]:
+        """F13: Get recent trade journal entries."""
+        with self._journal_lock:
+            return list(self.trade_journal[-last_n:])
+
+    def _get_execution_quality(self) -> Dict:
+        """Get execution quality metrics — latency statistics."""
+        if not self._execution_latencies:
+            return {'samples': 0}
+
+        import numpy as np
+        lats = self._execution_latencies
+        return {
+            'samples': len(lats),
+            'avg_ms': round(float(np.mean(lats)), 1),
+            'p50_ms': round(float(np.median(lats)), 1),
+            'p95_ms': round(float(np.percentile(lats, 95)), 1),
+            'p99_ms': round(float(np.percentile(lats, 99)), 1),
+            'max_ms': round(float(np.max(lats)), 1),
+            'min_ms': round(float(np.min(lats)), 1),
+        }
 
     def _get_symbol_data_snapshot(self) -> Dict:
         """Get a thread-safe snapshot of symbol data for status reporting."""

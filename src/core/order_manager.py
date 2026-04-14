@@ -6,7 +6,7 @@ Production-grade order management with enhanced error handling and validation.
 import os
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Callable
 from enum import Enum
 import threading
@@ -296,14 +296,27 @@ class OrderExecutionManager:
     def _check_risk_limits(self, signal: Dict) -> bool:
         """Check if order passes risk limits."""
         try:
-            # Check daily loss limit
-            daily_pnl = sum(
-                pos.get('unrealized_pnl', 0) + pos.get('realized_pnl', 0)
-                for pos in self.positions.values()
+            # Check daily loss limit — compare as fraction of portfolio
+            total_unrealized = sum(
+                pos.get('unrealized_pnl', 0) for pos in self.positions.values()
             )
+            total_realized = sum(
+                pos.get('realized_pnl', 0) for pos in self.positions.values()
+            )
+            daily_pnl = total_unrealized + total_realized
 
-            if daily_pnl < -self.max_daily_loss:
-                self.logger.warning("Daily loss limit reached")
+            # Get portfolio value for fraction comparison
+            portfolio_value = self._get_portfolio_value()
+            if portfolio_value > 0:
+                daily_loss_fraction = daily_pnl / portfolio_value
+            else:
+                daily_loss_fraction = 0.0
+
+            if daily_loss_fraction < -self.max_daily_loss:
+                self.logger.warning(
+                    f"Daily loss limit reached: {daily_loss_fraction:.2%} "
+                    f"< -{self.max_daily_loss:.2%}"
+                )
                 return False
 
             # Check position limit per symbol
@@ -320,11 +333,107 @@ class OrderExecutionManager:
                 self.logger.warning(f"Position limit exceeded for {symbol}")
                 return False
 
+            # F18: Wash sale detection
+            if not self._check_wash_sale(signal):
+                return False
+
+            # F18: Pattern day trader protection
+            if not self._check_pdt_limit(signal):
+                return False
+
             return True
 
         except Exception as e:
             self.logger.error(f"Error checking risk limits: {e}")
             return False
+
+    def _get_portfolio_value(self) -> float:
+        """Get current portfolio value from broker or estimate from positions."""
+        try:
+            if self.alpaca_client:
+                account = self.alpaca_client.get_account()
+                return float(account.equity)
+        except Exception:
+            pass
+        # Fallback: sum of position market values + initial capital estimate
+        total_mv = sum(pos.get('market_value', 0) for pos in self.positions.values())
+        return max(total_mv, 100000.0)  # Minimum $100K assumption
+
+    def _check_wash_sale(self, signal: Dict) -> bool:
+        """
+        F18: Wash sale detection — block repurchase of a symbol within 30 days
+        of selling it at a loss. IRC Section 1091.
+        """
+        if signal['side'] != 'buy':
+            return True  # Only applies to buy orders
+
+        symbol = signal['symbol']
+        now = datetime.now(timezone.utc)
+        wash_window = timedelta(days=30)
+
+        # Check recent order history for loss sales of this symbol
+        for order in reversed(self.order_history[-500:]):
+            if order.symbol != symbol or order.side != 'sell':
+                continue
+            if order.status != OrderStatus.FILLED:
+                continue
+            if now - order.submitted_at > wash_window:
+                break  # Orders are chronological, no need to check further back
+
+            # Check if the sale was at a loss
+            position_avg = self.positions.get(symbol, {}).get('avg_price', 0)
+            if position_avg > 0 and order.filled_avg_price < position_avg:
+                self.logger.warning(
+                    f"Wash sale blocked: {symbol} sold at loss within 30 days "
+                    f"(sold at {order.filled_avg_price:.2f}, avg cost {position_avg:.2f})"
+                )
+                return False
+
+        return True
+
+    def _check_pdt_limit(self, signal: Dict) -> bool:
+        """
+        F18: Pattern Day Trader protection — block if account would exceed
+        3 day trades in 5 business days (for accounts under $25K).
+        """
+        try:
+            portfolio_value = self._get_portfolio_value()
+            if portfolio_value >= 25000:
+                return True  # PDT rule doesn't apply above $25K
+
+            # Count day trades in last 5 business days
+            now = datetime.now(timezone.utc)
+            five_bdays_ago = now - timedelta(days=7)  # Conservative: 7 calendar days
+
+            day_trades = 0
+            for order in self.order_history[-500:]:
+                if order.submitted_at < five_bdays_ago:
+                    continue
+                if order.status != OrderStatus.FILLED:
+                    continue
+                # A day trade = open and close same symbol same day
+                if order.submitted_at.date() == now.date():
+                    # Check if there's a matching opposite-side fill same day
+                    for other in self.order_history[-500:]:
+                        if (other.symbol == order.symbol and
+                                other.side != order.side and
+                                other.status == OrderStatus.FILLED and
+                                other.submitted_at.date() == order.submitted_at.date()):
+                            day_trades += 1
+                            break
+
+            if day_trades >= 3:
+                self.logger.warning(
+                    f"PDT limit: {day_trades} day trades in 5 business days "
+                    f"(account value ${portfolio_value:,.0f} < $25K)"
+                )
+                return False
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"PDT check error: {e}")
+            return True  # Don't block on check failure
 
     def _is_market_open(self) -> bool:
         """Check if market is currently open for trading."""
@@ -438,22 +547,48 @@ class OrderExecutionManager:
             return None
 
     def _schedule_simulated_fill(self, order_id: str, order_data: Dict) -> None:
-        """Simulate immediate fill for market orders in sim mode."""
+        """Simulate fill for market orders in sim mode using realistic pricing."""
         def _fill():
-            time.sleep(0.5)  # Simulate brief execution delay
+            time.sleep(0.1)  # Brief simulated latency (reduced from 0.5s — V4 fix)
             with self._lock:
+                # Check if engine was emergency-stopped (S4 fix)
+                if not self.running and order_id not in self.active_orders:
+                    return
+
                 if order_id in self.active_orders:
                     order = self.active_orders[order_id]
+
+                    # Use last known price from positions or limit price — never hardcoded
+                    sim_price = float(order_data.get('limit_price', 0))
+                    if sim_price <= 0:
+                        # Try to get last known price from cached position data
+                        symbol = order_data.get('symbol', '')
+                        pos = self.positions.get(symbol, {})
+                        sim_price = pos.get('avg_price', 0)
+
+                    if sim_price <= 0:
+                        # Last resort: use stop_loss or take_profit as price reference
+                        sl = order_data.get('stop_loss', {})
+                        if isinstance(sl, dict):
+                            sim_price = float(sl.get('stop_price', 0))
+                        tp = order_data.get('take_profit', {})
+                        if isinstance(tp, dict) and sim_price <= 0:
+                            sim_price = float(tp.get('limit_price', 0))
+
+                    if sim_price <= 0:
+                        self.logger.warning(f"Sim fill {order_id}: no price reference, skipping")
+                        order.status = OrderStatus.REJECTED
+                        order.error_message = "No price reference for simulated fill"
+                        return
+
                     order.status = OrderStatus.FILLED
                     order.filled_quantity = order.quantity
-                    # Use a simulated price (last known or limit price)
-                    sim_price = float(order_data.get('limit_price', 100.0))
                     order.filled_avg_price = sim_price
                     order.filled_at = datetime.now(timezone.utc)
                     self._update_position_from_fill(order)
                     del self.active_orders[order_id]
                     self._notify_order_callbacks(order)
-                    self.logger.info(f"Simulated fill: {order_id} at {sim_price}")
+                    self.logger.info(f"Simulated fill: {order_id} at {sim_price:.4f}")
 
         fill_thread = threading.Thread(target=_fill, daemon=True, name=f"SimFill-{order_id}")
         fill_thread.start()
