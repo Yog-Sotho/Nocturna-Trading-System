@@ -82,7 +82,7 @@ httpx==0.28.1
 
 # File Processing
 openpyxl==3.1.5
-Pillow==10.4.0
+Pillow==12.2.0
 
 # Statistics
 statsmodels==0.14.4
