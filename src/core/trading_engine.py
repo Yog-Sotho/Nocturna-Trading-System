@@ -6,6 +6,7 @@ Production-grade core trading engine with event-driven architecture.
 import logging
 import threading
 import time
+import pandas as pd
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Callable, Any
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -16,6 +17,19 @@ from .market_data import MarketDataHandler
 from .strategy_manager import StrategyManager
 from .order_manager import OrderExecutionManager
 from .risk_manager import RiskManager
+
+# Advanced modules — optional, degrade gracefully if unavailable
+try:
+    from src.advanced.sentiment_analyzer import SentimentAnalyzer
+    _SENTIMENT_AVAILABLE = True
+except ImportError:
+    _SENTIMENT_AVAILABLE = False
+
+try:
+    from src.advanced.ml_optimizer import MLOptimizer
+    _ML_AVAILABLE = True
+except ImportError:
+    _ML_AVAILABLE = False
 
 
 class TradingEngineState(Enum):
@@ -55,6 +69,26 @@ class TradingEngine:
         self.strategy_manager = StrategyManager(config.get('strategy', {}))
         self.order_manager = OrderExecutionManager(config.get('trading', {}))
         self.risk_manager = RiskManager(config.get('risk', {}))
+
+        # Advanced components — optional
+        self.sentiment_analyzer = None
+        self.ml_optimizer = None
+        self._ml_last_optimization: Optional[datetime] = None
+        self._ml_optimization_interval = config.get('ml_optimization_interval', 86400)  # 24h default
+
+        if _SENTIMENT_AVAILABLE:
+            try:
+                self.sentiment_analyzer = SentimentAnalyzer(config.get('sentiment', {}))
+                self.logger.info("Sentiment Analyzer wired into engine")
+            except Exception as e:
+                self.logger.warning(f"Sentiment Analyzer init failed: {e}")
+
+        if _ML_AVAILABLE:
+            try:
+                self.ml_optimizer = MLOptimizer(config.get('ml_optimizer', {}))
+                self.logger.info("ML Optimizer wired into engine")
+            except Exception as e:
+                self.logger.warning(f"ML Optimizer init failed: {e}")
 
         # Configuration
         self.symbols = config.get('symbols', ['AAPL', 'MSFT', 'GOOGL'])
@@ -374,6 +408,9 @@ class TradingEngine:
                 # Update statistics
                 self._update_statistics()
 
+                # Periodic ML parameter optimization
+                self._check_ml_optimization()
+
                 # Update timestamp
                 self.last_update = datetime.now(timezone.utc)
 
@@ -416,7 +453,7 @@ class TradingEngine:
             self.logger.error(f"Error updating market analysis: {e}")
 
     def _analyze_symbol(self, symbol: str) -> Optional[Dict]:
-        """Analyze a single symbol."""
+        """Analyze a single symbol with full pipeline: data → indicators → sentiment → strategy."""
         try:
             # Get historical data
             df = self.market_data.get_historical_data(
@@ -434,6 +471,16 @@ class TradingEngine:
             # Pass current positions for position-aware signal generation
             positions = self.order_manager.get_positions()
             self.strategy_manager.set_current_positions(positions)
+
+            # Feed sentiment data to strategy manager (if available)
+            if self.sentiment_analyzer:
+                try:
+                    sentiment_signal = self.sentiment_analyzer.get_market_sentiment_signal(
+                        symbol, lookback_hours=24
+                    )
+                    self.strategy_manager.set_sentiment_data({symbol: sentiment_signal})
+                except Exception as e:
+                    self.logger.debug(f"Sentiment unavailable for {symbol}: {e}")
 
             # Update strategy
             strategy_result = self.strategy_manager.update_strategy(df, symbol)
@@ -723,6 +770,61 @@ class TradingEngine:
 
         except Exception as e:
             self.logger.error(f"Error updating metrics for {symbol}: {e}")
+
+    def _check_ml_optimization(self) -> None:
+        """
+        Periodically trigger ML parameter optimization.
+        Runs in background, does not block the main loop.
+        Only runs if enough time has elapsed since last optimization.
+        """
+        if not self.ml_optimizer:
+            return
+
+        try:
+            now = datetime.now(timezone.utc)
+
+            # Check if enough time has passed
+            if self._ml_last_optimization:
+                elapsed = (now - self._ml_last_optimization).total_seconds()
+                if elapsed < self._ml_optimization_interval:
+                    return
+
+            # Need at least some trade history for meaningful optimization
+            if self.stats.get('total_trades', 0) < 10:
+                return
+
+            self.logger.info("Starting periodic ML parameter optimization")
+            self._ml_last_optimization = now
+
+            # Gather recent performance for adaptive tuning
+            recent_performance = {
+                'win_rate': self.stats.get('win_rate', 0.5),
+                'avg_return': self.stats.get('total_pnl', 0) / max(self.stats.get('total_trades', 1), 1),
+                'volatility': self.risk_manager.current_risk_level.value,
+            }
+
+            # Get market data for first symbol as representative
+            if self.symbols:
+                with self._symbol_data_lock:
+                    symbol_cache = self.symbol_data.get(self.symbols[0], {})
+                    df = symbol_cache.get('data', pd.DataFrame())
+
+                if not df.empty:
+                    adjusted_params = self.ml_optimizer.adaptive_parameter_tuning(
+                        df, self.strategy_manager.parameters, recent_performance
+                    )
+
+                    # Apply adjusted parameters to strategy manager
+                    if adjusted_params:
+                        self.strategy_manager.parameters.update(adjusted_params)
+                        self.logger.info("ML optimizer updated strategy parameters")
+                        self._notify_event('ml_optimization', {
+                            'adjusted_params': list(adjusted_params.keys()),
+                            'timestamp': now
+                        })
+
+        except Exception as e:
+            self.logger.error(f"Error in ML optimization check: {e}")
 
     # =========================================================================
     # EVENT SYSTEM
