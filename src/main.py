@@ -3,23 +3,23 @@ NOCTURNA Trading System - Main Flask Application
 Production-grade configuration with security hardening.
 """
 
-import os
-import sys
 import logging
+import os
 import secrets
+import sys
 import time as time_module
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 # DON'T CHANGE THIS !!!
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from flask import Flask, request, g, jsonify, send_from_directory
+from flask import Flask, g, jsonify, request, send_from_directory
 from flask_cors import CORS
 
+from src.middleware.security import setup_rate_limiting, setup_security_headers
 from src.models.user import db
-from src.routes.user import user_bp
 from src.routes.trading import trading_bp
-from src.middleware.security import setup_security_headers, setup_rate_limiting
+from src.routes.user import user_bp
 from src.utils.logger import setup_secure_logging
 
 
@@ -191,7 +191,7 @@ def create_app(config_override=None):
     app.register_blueprint(trading_bp, url_prefix='/api/trading')
 
     # Paper trading routes
-    from src.routes.paper_trading import paper_bp, init_paper_engine
+    from src.routes.paper_trading import init_paper_engine, paper_bp
     app.register_blueprint(paper_bp, url_prefix='/api/paper')
     with app.app_context():
         paper_config = {
@@ -226,7 +226,7 @@ def create_app(config_override=None):
             'success': False,
             'error': 'Bad request',
             'request_id': g.get('request_id'),
-            'timestamp': datetime.now(timezone.utc).isoformat()
+            'timestamp': datetime.now(UTC).isoformat()
         }), 400
 
     @app.errorhandler(401)
@@ -236,7 +236,7 @@ def create_app(config_override=None):
             'success': False,
             'error': 'Unauthorized',
             'request_id': g.get('request_id'),
-            'timestamp': datetime.now(timezone.utc).isoformat()
+            'timestamp': datetime.now(UTC).isoformat()
         }), 401
 
     @app.errorhandler(403)
@@ -246,7 +246,7 @@ def create_app(config_override=None):
             'success': False,
             'error': 'Forbidden',
             'request_id': g.get('request_id'),
-            'timestamp': datetime.now(timezone.utc).isoformat()
+            'timestamp': datetime.now(UTC).isoformat()
         }), 403
 
     @app.errorhandler(404)
@@ -255,7 +255,7 @@ def create_app(config_override=None):
             'success': False,
             'error': 'Endpoint not found',
             'request_id': g.get('request_id'),
-            'timestamp': datetime.now(timezone.utc).isoformat()
+            'timestamp': datetime.now(UTC).isoformat()
         }), 404
 
     @app.errorhandler(429)
@@ -265,7 +265,7 @@ def create_app(config_override=None):
             'success': False,
             'error': 'Rate limit exceeded. Please try again later.',
             'request_id': g.get('request_id'),
-            'timestamp': datetime.now(timezone.utc).isoformat()
+            'timestamp': datetime.now(UTC).isoformat()
         }), 429
 
     @app.errorhandler(500)
@@ -275,7 +275,7 @@ def create_app(config_override=None):
             'success': False,
             'error': 'Internal server error',
             'request_id': g.get('request_id'),
-            'timestamp': datetime.now(timezone.utc).isoformat()
+            'timestamp': datetime.now(UTC).isoformat()
         }), 500
 
     # =============================================================================
@@ -286,7 +286,7 @@ def create_app(config_override=None):
         """Public health check endpoint for load balancers."""
         return jsonify({
             'status': 'healthy',
-            'timestamp': datetime.now(timezone.utc).isoformat()
+            'timestamp': datetime.now(UTC).isoformat()
         })
 
     # =============================================================================
@@ -321,7 +321,7 @@ def create_app(config_override=None):
             'version': '2.0.0',
             'api_version': 'v1',
             'environment': os.environ.get('FLASK_ENV', 'development'),
-            'timestamp': datetime.now(timezone.utc).isoformat()
+            'timestamp': datetime.now(UTC).isoformat()
         })
 
     app.logger.info("NOCTURNA Trading System initialized successfully")
