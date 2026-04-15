@@ -962,7 +962,7 @@ class RiskManager:
         """Generate comprehensive risk report."""
         return {
             'current_risk_level': self.current_risk_level.value,
-            'recent_events': [event.value for event in self.risk_events[-10:]],
+            'recent_events': [event.value for event in list(self.risk_events)[-10:]],
             'risk_parameters': self.risk_parameters,
             'portfolio_metrics': {
                 'value': self.portfolio_value,
