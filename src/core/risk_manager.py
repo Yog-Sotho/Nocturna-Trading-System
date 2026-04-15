@@ -4,13 +4,12 @@ Production-grade risk management with real correlation calculations.
 """
 
 import logging
-import numpy as np
-from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Tuple
-from enum import Enum
 import threading
 from collections import deque
+from datetime import UTC, datetime, timedelta
+from enum import Enum
 
+import numpy as np
 from scipy.stats import spearmanr
 
 
@@ -43,7 +42,7 @@ class RiskManager:
 
     _correlation_cache_ttl = timedelta(hours=1)
 
-    def __init__(self, config: Dict):
+    def __init__(self, config: dict):
         self.config = config
         self.logger = logging.getLogger(__name__)
 
@@ -56,12 +55,12 @@ class RiskManager:
         self.daily_stats = {
             'trades': [],
             'realized_pnl': 0.0,
-            'started_at': datetime.now(timezone.utc),
-            'last_reset': datetime.now(timezone.utc).date()
+            'started_at': datetime.now(UTC),
+            'last_reset': datetime.now(UTC).date()
         }
 
         # Risk event callbacks (observer pattern)
-        self._risk_callbacks: List = []
+        self._risk_callbacks: list = []
 
         # Portfolio tracking
         self.portfolio_value = float(self.config.get('initial_capital', 100000))
@@ -70,14 +69,14 @@ class RiskManager:
         self.max_drawdown = 0.0
 
         # Correlation tracking — instance-level, not class-level
-        self._correlation_cache: Dict[str, Tuple[float, datetime]] = {}
+        self._correlation_cache: dict[str, tuple[float, datetime]] = {}
         self._cache_lock = threading.Lock()
-        self.correlation_history: Dict[str, List[float]] = {}
-        self.position_correlations: Dict[str, float] = {}
+        self.correlation_history: dict[str, list[float]] = {}
+        self.position_correlations: dict[str, float] = {}
 
         # Volatility tracking
-        self.volatility_cache: Dict[str, Dict] = {}
-        self.price_history: Dict[str, deque] = {}
+        self.volatility_cache: dict[str, dict] = {}
+        self.price_history: dict[str, deque] = {}
 
         # Risk metrics history for monitoring
         self.metrics_history = deque(maxlen=1000)
@@ -112,17 +111,17 @@ class RiskManager:
 
     def _reset_daily_stats_if_needed(self) -> None:
         """Reset daily stats at midnight UTC."""
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         if today > self.daily_stats.get('last_reset', today):
             self.daily_stats = {
                 'trades': [],
                 'realized_pnl': 0.0,
-                'started_at': datetime.now(timezone.utc),
+                'started_at': datetime.now(UTC),
                 'last_reset': today
             }
             self.logger.info("Daily risk stats reset")
 
-    def _load_risk_parameters(self) -> Dict:
+    def _load_risk_parameters(self) -> dict:
         """
         Load and validate risk parameters from configuration.
         Ensures all parameters are within safe bounds.
@@ -196,8 +195,8 @@ class RiskManager:
 
         return params
 
-    def validate_trade(self, signal: Dict, current_positions: Dict,
-                       market_data: Dict) -> Tuple[bool, str, Dict]:
+    def validate_trade(self, signal: dict, current_positions: dict,
+                       market_data: dict) -> tuple[bool, str, dict]:
         """
         Validate a trading signal against all risk controls.
 
@@ -257,7 +256,7 @@ class RiskManager:
                 self.logger.error(f"Error in trade validation: {e}")
                 return False, f"Validation error: {str(e)}", signal
 
-    def _validate_basic_constraints(self, signal: Dict) -> bool:
+    def _validate_basic_constraints(self, signal: dict) -> bool:
         """Validate basic signal constraints."""
         required_fields = ['symbol', 'side', 'quantity', 'type']
         for field in required_fields:
@@ -275,8 +274,8 @@ class RiskManager:
 
         return True
 
-    def _check_position_limits(self, signal: Dict, positions: Dict,
-                               market_data: Dict) -> Tuple[bool, str]:
+    def _check_position_limits(self, signal: dict, positions: dict,
+                               market_data: dict) -> tuple[bool, str]:
         """Check if trade would exceed position limits as fraction of portfolio."""
         symbol = signal['symbol']
         quantity = signal['quantity']
@@ -305,8 +304,8 @@ class RiskManager:
 
         return True, "Position limits OK"
 
-    def _check_portfolio_exposure(self, signal: Dict, positions: Dict,
-                                 market_data: Dict) -> Tuple[bool, str]:
+    def _check_portfolio_exposure(self, signal: dict, positions: dict,
+                                 market_data: dict) -> tuple[bool, str]:
         """Check portfolio total exposure."""
         current_price = market_data.get('price', 100)
         quantity = signal.get('quantity', 0)
@@ -325,8 +324,8 @@ class RiskManager:
 
         return True, "Portfolio exposure OK"
 
-    def _check_correlation_risk(self, signal: Dict, positions: Dict,
-                                  market_data: Dict) -> Tuple[bool, str]:
+    def _check_correlation_risk(self, signal: dict, positions: dict,
+                                  market_data: dict) -> tuple[bool, str]:
         """
         Check correlation risk with real calculation.
         Uses historical price data to compute actual correlations.
@@ -383,7 +382,7 @@ class RiskManager:
         with self._cache_lock:
             if cache_key in self._correlation_cache:
                 correlation, timestamp = self._correlation_cache[cache_key]
-                if datetime.now(timezone.utc) - timestamp < self._correlation_cache_ttl:
+                if datetime.now(UTC) - timestamp < self._correlation_cache_ttl:
                     return correlation
 
         try:
@@ -410,7 +409,7 @@ class RiskManager:
 
             # Cache the result
             with self._cache_lock:
-                self._correlation_cache[cache_key] = (correlation, datetime.now(timezone.utc))
+                self._correlation_cache[cache_key] = (correlation, datetime.now(UTC))
 
             return correlation
 
@@ -444,7 +443,7 @@ class RiskManager:
 
         self.price_history[symbol].append(price)
 
-    def _check_volatility_risk(self, signal: Dict, market_data: Dict) -> Tuple[bool, str]:
+    def _check_volatility_risk(self, signal: dict, market_data: dict) -> tuple[bool, str]:
         """Check if volatility is too high for new trades."""
         volatility_threshold = self.risk_parameters['volatility_threshold']
 
@@ -469,9 +468,9 @@ class RiskManager:
             self.logger.warning(f"Volatility check error: {e}")
             return True, "Volatility check skipped"
 
-    def _check_temporal_limits(self, signal: Dict) -> Tuple[bool, str]:
+    def _check_temporal_limits(self, signal: dict) -> tuple[bool, str]:
         """Check temporal trading limits."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Count daily trades
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -511,8 +510,8 @@ class RiskManager:
 
         return True, "Temporal limits OK"
 
-    def _adjust_position_size(self, signal: Dict, positions: Dict,
-                              market_data: Dict) -> Dict:
+    def _adjust_position_size(self, signal: dict, positions: dict,
+                              market_data: dict) -> dict:
         """Adjust position size based on configured method."""
         method = self.risk_parameters['position_sizing_method']
         original_quantity = signal['quantity']
@@ -554,7 +553,7 @@ class RiskManager:
             self.logger.error(f"Error adjusting position size: {e}")
             return signal
 
-    def _volatility_position_sizing(self, signal: Dict, market_data: Dict) -> Dict:
+    def _volatility_position_sizing(self, signal: dict, market_data: dict) -> dict:
         """
         Calculate position size based on volatility targeting.
         Aims to maintain constant portfolio volatility.
@@ -577,7 +576,7 @@ class RiskManager:
             self.logger.error(f"Error in volatility position sizing: {e}")
             return signal
 
-    def _kelly_position_sizing(self, signal: Dict, market_data: Dict) -> Dict:
+    def _kelly_position_sizing(self, signal: dict, market_data: dict) -> dict:
         """
         Calculate position size using Kelly criterion.
         Falls back to volatility sizing if insufficient trade history.
@@ -669,7 +668,7 @@ class RiskManager:
         avg_loss = sum(t['pnl'] for t in recent_trades) / len(recent_trades)
         return avg_loss / self.portfolio_value if self.portfolio_value > 0 else -0.01
 
-    def _adjust_risk_levels(self, signal: Dict, market_data: Dict) -> Dict:
+    def _adjust_risk_levels(self, signal: dict, market_data: dict) -> dict:
         """Adjust stop loss and take profit based on ATR."""
         if not self.risk_parameters['dynamic_stop_loss']:
             return signal
@@ -703,7 +702,7 @@ class RiskManager:
             self.logger.error(f"Error adjusting risk levels: {e}")
             return signal
 
-    def monitor_portfolio_risk(self, positions: Dict, market_data: Dict) -> Dict:
+    def monitor_portfolio_risk(self, positions: dict, market_data: dict) -> dict:
         """
         Monitor portfolio risk continuously.
         Returns risk metrics and triggers events for risk breaches.
@@ -737,7 +736,7 @@ class RiskManager:
 
                 # Record metrics history
                 self.metrics_history.append({
-                    'timestamp': datetime.now(timezone.utc),
+                    'timestamp': datetime.now(UTC),
                     'metrics': risk_metrics,
                     'level': risk_level.value
                 })
@@ -746,20 +745,20 @@ class RiskManager:
                     'risk_level': risk_level.value,
                     'risk_metrics': risk_metrics,
                     'risk_events': [event.value for event in risk_events],
-                    'timestamp': datetime.now(timezone.utc)
+                    'timestamp': datetime.now(UTC)
                 }
 
             except Exception as e:
                 self.logger.error(f"Error monitoring portfolio risk: {e}")
                 return {'error': str(e)}
 
-    def _calculate_total_exposure(self, positions: Dict) -> float:
+    def _calculate_total_exposure(self, positions: dict) -> float:
         """Calculate total portfolio exposure."""
         if self.portfolio_value == 0:
             return 0.0
         return sum(abs(pos.get('market_value', 0)) for pos in positions.values()) / self.portfolio_value
 
-    def _calculate_current_drawdown(self, positions: Dict) -> float:
+    def _calculate_current_drawdown(self, positions: dict) -> float:
         """Calculate current drawdown from peak."""
         current_value = sum(pos.get('market_value', 0) for pos in positions.values())
 
@@ -780,7 +779,7 @@ class RiskManager:
 
         return self.current_drawdown
 
-    def _calculate_var(self, positions: Dict, market_data: Dict, confidence: float) -> float:
+    def _calculate_var(self, positions: dict, market_data: dict, confidence: float) -> float:
         """
         Calculate Value at Risk using parametric method.
         VaR = z_score * portfolio_volatility * portfolio_value * sqrt(horizon)
@@ -815,7 +814,7 @@ class RiskManager:
             self.logger.error(f"Error calculating VaR: {e}")
             return 0.0
 
-    def _calculate_portfolio_volatility(self, positions: Dict, market_data: Dict) -> float:
+    def _calculate_portfolio_volatility(self, positions: dict, market_data: dict) -> float:
         """Calculate portfolio volatility (weighted average)."""
         try:
             if self.portfolio_value == 0:
@@ -834,7 +833,7 @@ class RiskManager:
             self.logger.error(f"Error calculating portfolio volatility: {e}")
             return 0.0
 
-    def _calculate_portfolio_correlation_risk(self, positions: Dict, market_data: Dict) -> float:
+    def _calculate_portfolio_correlation_risk(self, positions: dict, market_data: dict) -> float:
         """Calculate average correlation between all positions."""
         symbols = list(positions.keys())
         if len(symbols) < 2:
@@ -851,7 +850,7 @@ class RiskManager:
 
         return np.mean(correlations)
 
-    def _calculate_concentration_risk(self, positions: Dict) -> float:
+    def _calculate_concentration_risk(self, positions: dict) -> float:
         """
         Calculate concentration risk using Herfindahl-Hirschman Index.
         HHI = sum(weight^2) for all positions.
@@ -871,7 +870,7 @@ class RiskManager:
             self.logger.error(f"Error calculating concentration risk: {e}")
             return 0.0
 
-    def _assess_risk_level(self, metrics: Dict) -> RiskLevel:
+    def _assess_risk_level(self, metrics: dict) -> RiskLevel:
         """Assess overall risk level from metrics."""
         risk_score = 0
 
@@ -917,7 +916,7 @@ class RiskManager:
         else:
             return RiskLevel.LOW
 
-    def _check_risk_events(self, metrics: Dict, positions: Dict) -> List[RiskEvent]:
+    def _check_risk_events(self, metrics: dict, positions: dict) -> list[RiskEvent]:
         """Check for specific risk events that need to be triggered."""
         events = []
 
@@ -949,16 +948,16 @@ class RiskManager:
 
         return events
 
-    def record_trade(self, trade: Dict) -> None:
+    def record_trade(self, trade: dict) -> None:
         """Record a completed trade for analytics."""
         with self._lock:
-            trade['timestamp'] = datetime.now(timezone.utc)
+            trade['timestamp'] = datetime.now(UTC)
             self.daily_stats['trades'].append(trade)
 
             if 'pnl' in trade:
                 self.daily_stats['realized_pnl'] += trade['pnl']
 
-    def get_risk_report(self) -> Dict:
+    def get_risk_report(self) -> dict:
         """Generate comprehensive risk report."""
         return {
             'current_risk_level': self.current_risk_level.value,
@@ -973,9 +972,9 @@ class RiskManager:
             'daily_stats': {
                 'trades_today': len([
                     t for t in self.daily_stats['trades']
-                    if t.get('timestamp', datetime.min).date() == datetime.now(timezone.utc).date()
+                    if t.get('timestamp', datetime.min).date() == datetime.now(UTC).date()
                 ]),
                 'realized_pnl': self.daily_stats.get('realized_pnl', 0)
             },
-            'timestamp': datetime.now(timezone.utc)
+            'timestamp': datetime.now(UTC)
         }
