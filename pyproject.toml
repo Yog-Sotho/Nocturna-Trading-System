@@ -30,6 +30,8 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101"]  # allow assert in tests
+"src/advanced/*" = ["N806"]  # ML convention: X, X_scaled, etc.
+"src/core/risk_manager.py" = ["N806"]  # MIN_KELLY_TRADES constant
 
 [tool.bandit]
 exclude_dirs = ["tests", "venv", ".venv"]
