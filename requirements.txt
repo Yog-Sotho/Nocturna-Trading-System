@@ -109,7 +109,7 @@ discord.py==2.4.0
 twilio==9.4.0
 
 # Development & Testing
-pytest==8.3.4
+pytest==9.0.3
 pytest-asyncio==0.25.0
 pytest-mock==3.14.0
 pytest-cov==6.0.0
