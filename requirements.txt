@@ -10,7 +10,7 @@ SQLAlchemy==2.0.36
 Flask-SQLAlchemy==3.1.1
 
 # Security
-cryptography==44.0.0
+cryptography==46.0.7
 PyJWT==2.10.1
 bcrypt==4.2.1
 
