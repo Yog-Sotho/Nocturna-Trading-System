@@ -44,7 +44,7 @@ psycopg2-binary==2.9.10
 redis==5.2.1
 
 # Web & API
-requests==2.32.3
+requests==2.33.0
 websockets==14.1
 aiohttp==3.13.4
 
