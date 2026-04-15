@@ -3,17 +3,17 @@ NOCTURNA Trading System - Authentication Middleware
 Production-grade JWT authentication and authorization.
 """
 
+import contextlib
 import os
 import secrets
-from datetime import datetime, timedelta, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from functools import wraps
-from typing import Optional, Dict, Any, Callable
+from typing import Any
 
-from flask import request, g, jsonify, current_app
 import jwt
+from flask import current_app, g, jsonify, request
 from werkzeug.security import generate_password_hash
-
-
 
 # =============================================================================
 # JWT TOKEN MANAGEMENT
@@ -95,8 +95,8 @@ class TokenManager:
                 pass
         self._token_blacklist_memory.add(jti)
 
-    def create_access_token(self, identity: str, user_data: Optional[Dict] = None,
-                           additional_claims: Optional[Dict] = None) -> str:
+    def create_access_token(self, identity: str, user_data: dict | None = None,
+                           additional_claims: dict | None = None) -> str:
         """
         Create a new JWT access token.
 
@@ -108,7 +108,7 @@ class TokenManager:
         Returns:
             Encoded JWT token string
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         payload = {
             'iss': 'nocturna-trading-system',
             'sub': str(identity),
@@ -136,7 +136,7 @@ class TokenManager:
         Returns:
             Encoded JWT refresh token string
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         payload = {
             'iss': 'nocturna-trading-system',
             'sub': str(identity),
@@ -150,7 +150,7 @@ class TokenManager:
         token = jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
         return token
 
-    def verify_token(self, token: str, token_type: str = 'access') -> Dict[str, Any]:
+    def verify_token(self, token: str, token_type: str = 'access') -> dict[str, Any]:
         """
         Verify and decode a JWT token.
 
@@ -183,9 +183,9 @@ class TokenManager:
                 raise jwt.InvalidTokenError("Token has been revoked")
 
             # Check if token is not yet valid
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             nbf = payload.get('nbf')
-            if nbf and datetime.fromtimestamp(nbf, tz=timezone.utc) > now:
+            if nbf and datetime.fromtimestamp(nbf, tz=UTC) > now:
                 raise jwt.InvalidTokenError("Token not yet valid")
 
             return payload
@@ -218,7 +218,7 @@ class TokenManager:
             if jti:
                 # TTL = remaining token lifetime (max 24h for access, 30d for refresh)
                 exp = payload.get('exp', 0)
-                ttl = max(int(exp - datetime.now(timezone.utc).timestamp()), 3600)
+                ttl = max(int(exp - datetime.now(UTC).timestamp()), 3600)
                 self._add_to_blacklist(jti, ttl_seconds=ttl)
                 current_app.logger.info(f"Token revoked: {jti}")
                 return True
@@ -226,7 +226,7 @@ class TokenManager:
         except jwt.InvalidTokenError:
             return False
 
-    def get_token_identity(self, token: str) -> Optional[str]:
+    def get_token_identity(self, token: str) -> str | None:
         """
         Extract identity from token without full verification.
         Used for logging and audit purposes.
@@ -256,13 +256,13 @@ class TokenManager:
 token_manager = TokenManager()
 
 
-def create_token(identity: str, user_data: Optional[Dict] = None,
-                additional_claims: Optional[Dict] = None) -> str:
+def create_token(identity: str, user_data: dict | None = None,
+                additional_claims: dict | None = None) -> str:
     """Create access token shorthand."""
     return token_manager.create_access_token(identity, user_data, additional_claims)
 
 
-def verify_token(token: str, token_type: str = 'access') -> Dict[str, Any]:
+def verify_token(token: str, token_type: str = 'access') -> dict[str, Any]:
     """Verify token shorthand."""
     return token_manager.verify_token(token, token_type)
 
@@ -312,10 +312,8 @@ def require_auth(f: Callable) -> Callable:
                     f"Path: {request.path} | Request ID: {getattr(g, 'request_id', 'unknown')}"
                 )
                 ip_manager_inst = None
-                try:
+                with contextlib.suppress(ImportError):
                     from src.middleware.security import ip_manager as ip_manager_inst
-                except ImportError:
-                    pass
                 if ip_manager_inst:
                     ip_manager_inst.record_failed_attempt(request.remote_addr)
                 return jsonify({
@@ -453,18 +451,17 @@ def require_trading_permissions(f: Callable) -> Callable:
         trading_mode = user_data.get('trading_mode', 'LIVE')
         current_mode = os.environ.get('TRADING_MODE', 'PAPER')
 
-        if trading_mode != current_mode:
-            if current_mode == 'LIVE' and trading_mode != 'LIVE':
-                current_app.logger.warning(
-                    f"Live trading attempt by PAPER-only user: {getattr(g, 'user_id', 'unknown')} | "
-                    f"Request ID: {getattr(g, 'request_id', 'unknown')}"
-                )
-                return jsonify({
-                    'success': False,
-                    'error': 'User not authorized for live trading',
-                    'error_code': 'LIVE_TRADING_FORBIDDEN',
-                    'request_id': getattr(g, 'request_id', None)
-                }), 403
+        if trading_mode != current_mode and current_mode == 'LIVE' and trading_mode != 'LIVE':
+            current_app.logger.warning(
+                f"Live trading attempt by PAPER-only user: {getattr(g, 'user_id', 'unknown')} | "
+                f"Request ID: {getattr(g, 'request_id', 'unknown')}"
+            )
+            return jsonify({
+                'success': False,
+                'error': 'User not authorized for live trading',
+                'error_code': 'LIVE_TRADING_FORBIDDEN',
+                'request_id': getattr(g, 'request_id', None)
+            }), 403
 
         return f(*args, **kwargs)
 
@@ -540,13 +537,13 @@ class APIKeyManager:
             'user_id': user_id,
             'permissions': permissions or ['read'],
             'description': description,
-            'created_at': datetime.now(timezone.utc),
+            'created_at': datetime.now(UTC),
             'expires_at': expires_at,
             'last_used': None,
             'use_count': 0
         }
 
-    def validate_key(self, key: str) -> Optional[Dict]:
+    def validate_key(self, key: str) -> dict | None:
         """
         Validate an API key and return its metadata.
         Uses check_password_hash for proper comparison (pbkdf2 salts differ per hash).
@@ -572,13 +569,12 @@ class APIKeyManager:
         metadata = self.key_metadata.get(matched_hash, {})
 
         # Check expiration
-        if metadata.get('expires_at'):
-            if datetime.now(timezone.utc) > metadata['expires_at']:
-                current_app.logger.warning("Expired API key used")
-                return None
+        if metadata.get('expires_at') and datetime.now(UTC) > metadata['expires_at']:
+            current_app.logger.warning("Expired API key used")
+            return None
 
         # Update usage statistics
-        metadata['last_used'] = datetime.now(timezone.utc)
+        metadata['last_used'] = datetime.now(UTC)
         metadata['use_count'] = metadata.get('use_count', 0) + 1
 
         return {

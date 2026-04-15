@@ -4,15 +4,13 @@ Production-grade security headers, rate limiting, and protection mechanisms.
 """
 
 import os
-from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, Optional
+from datetime import UTC, datetime, timedelta
 from functools import wraps
+from typing import Any
 
-from flask import Flask, request, g, jsonify, current_app
+from flask import Flask, current_app, g, jsonify, request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-
-
 
 # =============================================================================
 # RATE LIMITING CONFIGURATION
@@ -227,7 +225,7 @@ class InputSanitizer:
         return value
 
     @staticmethod
-    def sanitize_symbol(symbol: str) -> Optional[str]:
+    def sanitize_symbol(symbol: str) -> str | None:
         """
         Sanitize and validate a stock symbol.
 
@@ -258,7 +256,7 @@ class InputSanitizer:
 
     @staticmethod
     def sanitize_numeric(value: Any, min_val: float = None,
-                         max_val: float = None) -> Optional[float]:
+                         max_val: float = None) -> float | None:
         """
         Sanitize and validate a numeric input.
 
@@ -283,7 +281,7 @@ class InputSanitizer:
         return num
 
     @staticmethod
-    def sanitize_config_dict(data: Dict) -> Dict:
+    def sanitize_config_dict(data: dict) -> dict:
         """
         Sanitize configuration dictionary input.
 
@@ -390,15 +388,14 @@ class InputSanitizer:
 
             # String allowed values
             if isinstance(value, str):
-                if 'allowed' in schema:
-                    if value.upper() in [a.upper() for a in schema['allowed']]:
-                        sanitized[key] = value.upper()
+                if 'allowed' in schema and value.upper() in [a.upper() for a in schema['allowed']]:
+                    sanitized[key] = value.upper()
                 continue
 
         return sanitized
 
     @staticmethod
-    def sanitize_order_signal(data: Dict) -> Optional[Dict]:
+    def sanitize_order_signal(data: dict) -> dict | None:
         """
         Sanitize and validate a trading signal/order input.
 
@@ -506,7 +503,7 @@ class IPManager:
         Record a failed authentication attempt.
         Returns True if IP should be blacklisted due to too many failures.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         if ip not in self.failed_attempts:
             self.failed_attempts[ip] = []
