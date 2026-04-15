@@ -1,3 +1,4 @@
+# FILE LOCATION: .github/workflows/ci.yml
 name: Nocturna CI
 
 on:
@@ -23,7 +24,7 @@ jobs:
           pip install ruff bandit mypy
 
       - name: Ruff lint
-        run: ruff check src/ tests/ --output-format=github
+        run: ruff check src/ --output-format=github
 
       - name: Bandit security scan
         run: bandit -r src/ -c pyproject.toml --severity-level medium -f json || true
@@ -68,4 +69,4 @@ jobs:
           REDIS_URL: redis://localhost:6379/0
           TRADING_MODE: PAPER
         run: |
-          pytest tests/ -v --tb=short --cov=src --cov-report=term-missing --cov-fail-under=40
+          pytest src/tests/ -v --tb=short --cov=src --cov-report=term-missing --cov-fail-under=40
