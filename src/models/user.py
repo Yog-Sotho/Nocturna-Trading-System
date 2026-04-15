@@ -226,7 +226,7 @@ class TradeRecord(db.Model):
     commission = Column(Float, default=0)
 
     # Metadata
-    metadata = Column(JSON, default=dict)
+    trade_metadata = Column(JSON, default=dict)
 
     # User
     user_id = Column(Integer, ForeignKey('users.id'), index=True)
