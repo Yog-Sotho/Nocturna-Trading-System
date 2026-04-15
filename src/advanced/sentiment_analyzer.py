@@ -1,3 +1,4 @@
+# FILE LOCATION: src/advanced/sentiment_analyzer.py
 """
 Sentiment Analysis Engine for NOCTURNA v2.0
 Analyzes market sentiment from news, social media, and other textual data.
@@ -70,7 +71,7 @@ class SentimentAnalyzer:
         self.logger.info("Sentiment Analyzer initialized")
 
     def _load_positive_words(self) -> set:
-        """Carica dizionario di parole positive."""
+        """Load positive word dictionary."""
         positive_words = {
             'bullish', 'positive', 'growth', 'profit', 'gain', 'rise', 'increase',
             'strong', 'beat', 'exceed', 'outperform', 'upgrade', 'buy', 'rally',
@@ -93,7 +94,7 @@ class SentimentAnalyzer:
         return negative_words
 
     def _load_financial_terms(self) -> dict[str, float]:
-        """Carica termini finanziari con pesi."""
+        """Load financial terms with weights."""
         financial_terms = {
             'earnings': 1.5,
             'revenue': 1.3,
@@ -209,20 +210,20 @@ class SentimentAnalyzer:
             }
 
     def _preprocess_text(self, text: str) -> str:
-        """Preprocessing del testo."""
+        """Text preprocessing."""
         # Converti in lowercase
         text = text.lower()
 
-        # Rimuovi URL
+        # Remove URLs
         text = re.sub(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', '', text)
 
-        # Rimuovi menzioni e hashtag (ma mantieni il contenuto)
+        # Remove mentions and hashtags (but keep the content)
         text = re.sub(r'[@#]', '', text)
 
-        # Rimuovi punteggiatura eccessiva
+        # Remove excessive punctuation
         text = re.sub(r'[^\w\s]', ' ', text)
 
-        # Rimuovi spazi multipli
+        # Remove multiple spaces
         text = re.sub(r'\s+', ' ', text)
 
         return text.strip()
@@ -281,7 +282,7 @@ class SentimentAnalyzer:
             news_articles: Lista di articoli con 'title', 'content', 'symbol', 'timestamp'
 
         Returns:
-            Analisi aggregata del sentiment
+            Aggregated sentiment analysis
         """
         try:
             if not news_articles:
@@ -301,7 +302,7 @@ class SentimentAnalyzer:
                 # Analyze sentiment
                 sentiment_result = self.analyze_text(full_text, symbol)
 
-                # Aggrega per simbolo
+                # Aggregate by symbol
                 if symbol not in symbol_sentiments:
                     symbol_sentiments[symbol] = {
                         'scores': [],
@@ -358,14 +359,14 @@ class SentimentAnalyzer:
         Generate a sentiment signal for the market.
 
         Args:
-            symbol: Simbolo del titolo
-            lookback_hours: Ore di lookback per l'analisi
+            symbol: Ticker symbol
+            lookback_hours: Lookback hours for analysis
 
         Returns:
             Segnale di sentiment
         """
         try:
-            # Filtra sentiment history per simbolo e timeframe
+            # Filter sentiment history by symbol and timeframe
             cutoff_time = datetime.now(UTC) - timedelta(hours=lookback_hours)
 
             relevant_sentiments = [
@@ -393,7 +394,7 @@ class SentimentAnalyzer:
 
                 total_weight = time_weight * sentiment.confidence
 
-                # Applica peso della fonte
+                # Apply source weight
                 source_weight = self.source_weights.get(sentiment.source, 1.0)
                 total_weight *= source_weight
 
@@ -440,11 +441,11 @@ class SentimentAnalyzer:
     def add_sentiment_data(self, source: str, symbol: str, text: str,
                           metadata: dict = None):
         """
-        Aggiunge nuovi dati di sentiment al sistema.
+        Add new sentiment data to the system.
 
         Args:
-            source: Fonte dei dati
-            symbol: Simbolo del titolo
+            source: Data source
+            symbol: Ticker symbol
             text: Testo da analizzare
             metadata: Metadati aggiuntivi
         """
@@ -463,7 +464,7 @@ class SentimentAnalyzer:
                 metadata=metadata or {}
             )
 
-            # Aggiungi alla history
+            # Add to history
             self.sentiment_history.append(sentiment_data)
 
             # Mantieni solo ultimi N giorni
@@ -475,7 +476,7 @@ class SentimentAnalyzer:
                 if s.timestamp >= cutoff_time
             ]
 
-            self.logger.debug(f"Aggiunto sentiment per {symbol}: {sentiment_result['score']:.3f}")
+            self.logger.debug(f"Added sentiment for {symbol}: {sentiment_result['score']:.3f}")
 
         except Exception as e:
             self.logger.error(f"Error adding sentiment: {e}")
@@ -485,14 +486,14 @@ class SentimentAnalyzer:
         Analyze sentiment trends for a symbol.
 
         Args:
-            symbol: Simbolo del titolo
+            symbol: Ticker symbol
             days: Giorni di storia da analizzare
 
         Returns:
-            Analisi dei trend
+            Trend analysis
         """
         try:
-            # Filtra dati per simbolo e timeframe
+            # Filter data by symbol and timeframe
             cutoff_time = datetime.now(UTC) - timedelta(days=days)
 
             symbol_sentiments = [
@@ -506,7 +507,7 @@ class SentimentAnalyzer:
                     'data_points': len(symbol_sentiments)
                 }
 
-            # Ordina per timestamp
+            # Sort by timestamp
             symbol_sentiments.sort(key=lambda x: x.timestamp)
 
             # Calculate trend
@@ -548,10 +549,10 @@ class SentimentAnalyzer:
                 source_breakdown[source]['count'] += 1
                 source_breakdown[source]['scores'].append(sentiment.score)
 
-            # Calcola medie per fonte
+            # Calculate averages by source
             for _source, data in source_breakdown.items():
                 data['avg_score'] = np.mean(data['scores'])
-                del data['scores']  # Rimuovi per ridurre dimensione output
+                del data['scores']  # Remove to reduce output size
 
             return {
                 'trend': trend,
@@ -567,16 +568,16 @@ class SentimentAnalyzer:
             }
 
         except Exception as e:
-            self.logger.error(f"Errore nell'analisi trend: {e}")
+            self.logger.error(f"Trend analysis error: {e}")
             return {'error': str(e)}
 
     def get_sentiment_summary(self) -> dict:
-        """Genera un summary completo del sentiment."""
+        """Generate a complete sentiment summary."""
         try:
             if not self.sentiment_history:
                 return {'status': 'No sentiment data available'}
 
-            # Raggruppa per simbolo
+            # Group by symbol
             symbol_groups = {}
             for sentiment in self.sentiment_history:
                 symbol = sentiment.symbol
@@ -584,7 +585,7 @@ class SentimentAnalyzer:
                     symbol_groups[symbol] = []
                 symbol_groups[symbol].append(sentiment)
 
-            # Analizza ogni simbolo
+            # Analyze each symbol
             symbol_summaries = {}
             for symbol, sentiments in symbol_groups.items():
                 recent_sentiments = [
@@ -604,7 +605,7 @@ class SentimentAnalyzer:
                         'total_data_points': len(sentiments)
                     }
 
-            # Statistiche globali
+            # Global statistics
             all_recent = [
                 s for s in self.sentiment_history
                 if s.timestamp >= datetime.now(UTC) - timedelta(hours=24)
@@ -624,7 +625,7 @@ class SentimentAnalyzer:
                 }
             }
 
-            # Calcola distribuzione
+            # Calculate distribution
             for sentiment in all_recent:
                 classification = self._classify_sentiment(sentiment.score)
                 if classification == SentimentScore.VERY_POSITIVE:
@@ -646,6 +647,6 @@ class SentimentAnalyzer:
             }
 
         except Exception as e:
-            self.logger.error(f"Errore nel summary sentiment: {e}")
+            self.logger.error(f"Sentiment summary error: {e}")
             return {'error': str(e)}
 

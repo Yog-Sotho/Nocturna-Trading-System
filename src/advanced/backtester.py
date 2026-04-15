@@ -1,5 +1,6 @@
+# FILE LOCATION: src/advanced/backtester.py
 """
-Advanced Backtesting Engine per NOCTURNA v2.0
+Advanced Backtesting Engine for NOCTURNA v2.0
 Complete engine for backtesting trading strategies.
 """
 
@@ -533,7 +534,7 @@ class AdvancedBacktester:
                 # Shuffle data while maintaining local temporal structure
                 shuffled_data = self._shuffle_data_blocks(data)
 
-                # Esegui backtest
+                # Run backtest
                 result = self.run_backtest(shuffled_data, strategy_function, strategy_params)
 
                 if 'error' not in result:
@@ -672,7 +673,7 @@ class AdvancedBacktester:
                 # Advance window
                 start_idx += test_period
 
-            # Analyze results aggregati
+            # Analyze aggregated results
             if not results:
                 return {'error': 'No valid periods completed'}
 

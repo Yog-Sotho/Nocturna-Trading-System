@@ -1,5 +1,6 @@
+# FILE LOCATION: src/advanced/ml_optimizer.py
 """
-Machine Learning Optimizer per NOCTURNA v2.0
+Machine Learning Optimizer for NOCTURNA v2.0
 Uses ML algorithms to automatically optimize trading parameters.
 """
 
@@ -39,7 +40,7 @@ class MLOptimizer:
             )
         }
 
-        # Scaler per normalizzazione
+        # Scaler for normalization
         self.scaler = StandardScaler()
 
         # Parameters to optimize
@@ -203,19 +204,19 @@ class MLOptimizer:
                           backtest_function: callable,
                           n_iterations: int = 50) -> dict:
         """
-        Ottimizza i parametri usando algoritmi genetici e ML.
+        Optimize parameters using genetic algorithms and ML.
 
         Args:
-            market_data: Dati di mercato per l'ottimizzazione
+            market_data: Market data for optimization
             current_params: Current parameters
-            backtest_function: Funzione per eseguire backtest
-            n_iterations: Numero di iterazioni
+            backtest_function: Function to run backtests
+            n_iterations: Number of iterations
 
         Returns:
             Optimized parameters
         """
         try:
-            self.logger.info(f"Starting parameter optimization ({n_iterations} iterazioni)")
+            self.logger.info(f"Starting parameter optimization ({n_iterations} iterations)")
 
             best_params = current_params.copy()
             best_score = -np.inf
@@ -226,7 +227,7 @@ class MLOptimizer:
             for iteration in range(n_iterations):
                 # Generate candidate parameters
                 if iteration < n_iterations // 2:
-                    # Prima metà: esplorazione casuale
+                    # First half: random exploration
                     candidate_params = self._generate_random_parameters()
                 else:
                     # Seconda metà: sfruttamento con ML
@@ -237,12 +238,12 @@ class MLOptimizer:
                     else:
                         candidate_params = self._generate_random_parameters()
 
-                # Esegui backtest
+                # Run backtest
                 try:
                     backtest_results = backtest_function(candidate_params)
                     score = self.calculate_performance_score(backtest_results)
 
-                    # Aggiungi ai dati di training
+                    # Add to training data
                     features = self.generate_features(market_data, candidate_params)
                     training_data.append({
                         'features': features.flatten(),
@@ -250,7 +251,7 @@ class MLOptimizer:
                         'params': candidate_params.copy()
                     })
 
-                    # Aggiorna best
+                    # Update best
                     if score > best_score:
                         best_score = score
                         best_params = candidate_params.copy()
@@ -260,11 +261,11 @@ class MLOptimizer:
                     self.logger.warning(f"Backtest error at iteration {iteration}: {e}")
                     continue
 
-            # Salva risultati
+            # Save results
             self.best_parameters = best_params
             self.best_score = best_score
 
-            # Aggiungi alla storia
+            # Add to history
             self.optimization_history.append({
                 'timestamp': datetime.now(UTC),
                 'best_params': best_params,
@@ -414,7 +415,7 @@ class MLOptimizer:
             training_data: Dati di training
 
         Returns:
-            Dizionario con importanza dei parametri
+            Dictionary with parameter importance
         """
         try:
             if len(training_data) < 10:
@@ -448,7 +449,7 @@ class MLOptimizer:
             return {}
 
     def save_optimization_results(self, filepath: str):
-        """Salva i risultati dell'ottimizzazione su file."""
+        """Save optimization results to file."""
         try:
             results = {
                 'best_parameters': self.best_parameters,
@@ -474,7 +475,7 @@ class MLOptimizer:
             self.logger.error(f"Error saving: {e}")
 
     def load_optimization_results(self, filepath: str):
-        """Carica i risultati dell'ottimizzazione da file."""
+        """Load optimization results from file."""
         try:
             with open(filepath) as f:
                 results = json.load(f)
@@ -492,10 +493,10 @@ class MLOptimizer:
             self.logger.info(f"Results loaded from {filepath}")
 
         except Exception as e:
-            self.logger.error(f"Errore nel caricamento: {e}")
+            self.logger.error(f"Loading error: {e}")
 
     def get_optimization_report(self) -> dict:
-        """Genera un report completo dell'ottimizzazione."""
+        """Generate a complete optimization report."""
         try:
             if not self.optimization_history:
                 return {'status': 'No optimization history available'}
@@ -514,7 +515,7 @@ class MLOptimizer:
                 'score_improvement': 0.0
             }
 
-            # Calcola miglioramento
+            # Calculate improvement
             if len(self.optimization_history) > 1:
                 first_score = self.optimization_history[0]['best_score']
                 latest_score = latest['best_score']
@@ -524,6 +525,6 @@ class MLOptimizer:
             return report
 
         except Exception as e:
-            self.logger.error(f"Errore nella generazione report: {e}")
+            self.logger.error(f"Report generation error: {e}")
             return {'status': 'error', 'message': str(e)}
 
