@@ -3,25 +3,26 @@ Machine Learning Optimizer per NOCTURNA v2.0
 Uses ML algorithms to automatically optimize trading parameters.
 """
 
+import json
+import logging
+from datetime import UTC, datetime
+
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
-import logging
-from typing import Dict, List
-from datetime import datetime, timezone
-import json
+
 
 class MLOptimizer:
     """
     Machine Learning system for automatic parameter optimization.
     Uses ensemble methods and time series cross-validation.
     """
-    
-    def __init__(self, config: Dict):
+
+    def __init__(self, config: dict):
         self.config = config
         self.logger = logging.getLogger(__name__)
-        
+
         # Modelli ML
         self.models = {
             'random_forest': RandomForestRegressor(
@@ -37,10 +38,10 @@ class MLOptimizer:
                 random_state=42
             )
         }
-        
+
         # Scaler per normalizzazione
         self.scaler = StandardScaler()
-        
+
         # Parameters to optimize
         self.parameter_ranges = {
             'grid_spacing': (0.001, 0.02),
@@ -52,25 +53,25 @@ class MLOptimizer:
             'reversal_confirmation_bars': (2, 10),
             'breakout_volume_mult': (1.2, 3.0)
         }
-        
+
         # Optimization history
         self.optimization_history = []
-        
+
         # Best parameters found
         self.best_parameters = None
         self.best_score = -np.inf
-        
+
         self.logger.info("ML Optimizer initialized")
-    
-    def generate_features(self, market_data: pd.DataFrame, 
-                         current_params: Dict) -> np.ndarray:
+
+    def generate_features(self, market_data: pd.DataFrame,
+                         current_params: dict) -> np.ndarray:
         """
         Generate features for the ML model from market data.
-        
+
         Args:
             market_data: DataFrame con dati OHLCV
             current_params: Current system parameters
-            
+
         Returns:
             Array di features normalizzate
         """
@@ -154,8 +155,8 @@ class MLOptimizer:
             # Return default features (6 market + N params)
             n_features = 6 + len(self.parameter_ranges)
             return np.zeros((1, n_features)).reshape(1, -1)
-    
-    def calculate_performance_score(self, backtest_results: Dict) -> float:
+
+    def calculate_performance_score(self, backtest_results: dict) -> float:
         """
         Calculate performance score from backtest results.
         All components normalized to [0,1] before weighting to prevent scale bias.
@@ -196,32 +197,32 @@ class MLOptimizer:
         except Exception as e:
             self.logger.error(f"Error calculating performance score: {e}")
             return -1.0
-    
-    def optimize_parameters(self, market_data: pd.DataFrame, 
-                          current_params: Dict,
+
+    def optimize_parameters(self, market_data: pd.DataFrame,
+                          current_params: dict,
                           backtest_function: callable,
-                          n_iterations: int = 50) -> Dict:
+                          n_iterations: int = 50) -> dict:
         """
         Ottimizza i parametri usando algoritmi genetici e ML.
-        
+
         Args:
             market_data: Dati di mercato per l'ottimizzazione
             current_params: Current parameters
             backtest_function: Funzione per eseguire backtest
             n_iterations: Numero di iterazioni
-            
+
         Returns:
             Optimized parameters
         """
         try:
             self.logger.info(f"Starting parameter optimization ({n_iterations} iterazioni)")
-            
+
             best_params = current_params.copy()
             best_score = -np.inf
-            
+
             # History for ML training
             training_data = []
-            
+
             for iteration in range(n_iterations):
                 # Generate candidate parameters
                 if iteration < n_iterations // 2:
@@ -235,12 +236,12 @@ class MLOptimizer:
                         )
                     else:
                         candidate_params = self._generate_random_parameters()
-                
+
                 # Esegui backtest
                 try:
                     backtest_results = backtest_function(candidate_params)
                     score = self.calculate_performance_score(backtest_results)
-                    
+
                     # Aggiungi ai dati di training
                     features = self.generate_features(market_data, candidate_params)
                     training_data.append({
@@ -248,48 +249,48 @@ class MLOptimizer:
                         'score': score,
                         'params': candidate_params.copy()
                     })
-                    
+
                     # Aggiorna best
                     if score > best_score:
                         best_score = score
                         best_params = candidate_params.copy()
                         self.logger.info(f"Nuovo best score: {score:.4f} (iter {iteration})")
-                    
+
                 except Exception as e:
                     self.logger.warning(f"Backtest error at iteration {iteration}: {e}")
                     continue
-            
+
             # Salva risultati
             self.best_parameters = best_params
             self.best_score = best_score
-            
+
             # Aggiungi alla storia
             self.optimization_history.append({
-                'timestamp': datetime.now(timezone.utc),
+                'timestamp': datetime.now(UTC),
                 'best_params': best_params,
                 'best_score': best_score,
                 'iterations': n_iterations
             })
-            
+
             self.logger.info(f"Optimization complete. Best score: {best_score:.4f}")
-            
+
             return best_params
-            
+
         except Exception as e:
             self.logger.error(f"Optimization error: {e}")
             return current_params
-    
-    def _generate_random_parameters(self) -> Dict:
+
+    def _generate_random_parameters(self) -> dict:
         """Generate random parameters within defined ranges."""
         params = {}
-        
+
         for param_name, (min_val, max_val) in self.parameter_ranges.items():
             params[param_name] = np.random.uniform(min_val, max_val)
-        
+
         return params
-    
+
     def _generate_ml_parameters(self, market_data: pd.DataFrame,
-                               training_data: List[Dict]) -> Dict:
+                               training_data: list[dict]) -> dict:
         """
         Generate parameters using ML predictions.
 
@@ -306,58 +307,58 @@ class MLOptimizer:
         try:
             if len(training_data) < 10:
                 return self._generate_random_parameters()
-            
+
             # Prepare training data
             X = np.array([data['features'] for data in training_data])
             y = np.array([data['score'] for data in training_data])
-            
+
             # FIX CQ-05: Use a fresh scaler per call to prevent distributional
             # leakage from future time windows into historical scaling.
             window_scaler = StandardScaler()
             X_scaled = window_scaler.fit_transform(X)
-            
+
             # Train model
             model = self.models['random_forest']
             model.fit(X_scaled, y)
-            
+
             # Generate candidates and predict
             best_predicted_params = None
             best_predicted_score = -np.inf
-            
+
             for _ in range(20):  # Try 20 candidates
                 candidate_params = self._generate_random_parameters()
                 features = self.generate_features(market_data, candidate_params)
                 features_scaled = window_scaler.transform(features)
-                
+
                 predicted_score = model.predict(features_scaled)[0]
-                
+
                 if predicted_score > best_predicted_score:
                     best_predicted_score = predicted_score
                     best_predicted_params = candidate_params
-            
+
             return best_predicted_params or self._generate_random_parameters()
-            
+
         except Exception as e:
             self.logger.error(f"Error generating ML parameters: {e}")
             return self._generate_random_parameters()
-    
+
     def adaptive_parameter_tuning(self, market_data: pd.DataFrame,
-                                 current_params: Dict,
-                                 recent_performance: Dict) -> Dict:
+                                 current_params: dict,
+                                 recent_performance: dict) -> dict:
         """
         Adaptive parameter tuning based on recent performance.
-        
+
         Args:
             market_data: Dati di mercato recenti
             current_params: Current parameters
             recent_performance: Recent performance metrics
-            
+
         Returns:
             Adjusted parameters
         """
         try:
             adjusted_params = current_params.copy()
-            
+
             # Analyze performance
             win_rate = recent_performance.get('win_rate', 0.5)
             avg_return = recent_performance.get('avg_return', 0.0)
@@ -380,72 +381,72 @@ class MLOptimizer:
             elif avg_return > 0.05:
                 # Strong positive returns — widen take profit
                 adjusted_params['atr_mult_tp'] *= 1.05
-            
+
             if volatility > 0.3:  # High volatility
                 # More conservative parameters
                 adjusted_params['grid_spacing'] *= 1.2
                 adjusted_params['volatility_threshold'] *= 1.1
-                
+
             elif volatility < 0.1:  # Bassa volatilità
                 # More aggressive parameters
                 adjusted_params['grid_spacing'] *= 0.9
                 adjusted_params['volatility_threshold'] *= 0.9
-            
+
             # Assicura che i parametri rimangano nei range
             for param_name, value in adjusted_params.items():
                 if param_name in self.parameter_ranges:
                     min_val, max_val = self.parameter_ranges[param_name]
                     adjusted_params[param_name] = np.clip(value, min_val, max_val)
-            
+
             self.logger.info("Adjusted parameters adattivamente")
-            
+
             return adjusted_params
-            
+
         except Exception as e:
             self.logger.error(f"Adaptive tuning error: {e}")
             return current_params
-    
-    def get_parameter_importance(self, training_data: List[Dict]) -> Dict:
+
+    def get_parameter_importance(self, training_data: list[dict]) -> dict:
         """
         Calculate parameter importance using feature importance.
-        
+
         Args:
             training_data: Dati di training
-            
+
         Returns:
             Dizionario con importanza dei parametri
         """
         try:
             if len(training_data) < 10:
                 return {}
-            
+
             # Prepare data
             X = np.array([data['features'] for data in training_data])
             y = np.array([data['score'] for data in training_data])
-            
+
             # Train Random Forest
             model = RandomForestRegressor(n_estimators=100, random_state=42)
             model.fit(X, y)
-            
+
             # Feature importance
             importance = model.feature_importances_
-            
+
             # Map to feature names (6 market features + N param features, no time features)
             feature_names = [
                 'volatility', 'trend_strength', 'volume_ratio',
                 'atr_normalized', 'rsi', 'bb_position'
             ] + list(self.parameter_ranges.keys())
-            
+
             importance_dict = {}
             for i, name in enumerate(feature_names[:len(importance)]):
                 importance_dict[name] = importance[i]
-            
+
             return importance_dict
-            
+
         except Exception as e:
             self.logger.error(f"Error calculating importance: {e}")
             return {}
-    
+
     def save_optimization_results(self, filepath: str):
         """Salva i risultati dell'ottimizzazione su file."""
         try:
@@ -463,44 +464,44 @@ class MLOptimizer:
                 ],
                 'parameter_ranges': self.parameter_ranges
             }
-            
+
             with open(filepath, 'w') as f:
                 json.dump(results, f, indent=2)
-            
+
             self.logger.info(f"Results saved to {filepath}")
-            
+
         except Exception as e:
             self.logger.error(f"Error saving: {e}")
-    
+
     def load_optimization_results(self, filepath: str):
         """Carica i risultati dell'ottimizzazione da file."""
         try:
-            with open(filepath, 'r') as f:
+            with open(filepath) as f:
                 results = json.load(f)
-            
+
             self.best_parameters = results.get('best_parameters')
             self.best_score = results.get('best_score', -np.inf)
-            
+
             # Ricostruisci history
             self.optimization_history = []
             for hist in results.get('optimization_history', []):
                 hist_item = hist.copy()
                 hist_item['timestamp'] = datetime.fromisoformat(hist['timestamp'])
                 self.optimization_history.append(hist_item)
-            
+
             self.logger.info(f"Results loaded from {filepath}")
-            
+
         except Exception as e:
             self.logger.error(f"Errore nel caricamento: {e}")
-    
-    def get_optimization_report(self) -> Dict:
+
+    def get_optimization_report(self) -> dict:
         """Genera un report completo dell'ottimizzazione."""
         try:
             if not self.optimization_history:
                 return {'status': 'No optimization history available'}
-            
+
             latest = self.optimization_history[-1]
-            
+
             report = {
                 'status': 'active',
                 'latest_optimization': {
@@ -512,16 +513,16 @@ class MLOptimizer:
                 'total_optimizations': len(self.optimization_history),
                 'score_improvement': 0.0
             }
-            
+
             # Calcola miglioramento
             if len(self.optimization_history) > 1:
                 first_score = self.optimization_history[0]['best_score']
                 latest_score = latest['best_score']
                 improvement = ((latest_score - first_score) / abs(first_score)) * 100
                 report['score_improvement'] = improvement
-            
+
             return report
-            
+
         except Exception as e:
             self.logger.error(f"Errore nella generazione report: {e}")
             return {'status': 'error', 'message': str(e)}
