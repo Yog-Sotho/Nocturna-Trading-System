@@ -46,7 +46,7 @@ redis==5.2.1
 # Web & API
 requests==2.32.3
 websockets==14.1
-aiohttp==3.11.11
+aiohttp==3.13.4
 
 # WSGI Server
 gunicorn==23.0.0
