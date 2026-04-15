@@ -44,7 +44,6 @@ def setup_rate_limiting(app: Flask) -> Limiter:
         storage_uri=storage_uri,
         default_limits=[],
         strategy="fixed-window",
-        injection_scheme="scheme://netloc",
         headers_enabled=True,
     )
 
@@ -61,7 +60,7 @@ def setup_rate_limiting(app: Flask) -> Limiter:
     # Authentication endpoints - rate limit to prevent brute force
     limiter.limit("10 per minute")(
         lambda: request.endpoint and
-        any(request.endpoint.startswith(p) for p in ['login', 'auth', 'token'])
+        any(request.endpoint.startswith(p) for p in ['login', 'auth', 'token', 'register'])
     )
 
     # Trading read endpoints - moderate limits
@@ -82,26 +81,15 @@ def setup_rate_limiting(app: Flask) -> Limiter:
         any(request.endpoint in [p] for p in ['start_engine', 'stop_engine', 'emergency_stop'])
     )
 
+    # Registration endpoint - very strict to prevent account flooding
+    limiter.limit("5 per minute")(
+        lambda: request.endpoint and request.endpoint == 'user.register'
+    )
+
     # =============================================================================
     # CONFIGURATION
     # =============================================================================
-
-    # Custom error message
-    @limiter.ratelimit_error
-    def ratelimit_handler(e):
-        """Handle rate limit exceeded errors."""
-        current_app.logger.warning(
-            f"Rate limit exceeded: {request.path} from {request.remote_addr} | "
-            f"Request ID: {getattr(g, 'request_id', 'unknown')}"
-        )
-        return jsonify({
-            'success': False,
-            'error': 'Rate limit exceeded. Please slow down your requests.',
-            'error_code': 'RATE_LIMIT_EXCEEDED',
-            'retry_after': int(e.description.split()[-2]) if e.description else 60,
-            'request_id': getattr(g, 'request_id', None),
-            'timestamp': datetime.now(timezone.utc).isoformat()
-        }), 429
+    # Rate limit 429 errors are handled by the global errorhandler in main.py
 
     app.logger.info(f"Rate limiting configured with storage: {storage_uri}")
     return limiter
