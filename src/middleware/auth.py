@@ -61,9 +61,19 @@ class TokenManager:
                 self._redis_client.ping()
                 app.logger.info("Token blacklist using Redis backend")
             except Exception as e:
+                if os.environ.get('FLASK_ENV') == 'production':
+                    raise RuntimeError(
+                        f"Redis is required in production for token blacklist but connection failed: {e}. "
+                        f"Set REDIS_URL to a reachable Redis instance."
+                    ) from e
                 app.logger.warning(f"Redis unavailable for token blacklist, using in-memory: {e}")
                 self._redis_client = None
         else:
+            if os.environ.get('FLASK_ENV') == 'production':
+                raise RuntimeError(
+                    "REDIS_URL environment variable MUST be set in production. "
+                    "Token blacklist requires Redis to be shared across Gunicorn workers."
+                )
             app.logger.warning("REDIS_URL not set — token blacklist is in-memory only (not shared across workers)")
 
     def _is_blacklisted(self, jti: str) -> bool:
@@ -293,15 +303,44 @@ def require_auth(f: Callable) -> Callable:
         # Check Authorization header (Bearer token)
         if auth_header.startswith('Bearer '):
             token = auth_header[7:]
-        # Check API Key header
+        # Check API Key header — validate against registered keys
         elif api_key:
-            # API key authentication - create temporary token
-            # In production, validate API key against database
-            return jsonify({
-                'success': False,
-                'error': 'API key authentication requires validation against server',
-                'request_id': getattr(g, 'request_id', None)
-            }), 401
+            metadata = api_key_manager.validate_key(api_key)
+            if not metadata:
+                current_app.logger.warning(
+                    f"Invalid API key attempt from {request.remote_addr} | "
+                    f"Path: {request.path} | Request ID: {getattr(g, 'request_id', 'unknown')}"
+                )
+                ip_manager_inst = None
+                try:
+                    from src.middleware.security import ip_manager as ip_manager_inst
+                except ImportError:
+                    pass
+                if ip_manager_inst:
+                    ip_manager_inst.record_failed_attempt(request.remote_addr)
+                return jsonify({
+                    'success': False,
+                    'error': 'Invalid or expired API key',
+                    'error_code': 'INVALID_API_KEY',
+                    'request_id': getattr(g, 'request_id', None)
+                }), 401
+
+            # Set user context from API key
+            g.user_id = metadata['user_id']
+            g.user_data = {
+                'user_id': metadata['user_id'],
+                'permissions': metadata.get('permissions', []),
+                'auth_method': 'api_key',
+            }
+            g.auth_method = 'api_key'
+            g.token_jti = None
+            g.token_type = 'api_key'
+
+            current_app.logger.info(
+                f"API key auth: {request.path} | User: {g.user_id} | "
+                f"Request ID: {getattr(g, 'request_id', 'unknown')}"
+            )
+            return f(*args, **kwargs)
         else:
             current_app.logger.warning(
                 f"Missing authentication: {request.path} from {request.remote_addr}"
