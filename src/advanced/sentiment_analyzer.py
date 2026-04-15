@@ -1,6 +1,6 @@
 """
-Sentiment Analysis Engine per NOCTURNA v2.0
-Analizza il sentiment del mercato da news, social media e altri dati testuali.
+Sentiment Analysis Engine for NOCTURNA v2.0
+Analyzes market sentiment from news, social media, and other textual data.
 """
 
 import numpy as np
@@ -20,7 +20,7 @@ class SentimentScore(Enum):
 
 @dataclass
 class SentimentData:
-    """Rappresenta dati di sentiment."""
+    """Represents sentiment data."""
     source: str
     symbol: str
     text: str
@@ -31,8 +31,8 @@ class SentimentData:
 
 class SentimentAnalyzer:
     """
-    Sistema avanzato di sentiment analysis per trading.
-    Combina multiple fonti e tecniche di analisi.
+    Advanced sentiment analysis system for trading.
+    Combines multiple sources and analysis techniques.
     """
     
     def __init__(self, config: Dict):
@@ -199,7 +199,7 @@ class SentimentAnalyzer:
             return result
             
         except Exception as e:
-            self.logger.error(f"Errore nell'analisi sentiment: {e}")
+            self.logger.error(f"Sentiment analysis error: {e}")
             return {
                 'score': 0.0,
                 'confidence': 0.0,
@@ -260,7 +260,7 @@ class SentimentAnalyzer:
         return modified_score
     
     def _classify_sentiment(self, score: float) -> SentimentScore:
-        """Classifica il sentiment score."""
+        """Classify the sentiment score."""
         if score >= 0.6:
             return SentimentScore.VERY_POSITIVE
         elif score >= 0.2:
@@ -274,7 +274,7 @@ class SentimentAnalyzer:
     
     def analyze_news_batch(self, news_articles: List[Dict]) -> Dict:
         """
-        Analizza un batch di articoli di news.
+        Analyze a batch of news articles.
         
         Args:
             news_articles: Lista di articoli con 'title', 'content', 'symbol', 'timestamp'
@@ -294,10 +294,10 @@ class SentimentAnalyzer:
                 content = article.get('content', '')
                 timestamp = article.get('timestamp', datetime.now(timezone.utc))
                 
-                # Combina titolo e contenuto
+                # Combine title and content
                 full_text = f"{title} {content}"
                 
-                # Analizza sentiment
+                # Analyze sentiment
                 sentiment_result = self.analyze_text(full_text, symbol)
                 
                 # Aggrega per simbolo
@@ -316,7 +316,7 @@ class SentimentAnalyzer:
                 if timestamp > symbol_sentiments[symbol]['latest_timestamp']:
                     symbol_sentiments[symbol]['latest_timestamp'] = timestamp
             
-            # Calcola sentiment aggregato per simbolo
+            # Calculate aggregated sentiment by symbol
             aggregated_results = {}
             
             for symbol, data in symbol_sentiments.items():
@@ -348,13 +348,13 @@ class SentimentAnalyzer:
             }
             
         except Exception as e:
-            self.logger.error(f"Errore nell'analisi batch news: {e}")
+            self.logger.error(f"News batch analysis error: {e}")
             return {'error': str(e)}
     
     def get_market_sentiment_signal(self, symbol: str, 
                                    lookback_hours: int = 24) -> Dict:
         """
-        Genera un segnale di sentiment per il mercato.
+        Generate a sentiment signal for the market.
         
         Args:
             symbol: Simbolo del titolo
@@ -380,13 +380,13 @@ class SentimentAnalyzer:
                     'data_points': 0
                 }
             
-            # Calcola sentiment aggregato con decay temporale
+            # Calculate aggregated sentiment with temporal decay
             current_time = datetime.now(timezone.utc)
             weighted_scores = []
             weights = []
             
             for sentiment in relevant_sentiments:
-                # Calcola peso basato su età e confidence
+                # Calculate weight based on age and confidence
                 age_hours = (current_time - sentiment.timestamp).total_seconds() / 3600
                 time_weight = np.exp(-age_hours / 12)  # Decay con half-life di 12 ore
                 
@@ -399,7 +399,7 @@ class SentimentAnalyzer:
                 weighted_scores.append(sentiment.score * total_weight)
                 weights.append(total_weight)
             
-            # Calcola sentiment finale
+            # Calculate final sentiment
             if sum(weights) > 0:
                 final_score = sum(weighted_scores) / sum(weights)
                 avg_confidence = np.mean([s.confidence for s in relevant_sentiments])
@@ -407,7 +407,7 @@ class SentimentAnalyzer:
                 final_score = 0.0
                 avg_confidence = 0.0
             
-            # Genera segnale
+            # Generate signal
             signal_strength = abs(final_score)
             
             if final_score > 0.3:
@@ -428,7 +428,7 @@ class SentimentAnalyzer:
             }
             
         except Exception as e:
-            self.logger.error(f"Errore nel segnale sentiment: {e}")
+            self.logger.error(f"Sentiment signal error: {e}")
             return {
                 'signal': 'NEUTRAL',
                 'strength': 0.0,
@@ -448,7 +448,7 @@ class SentimentAnalyzer:
             metadata: Metadati aggiuntivi
         """
         try:
-            # Analizza sentiment
+            # Analyze sentiment
             sentiment_result = self.analyze_text(text, symbol)
             
             # Crea oggetto sentiment
@@ -477,11 +477,11 @@ class SentimentAnalyzer:
             self.logger.debug(f"Aggiunto sentiment per {symbol}: {sentiment_result['score']:.3f}")
             
         except Exception as e:
-            self.logger.error(f"Errore nell'aggiunta sentiment: {e}")
+            self.logger.error(f"Error adding sentiment: {e}")
     
     def get_sentiment_trends(self, symbol: str, days: int = 7) -> Dict:
         """
-        Analizza i trend di sentiment per un simbolo.
+        Analyze sentiment trends for a symbol.
         
         Args:
             symbol: Simbolo del titolo
@@ -508,7 +508,7 @@ class SentimentAnalyzer:
             # Ordina per timestamp
             symbol_sentiments.sort(key=lambda x: x.timestamp)
             
-            # Calcola trend
+            # Calculate trend
             timestamps = [s.timestamp for s in symbol_sentiments]
             scores = [s.score for s in symbol_sentiments]
             
@@ -519,7 +519,7 @@ class SentimentAnalyzer:
             if len(x) > 1:
                 slope = np.polyfit(x, y, 1)[0]
                 
-                # Classifica trend
+                # Classify trend
                 if slope > 0.001:
                     trend = 'IMPROVING'
                 elif slope < -0.001:
@@ -530,10 +530,10 @@ class SentimentAnalyzer:
                 slope = 0.0
                 trend = 'STABLE'
             
-            # Calcola volatilità del sentiment
+            # Calculate sentiment volatility
             sentiment_volatility = np.std(scores) if len(scores) > 1 else 0.0
             
-            # Analizza distribuzione per fonte
+            # Analyze distribution by source
             source_breakdown = {}
             for sentiment in symbol_sentiments:
                 source = sentiment.source
