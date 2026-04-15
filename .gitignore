@@ -59,6 +59,15 @@ htmlcov/
 .pytest_cache/
 .mypy_cache/
 
+# Serialized ML models — never commit trained models
+*.pkl
+*.joblib
+*.h5
+*.onnx
+
+# Optimization output
+optimization_*.json
+
 # Planning files (AI working notes)
 task_plan.md
 findings.md
