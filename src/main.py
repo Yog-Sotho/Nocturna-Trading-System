@@ -70,13 +70,20 @@ def create_app(config_override=None):
     )
     app.config['SQLALCHEMY_DATABASE_URI'] = database_url
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        'pool_size': 10,
-        'pool_recycle': 3600,
-        'pool_pre_ping': True,
-        'max_overflow': 20,
-        'echo': os.environ.get('SQLALCHEMY_ECHO', 'false').lower() == 'true'
-    }
+
+    # Engine options — only apply pool settings for non-SQLite databases
+    if database_url.startswith('sqlite'):
+        app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+            'echo': os.environ.get('SQLALCHEMY_ECHO', 'false').lower() == 'true'
+        }
+    else:
+        app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+            'pool_size': 10,
+            'pool_recycle': 3600,
+            'pool_pre_ping': True,
+            'max_overflow': 20,
+            'echo': os.environ.get('SQLALCHEMY_ECHO', 'false').lower() == 'true'
+        }
 
     # =============================================================================
     # SESSION CONFIGURATION
@@ -100,6 +107,12 @@ def create_app(config_override=None):
     # =============================================================================
     app.config['DEBUG'] = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
     app.config['TESTING'] = False
+
+    # =============================================================================
+    # APPLY CONFIG OVERRIDES (for testing)
+    # =============================================================================
+    if config_override:
+        app.config.update(config_override)
 
     # =============================================================================
     # LOGGING SETUP
@@ -166,10 +179,27 @@ def create_app(config_override=None):
         db.create_all()
 
     # =============================================================================
+    # INITIALIZE AUTH TOKEN MANAGER
+    # =============================================================================
+    from src.middleware.auth import token_manager
+    token_manager.init_app(app)
+
+    # =============================================================================
     # REGISTER BLUEPRINTS
     # =============================================================================
     app.register_blueprint(user_bp, url_prefix='/api')
     app.register_blueprint(trading_bp, url_prefix='/api/trading')
+
+    # Paper trading routes
+    from src.routes.paper_trading import paper_bp, init_paper_engine
+    app.register_blueprint(paper_bp, url_prefix='/api/paper')
+    with app.app_context():
+        paper_config = {
+            'initial_capital': float(os.environ.get('PAPER_INITIAL_CAPITAL', 100000)),
+            'commission_rate': float(os.environ.get('PAPER_COMMISSION_RATE', 0.001)),
+            'slippage_rate': float(os.environ.get('PAPER_SLIPPAGE_RATE', 0.0005)),
+        }
+        init_paper_engine(paper_config)
 
     # =============================================================================
     # REQUEST ID TRACKING
