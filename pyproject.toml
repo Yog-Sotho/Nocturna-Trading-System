@@ -1,3 +1,4 @@
+# FILE LOCATION: pyproject.toml (project root)
 [project]
 name = "nocturna-trading-system"
 version = "2.0.0"
@@ -5,7 +6,7 @@ description = "Enterprise-grade algorithmic trading backend"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["src/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
@@ -18,7 +19,7 @@ filterwarnings = [
 [tool.ruff]
 target-version = "py311"
 line-length = 120
-src = ["src", "tests"]
+src = ["src", "src/tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
@@ -29,12 +30,12 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101"]  # allow assert in tests
+"src/tests/*" = ["S101"]  # allow assert in tests
 "src/advanced/*" = ["N806"]  # ML convention: X, X_scaled, etc.
 "src/core/risk_manager.py" = ["N806"]  # MIN_KELLY_TRADES constant
 
 [tool.bandit]
-exclude_dirs = ["tests", "venv", ".venv"]
+exclude_dirs = ["src/tests", "venv", ".venv"]
 skips = ["B101"]  # assert used in non-test code for guards
 
 [tool.mypy]
