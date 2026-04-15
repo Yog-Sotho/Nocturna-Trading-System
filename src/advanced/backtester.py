@@ -3,13 +3,14 @@ Advanced Backtesting Engine per NOCTURNA v2.0
 Complete engine for backtesting trading strategies.
 """
 
-import numpy as np
-import pandas as pd
-from typing import Dict, List, Optional
-from datetime import datetime, timedelta
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from enum import Enum
+
+import numpy as np
+import pandas as pd
+
 
 class OrderType(Enum):
     MARKET = "market"
@@ -35,12 +36,12 @@ class BacktestOrder:
     side: OrderSide
     type: OrderType
     quantity: float
-    price: Optional[float] = None
-    stop_price: Optional[float] = None
+    price: float | None = None
+    stop_price: float | None = None
     status: OrderStatus = OrderStatus.PENDING
-    timestamp: Optional[datetime] = None
-    fill_price: Optional[float] = None
-    fill_timestamp: Optional[datetime] = None
+    timestamp: datetime | None = None
+    fill_price: float | None = None
+    fill_timestamp: datetime | None = None
 
 @dataclass
 class BacktestPosition:
@@ -48,7 +49,7 @@ class BacktestPosition:
     symbol: str
     quantity: float
     avg_price: float
-    entry_time: Optional[datetime] = None
+    entry_time: datetime | None = None
     unrealized_pnl: float = 0.0
     realized_pnl: float = 0.0
 
@@ -74,33 +75,33 @@ class AdvancedBacktester:
     - Risk management
     - Detailed performance analysis
     """
-    
-    def __init__(self, config: Dict):
+
+    def __init__(self, config: dict):
         self.config = config
         self.logger = logging.getLogger(__name__)
-        
+
         # Backtesting configuration
         self.initial_capital = config.get('initial_capital', 100000.0)
         self.commission_rate = config.get('commission_rate', 0.001)  # 0.1%
         self.slippage_rate = config.get('slippage_rate', 0.0005)  # 0.05%
         self.min_trade_size = config.get('min_trade_size', 100.0)
         self.annualization_factor = config.get('trading_days_per_year', 252)  # 252 for equities, 365 for crypto
-        
+
         # Backtest state
         self.reset()
-        
+
         self.logger.info("Advanced Backtester initialized")
-    
+
     def reset(self):
         """Reset backtester state."""
         self.current_capital = self.initial_capital
-        self.positions: Dict[str, BacktestPosition] = {}
-        self.orders: Dict[str, BacktestOrder] = {}
-        self.trades: List[BacktestTrade] = []
-        self.equity_curve: List[Dict] = []
+        self.positions: dict[str, BacktestPosition] = {}
+        self.orders: dict[str, BacktestOrder] = {}
+        self.trades: list[BacktestTrade] = []
+        self.equity_curve: list[dict] = []
         self.current_time = None
         self.order_counter = 0
-        
+
         # Metrics
         self.total_trades = 0
         self.winning_trades = 0
@@ -108,104 +109,104 @@ class AdvancedBacktester:
         self.total_commission = 0.0
         self.max_drawdown = 0.0
         self.peak_equity = self.initial_capital
-    
+
     def run_backtest(self, data: pd.DataFrame, strategy_function: callable,
-                    strategy_params: Dict) -> Dict:
+                    strategy_params: dict) -> dict:
         """
         Run a complete backtest.
-        
+
         Args:
             data: DataFrame with OHLCV data
             strategy_function: Strategy function
             strategy_params: Strategy parameters
-            
+
         Returns:
             Backtest results
         """
         try:
             self.reset()
             self.logger.info(f"Starting backtest on {len(data)} bars")
-            
+
             # Ensure data is sorted by timestamp
             data = data.sort_index()
-            
+
             # Iterate through data
             for timestamp, row in data.iterrows():
                 self.current_time = timestamp
-                
+
                 # Update positions with current prices
                 self._update_positions(row)
-                
+
                 # Process pending orders
                 self._process_pending_orders(row)
-                
+
                 # Execute strategy
                 signals = strategy_function(data.loc[:timestamp], strategy_params)
-                
+
                 # Process signals
                 if signals:
                     self._process_signals(signals, row)
-                
+
                 # Update equity curve
                 self._update_equity_curve(row)
-            
+
             # Calculate final results
             results = self._calculate_results()
-            
+
             self.logger.info(f"Backtest complete. Return: {results['total_return']:.2%}")
-            
+
             return results
-            
+
         except Exception as e:
             self.logger.error(f"Backtest error: {e}")
             return {'error': str(e)}
-    
+
     def _update_positions(self, market_data: pd.Series):
         """Update positions with current prices."""
         current_price = market_data['close']
-        
-        for symbol, position in self.positions.items():
+
+        for _symbol, position in self.positions.items():
             if position.quantity != 0:
                 # Calculate unrealized PnL
                 if position.quantity > 0:  # Long position
                     position.unrealized_pnl = (current_price - position.avg_price) * position.quantity
                 else:  # Short position
                     position.unrealized_pnl = (position.avg_price - current_price) * abs(position.quantity)
-    
+
     def _process_pending_orders(self, market_data: pd.Series):
         """Process pending orders."""
         filled_orders = []
-        
+
         for order_id, order in self.orders.items():
             if order.status != OrderStatus.PENDING:
                 continue
-            
+
             fill_price = self._check_order_fill(order, market_data)
-            
+
             if fill_price is not None:
                 # Apply slippage
                 if order.side == OrderSide.BUY:
                     fill_price *= (1 + self.slippage_rate)
                 else:
                     fill_price *= (1 - self.slippage_rate)
-                
+
                 # Execute fill
                 self._fill_order(order, fill_price)
                 filled_orders.append(order_id)
-        
+
         # Remove filled orders
         for order_id in filled_orders:
             del self.orders[order_id]
-    
-    def _check_order_fill(self, order: BacktestOrder, 
-                         market_data: pd.Series) -> Optional[float]:
+
+    def _check_order_fill(self, order: BacktestOrder,
+                         market_data: pd.Series) -> float | None:
         """
         Check if an order can be filled.
-        
+
         Args:
             order: Order to check
             market_data: Current market data
-            
+
         Returns:
             Fill price or None
         """
@@ -215,28 +216,28 @@ class AdvancedBacktester:
 
         if order.type == OrderType.MARKET:
             return open_price  # Market orders fill at open price
-        
+
         elif order.type == OrderType.LIMIT:
             if order.side == OrderSide.BUY and low <= order.price:
                 return min(order.price, open_price)
             elif order.side == OrderSide.SELL and high >= order.price:
                 return max(order.price, open_price)
-        
+
         elif order.type == OrderType.STOP:
             if order.side == OrderSide.BUY and high >= order.stop_price:
                 return max(order.stop_price, open_price)
             elif order.side == OrderSide.SELL and low <= order.stop_price:
                 return min(order.stop_price, open_price)
-        
+
         return None
-    
+
     def _fill_order(self, order: BacktestOrder, fill_price: float):
         """Fill an order."""
         try:
             # Calculate commission
             commission = abs(order.quantity * fill_price * self.commission_rate)
             self.total_commission += commission
-            
+
             # Update capital
             if order.side == OrderSide.BUY:
                 cost = order.quantity * fill_price + commission
@@ -244,42 +245,42 @@ class AdvancedBacktester:
                     # Order rejected: insufficient capital
                     order.status = OrderStatus.REJECTED
                     return
-                
+
                 self.current_capital -= cost
             else:
                 proceeds = order.quantity * fill_price - commission
                 self.current_capital += proceeds
-            
+
             # Update position
             self._update_position(order.symbol, order.side, order.quantity, fill_price)
-            
+
             # Update order
             order.status = OrderStatus.FILLED
             order.fill_price = fill_price
             order.fill_timestamp = self.current_time
-            
+
             self.logger.debug(f"Order filled: {order.symbol} {order.side.value} "
                             f"{order.quantity} @ {fill_price:.4f}")
-            
+
         except Exception as e:
             self.logger.error(f"Order fill error: {e}")
             order.status = OrderStatus.REJECTED
-    
-    def _update_position(self, symbol: str, side: OrderSide, 
+
+    def _update_position(self, symbol: str, side: OrderSide,
                         quantity: float, price: float):
         """Update a position and record trades on close/reduction."""
         if symbol not in self.positions:
             self.positions[symbol] = BacktestPosition(
                 symbol=symbol, quantity=0, avg_price=0, entry_time=self.current_time
             )
-        
+
         position = self.positions[symbol]
-        
+
         if side == OrderSide.BUY:
             new_quantity = position.quantity + quantity
         else:
             new_quantity = position.quantity - quantity
-        
+
         # Calculate new average price
         if new_quantity == 0:
             # Position closed — calculate realized P&L
@@ -298,7 +299,7 @@ class AdvancedBacktester:
 
             position.avg_price = 0  # Zero AFTER recording
             position.entry_time = None
-            
+
         elif (position.quantity > 0 and new_quantity > 0) or \
              (position.quantity < 0 and new_quantity < 0):
             # Same direction — update average price
@@ -315,20 +316,20 @@ class AdvancedBacktester:
                     realized_pnl = (price - position.avg_price) * closed_quantity
                 else:
                     realized_pnl = (position.avg_price - price) * closed_quantity
-                
+
                 position.realized_pnl += realized_pnl
-                self._record_trade(symbol, side, closed_quantity, 
+                self._record_trade(symbol, side, closed_quantity,
                                  position.avg_price, price, realized_pnl, entry_time)
             else:
                 # Position reversal — new entry time
                 position.avg_price = price
                 position.entry_time = self.current_time
-        
+
         position.quantity = new_quantity
-    
+
     def _record_trade(self, symbol: str, side: OrderSide, quantity: float,
                      entry_price: float, exit_price: float, pnl: float,
-                     entry_time: Optional[datetime] = None):
+                     entry_time: datetime | None = None):
         """Record a completed trade with accurate timestamps and duration."""
         actual_entry_time = entry_time or self.current_time
         actual_exit_time = self.current_time
@@ -348,43 +349,43 @@ class AdvancedBacktester:
             commission=quantity * exit_price * self.commission_rate,
             duration=duration,
         )
-        
+
         self.trades.append(trade)
         self.total_trades += 1
-        
+
         if pnl > 0:
             self.winning_trades += 1
         else:
             self.losing_trades += 1
-    
-    def _process_signals(self, signals: List[Dict], market_data: pd.Series):
+
+    def _process_signals(self, signals: list[dict], market_data: pd.Series):
         """Process trading signals."""
         for signal in signals:
             try:
                 order = self._create_order_from_signal(signal, market_data)
                 if order:
                     self.orders[order.id] = order
-                    
+
             except Exception as e:
                 self.logger.error(f"Signal processing error: {e}")
-    
-    def _create_order_from_signal(self, signal: Dict, 
-                                 market_data: pd.Series) -> Optional[BacktestOrder]:
+
+    def _create_order_from_signal(self, signal: dict,
+                                 market_data: pd.Series) -> BacktestOrder | None:
         """Create an order from a signal."""
         try:
             symbol = signal['symbol']
             side = OrderSide(signal['side'])
             order_type = OrderType(signal.get('type', 'market'))
             quantity = signal['quantity']
-            
+
             # Validations
             if quantity < self.min_trade_size:
                 return None
-            
+
             # Generate order ID
             self.order_counter += 1
             order_id = f"order_{self.order_counter}"
-            
+
             order = BacktestOrder(
                 id=order_id,
                 symbol=symbol,
@@ -393,19 +394,19 @@ class AdvancedBacktester:
                 quantity=quantity,
                 timestamp=self.current_time
             )
-            
+
             # Set prices for limit/stop orders
             if order_type == OrderType.LIMIT:
                 order.price = signal.get('price', market_data['close'])
             elif order_type == OrderType.STOP:
                 order.stop_price = signal.get('stop_price', market_data['close'])
-            
+
             return order
-            
+
         except Exception as e:
             self.logger.error(f"Order creation error: {e}")
             return None
-    
+
     def _update_equity_curve(self, market_data: pd.Series):
         """Update equity curve with correct portfolio valuation."""
         # Total portfolio value = cash + sum(qty * current_price)
@@ -431,48 +432,48 @@ class AdvancedBacktester:
             'drawdown': current_drawdown,
             'cash': self.current_capital
         })
-    
-    def _calculate_results(self) -> Dict:
+
+    def _calculate_results(self) -> dict:
         """Calculate final backtest results."""
         try:
             if not self.equity_curve:
                 return {'error': 'No equity data available'}
-            
+
             # Final values
             final_equity = self.equity_curve[-1]['equity']
             total_return = (final_equity - self.initial_capital) / self.initial_capital
-            
+
             # Calculate performance metrics
             equity_series = pd.Series([point['equity'] for point in self.equity_curve])
             returns = equity_series.pct_change().dropna()
-            
+
             # Sharpe ratio (assuming risk-free rate = 0)
             if len(returns) > 1 and returns.std() > 0:
                 sharpe_ratio = returns.mean() / returns.std() * np.sqrt(self.annualization_factor)
             else:
                 sharpe_ratio = 0.0
-            
+
             # Sortino ratio
             negative_returns = returns[returns < 0]
             if len(negative_returns) > 1 and negative_returns.std() > 0:
                 sortino_ratio = returns.mean() / negative_returns.std() * np.sqrt(self.annualization_factor)
             else:
                 sortino_ratio = 0.0
-            
+
             # Win rate
             win_rate = self.winning_trades / self.total_trades if self.total_trades > 0 else 0.0
-            
+
             # Profit factor
             winning_pnl = sum(trade.pnl for trade in self.trades if trade.pnl > 0)
             losing_pnl = abs(sum(trade.pnl for trade in self.trades if trade.pnl < 0))
             profit_factor = winning_pnl / losing_pnl if losing_pnl > 0 else float('inf')
-            
+
             # Average trade
             avg_trade = sum(trade.pnl for trade in self.trades) / len(self.trades) if self.trades else 0.0
-            
+
             # Calmar ratio
             calmar_ratio = total_return / self.max_drawdown if self.max_drawdown > 0 else 0.0
-            
+
             results = {
                 'initial_capital': self.initial_capital,
                 'final_equity': final_equity,
@@ -502,53 +503,53 @@ class AdvancedBacktester:
                     for trade in self.trades
                 ]
             }
-            
+
             return results
-            
+
         except Exception as e:
             self.logger.error(f"Results calculation error: {e}")
             return {'error': str(e)}
-    
+
     def monte_carlo_analysis(self, data: pd.DataFrame, strategy_function: callable,
-                           strategy_params: Dict, n_simulations: int = 1000) -> Dict:
+                           strategy_params: dict, n_simulations: int = 1000) -> dict:
         """
         Run Monte Carlo analysis to evaluate strategy robustness.
-        
+
         Args:
             data: Historical data
             strategy_function: Strategy function
             strategy_params: Strategy parameters
             n_simulations: Number of simulations
-            
+
         Returns:
             Monte Carlo analysis results
         """
         try:
             self.logger.info(f"Starting Monte Carlo analysis ({n_simulations} simulations)")
-            
+
             results = []
-            
+
             for i in range(n_simulations):
                 # Shuffle data while maintaining local temporal structure
                 shuffled_data = self._shuffle_data_blocks(data)
-                
+
                 # Esegui backtest
                 result = self.run_backtest(shuffled_data, strategy_function, strategy_params)
-                
+
                 if 'error' not in result:
                     results.append(result)
-                
+
                 if (i + 1) % 100 == 0:
                     self.logger.info(f"Completed {i + 1} simulations")
-            
+
             # Analyze results
             if not results:
                 return {'error': 'No valid simulations completed'}
-            
+
             returns = [r['total_return'] for r in results]
             sharpe_ratios = [r['sharpe_ratio'] for r in results]
             max_drawdowns = [r['max_drawdown'] for r in results]
-            
+
             analysis = {
                 'n_simulations': len(results),
                 'return_stats': {
@@ -574,15 +575,15 @@ class AdvancedBacktester:
                 },
                 'probability_positive': sum(1 for r in returns if r > 0) / len(returns)
             }
-            
+
             self.logger.info("Monte Carlo analysis complete")
-            
+
             return analysis
-            
+
         except Exception as e:
             self.logger.error(f"Monte Carlo analysis error: {e}")
             return {'error': str(e)}
-    
+
     def _shuffle_data_blocks(self, data: pd.DataFrame, block_size: int = 20) -> pd.DataFrame:
         """
         Shuffle data in blocks to maintain local temporal correlations
@@ -625,58 +626,58 @@ class AdvancedBacktester:
         except Exception as e:
             self.logger.error(f"Error in data block shuffle: {e}")
             return data
-    
+
     def walk_forward_analysis(self, data: pd.DataFrame, strategy_function: callable,
-                            strategy_params: Dict, train_period: int = 252,
-                            test_period: int = 63) -> Dict:
+                            strategy_params: dict, train_period: int = 252,
+                            test_period: int = 63) -> dict:
         """
         Run walk-forward analysis to validate the strategy.
-        
+
         Args:
             data: Historical data
             strategy_function: Strategy function
             strategy_params: Base strategy parameters
             train_period: Training period (days)
             test_period: Test period (days)
-            
+
         Returns:
             Walk-forward results
         """
         try:
             self.logger.info("Starting walk-forward analysis")
-            
+
             results = []
             start_idx = 0
-            
+
             while start_idx + train_period + test_period <= len(data):
                 # Training data (reserved for parameter optimization in future)
                 train_end = start_idx + train_period
                 _train_data = data.iloc[start_idx:train_end]  # noqa: F841 — needed for optimization
-                
+
                 # Test data
                 test_end = train_end + test_period
                 test_data = data.iloc[train_end:test_end]
-                
+
                 # NOTE: Parameter optimization is a scaffold — uses fixed params (see CQ-03)
                 optimized_params = strategy_params.copy()
-                
+
                 # Test on out-of-sample data
                 test_result = self.run_backtest(test_data, strategy_function, optimized_params)
-                
+
                 if 'error' not in test_result:
                     test_result['period_start'] = test_data.index[0]
                     test_result['period_end'] = test_data.index[-1]
                     results.append(test_result)
-                
+
                 # Advance window
                 start_idx += test_period
-            
+
             # Analyze results aggregati
             if not results:
                 return {'error': 'No valid periods completed'}
-            
+
             total_returns = [r['total_return'] for r in results]
-            
+
             analysis = {
                 'n_periods': len(results),
                 'period_results': results,
@@ -688,11 +689,11 @@ class AdvancedBacktester:
                     'consistency_ratio': sum(1 for r in total_returns if r > 0) / len(total_returns)
                 }
             }
-            
+
             self.logger.info("Walk-forward analysis complete")
-            
+
             return analysis
-            
+
         except Exception as e:
             self.logger.error(f"Walk-forward error: {e}")
             return {'error': str(e)}
