@@ -1,25 +1,22 @@
+# FILE LOCATION: src/routes/trading.py
 """
 NOCTURNA Trading System - Secure API Routes
 Production-grade endpoints with authentication, validation, and rate limiting.
 """
 
+import logging
 import os
 import sys
-import logging
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
-from flask import Blueprint, request, jsonify, g
+from flask import Blueprint, g, jsonify, request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from src.core.trading_engine import TradingEngine, TradingEngineState
-from src.middleware.auth import require_auth, require_admin, require_trading_permissions
-from src.utils.validators import (
-    validate_config_input,
-    validate_trading_signal,
-    validate_emergency_stop
-)
+from src.middleware.auth import require_admin, require_auth, require_trading_permissions
+from src.utils.validators import validate_config_input, validate_emergency_stop, validate_trading_signal
 
 # Create blueprint
 trading_bp = Blueprint('trading', __name__)
@@ -28,7 +25,7 @@ trading_bp = Blueprint('trading', __name__)
 logger = logging.getLogger(__name__)
 
 # Global trading engine instance
-_trading_engine: Optional[TradingEngine] = None
+_trading_engine: TradingEngine | None = None
 
 
 # =============================================================================
@@ -102,7 +99,7 @@ def format_response(success: bool, data: Any = None, error: str = None,
     """Format standardized API response."""
     response = {
         'success': success,
-        'timestamp': datetime.now(timezone.utc).isoformat(),
+        'timestamp': datetime.now(UTC).isoformat(),
         'request_id': getattr(g, 'request_id', None)
     }
 
@@ -783,7 +780,7 @@ def get_equity_curve():
             base_value = float(os.environ.get('INITIAL_CAPITAL', 100000))
             for i in range(30):
                 equity_data.append({
-                    'timestamp': (datetime.now(timezone.utc).timestamp() - (30 - i) * 86400),
+                    'timestamp': (datetime.now(UTC).timestamp() - (30 - i) * 86400),
                     'value': base_value * (1 + (i * 0.001 + (i % 3) * 0.003))
                 })
         else:
