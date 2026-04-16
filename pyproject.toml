@@ -33,6 +33,10 @@ ignore = [
 "src/tests/*" = ["S101"]  # allow assert in tests
 "src/advanced/*" = ["N806"]  # ML convention: X, X_scaled, etc.
 "src/core/risk_manager.py" = ["N806"]  # MIN_KELLY_TRADES constant
+"src/core/strategy_manager.py" = ["N806", "SIM102"]  # L (last bar), P (prev), P2 (prev-2) are trading conventions
+"src/core/market_data.py" = ["N811"]  # alpaca REST import aliased as AlpacaREST
+"src/core/order_manager.py" = ["N811", "SIM102"]  # alpaca REST alias; intentional nested guards
+"src/utils/validators.py" = ["N818", "B904"]  # ValidationException is a documented public API name
 
 [tool.bandit]
 exclude_dirs = ["src/tests", "venv", ".venv"]
