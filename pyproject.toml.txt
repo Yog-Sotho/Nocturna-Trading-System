@@ -1,0 +1,53 @@
+# FILE LOCATION: pyproject.toml (project root)
+[project]
+name = "nocturna-trading-system"
+version = "2.0.0"
+description = "Enterprise-grade algorithmic trading backend"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["src/tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+src = ["src", "src/tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # function call in default argument (Flask patterns)
+    "SIM108", # ternary operator
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/tests/*" = ["S101"]  # allow assert in tests
+"src/advanced/*" = ["N806"]  # ML convention: X, X_scaled, etc.
+"src/core/risk_manager.py" = ["N806"]  # MIN_KELLY_TRADES constant
+"src/core/strategy_manager.py" = ["N806", "SIM102"]  # L (last bar), P (prev), P2 (prev-2) are trading conventions
+"src/core/market_data.py" = ["N811"]  # alpaca REST import aliased as AlpacaREST
+"src/core/order_manager.py" = ["N811", "SIM102"]  # alpaca REST alias; intentional nested guards
+"src/utils/validators.py" = ["N818", "B904"]  # ValidationException is a documented public API name
+
+[tool.bandit]
+exclude_dirs = ["src/tests", "venv", ".venv"]
+skips = ["B101"]  # assert used in non-test code for guards
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.black]
+line-length = 120
+target-version = ["py311"]
