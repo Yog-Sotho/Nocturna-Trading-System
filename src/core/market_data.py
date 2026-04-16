@@ -1,17 +1,17 @@
+# FILE LOCATION: src/core/market_data.py
 """
 NOCTURNA Trading System - Market Data Handler
 Production-grade market data management with caching.
 """
 
-import os
 import logging
-from datetime import datetime, timezone
-from typing import Dict, List, Optional
-from collections import deque
+import os
 import threading
+from collections import deque
+from datetime import UTC, datetime
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 
 class MarketDataHandler:
@@ -24,20 +24,20 @@ class MarketDataHandler:
     CACHE_TTL = 60  # seconds
     MAX_CACHE_SIZE = 1000
 
-    def __init__(self, config: Dict):
+    def __init__(self, config: dict):
         self.config = config
         self.logger = logging.getLogger(__name__)
 
         # Data cache
-        self.price_cache: Dict[str, Dict] = {}
-        self.historical_cache: Dict[str, pd.DataFrame] = {}
+        self.price_cache: dict[str, dict] = {}
+        self.historical_cache: dict[str, pd.DataFrame] = {}
         self.cache_lock = threading.RLock()
 
         # Price history for indicators
-        self.price_history: Dict[str, deque] = {}
+        self.price_history: dict[str, deque] = {}
 
         # Real-time subscriptions
-        self.subscriptions: Dict[str, List] = {}
+        self.subscriptions: dict[str, list] = {}
         self.realtime_enabled = False
 
         # Data providers
@@ -125,7 +125,7 @@ class MarketDataHandler:
         Cache invalidates when a new bar period begins (not just by TTL).
         """
         # Include current bar period in cache key so cache invalidates on new bars
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         bar_period = self._get_bar_period_key(now, timeframe)
         cache_key = f"{symbol}_{timeframe}_{limit}_{bar_period}"
 
@@ -133,7 +133,7 @@ class MarketDataHandler:
         with self.cache_lock:
             if cache_key in self.historical_cache:
                 cached = self.historical_cache[cache_key]
-                cache_ts = cached.get('timestamp', datetime.min.replace(tzinfo=timezone.utc))
+                cache_ts = cached.get('timestamp', datetime.min.replace(tzinfo=UTC))
                 if (now - cache_ts).total_seconds() < self.CACHE_TTL:
                     return cached.get('data', pd.DataFrame())
 
@@ -253,7 +253,7 @@ class MarketDataHandler:
                 'low': a.low,
                 'close': a.close,
                 'volume': a.volume,
-                'timestamp': datetime.fromtimestamp(a.timestamp / 1000, tz=timezone.utc)
+                'timestamp': datetime.fromtimestamp(a.timestamp / 1000, tz=UTC)
             } for a in aggs]
 
             return pd.DataFrame(data).set_index('timestamp')
@@ -384,7 +384,7 @@ class MarketDataHandler:
             self.logger.error(f"Error calculating indicators: {e}")
             return df
 
-    def get_current_price(self, symbol: str) -> Optional[float]:
+    def get_current_price(self, symbol: str) -> float | None:
         """Get current price for a symbol."""
         try:
             if self.alpaca_client:

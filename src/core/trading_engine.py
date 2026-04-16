@@ -1,3 +1,4 @@
+# FILE LOCATION: src/core/trading_engine.py
 """
 Trading Engine for NOCTURNA v2.0 Trading System
 Production-grade core trading engine with event-driven architecture.
@@ -6,17 +7,19 @@ Production-grade core trading engine with event-driven architecture.
 import logging
 import threading
 import time
-import pandas as pd
-from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Callable, Any
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeoutError
+from datetime import UTC, datetime, timedelta
 from enum import Enum
+from typing import Any
 
+import pandas as pd
 
 from .market_data import MarketDataHandler
-from .strategy_manager import StrategyManager
 from .order_manager import OrderExecutionManager
 from .risk_manager import RiskManager
+from .strategy_manager import StrategyManager
 
 # Advanced modules — optional, degrade gracefully if unavailable
 try:
@@ -60,14 +63,14 @@ class TradingEngine:
     # Default update interval in seconds
     DEFAULT_UPDATE_INTERVAL = 60
 
-    def __init__(self, config: Dict):
+    def __init__(self, config: dict):
         self.config = config
         self.logger = logging.getLogger(__name__)
 
         # State management
         self.state = TradingEngineState.STOPPED
-        self.start_time: Optional[datetime] = None
-        self.last_update: Optional[datetime] = None
+        self.start_time: datetime | None = None
+        self.last_update: datetime | None = None
         self._state_lock = threading.RLock()
 
         # Core components
@@ -79,7 +82,7 @@ class TradingEngine:
         # Advanced components — optional
         self.sentiment_analyzer = None
         self.ml_optimizer = None
-        self._ml_last_optimization: Optional[datetime] = None
+        self._ml_last_optimization: datetime | None = None
         self._ml_optimization_interval = config.get('ml_optimization_interval', 86400)  # 24h default
 
         if _SENTIMENT_AVAILABLE:
@@ -106,7 +109,7 @@ class TradingEngine:
                 self.logger.warning(f"External Signal Aggregator init failed: {e}")
 
         # Execution quality tracking
-        self._execution_latencies: List[float] = []
+        self._execution_latencies: list[float] = []
         self._max_latency_samples = 1000
 
         # Configuration
@@ -115,20 +118,20 @@ class TradingEngine:
         self.max_concurrent_analysis = config.get('max_concurrent_analysis', 5)
 
         # Threading
-        self.main_thread: Optional[threading.Thread] = None
-        self.executor: Optional[ThreadPoolExecutor] = None
+        self.main_thread: threading.Thread | None = None
+        self.executor: ThreadPoolExecutor | None = None
         self.running = False
         self._executor_lock = threading.Lock()
 
         # Event callbacks
-        self.event_callbacks: Dict[str, List[Callable]] = {}
+        self.event_callbacks: dict[str, list[Callable]] = {}
 
         # Cache and state
-        self.symbol_data: Dict[str, Dict] = {}
+        self.symbol_data: dict[str, dict] = {}
         self._symbol_data_lock = threading.Lock()
-        self.active_signals: Dict[str, Dict] = {}
-        self.performance_history: List[Dict] = []
-        self.performance_metrics: Dict[str, Dict] = {}
+        self.active_signals: dict[str, dict] = {}
+        self.performance_history: list[dict] = []
+        self.performance_metrics: dict[str, dict] = {}
 
         # Statistics
         self.stats = {
@@ -147,15 +150,15 @@ class TradingEngine:
         self._api_failure_count = 0
         self._api_failure_threshold = 3      # Pause after 3 consecutive failures
         self._api_pause_duration = 300       # 5 minute pause
-        self._api_paused_until: Optional[datetime] = None
+        self._api_paused_until: datetime | None = None
 
         # F13: Trade journal — persistent signal log
-        self.trade_journal: List[Dict] = []
+        self.trade_journal: list[dict] = []
         self._journal_lock = threading.Lock()
 
         # F4: Higher timeframe data for multi-TF confirmation
         self._htf_timeframes = config.get('higher_timeframes', ['4h'])
-        self._htf_cache: Dict[str, Dict[str, pd.DataFrame]] = {}
+        self._htf_cache: dict[str, dict[str, pd.DataFrame]] = {}
 
         # Setup callbacks
         self._setup_callbacks()
@@ -173,10 +176,10 @@ class TradingEngine:
         # Risk events callback — use proper observer pattern
         self.risk_manager.add_risk_callback(self._on_risk_event)
 
-    def _on_order_filled(self, order: Dict) -> None:
+    def _on_order_filled(self, order: dict) -> None:
         """Handle order filled event — track wins/losses on realized P&L only."""
         try:
-            realized_pnl = order.get('realized_pnl', None)
+            realized_pnl = order.get('realized_pnl')
 
             with self._stats_lock:
                 self.stats['total_trades'] += 1
@@ -208,7 +211,7 @@ class TradingEngine:
         except Exception as e:
             self.logger.error(f"Error handling order filled: {e}")
 
-    def _on_position_update(self, position: Dict) -> None:
+    def _on_position_update(self, position: dict) -> None:
         """Handle position update event — track unrealized P&L without counting wins/losses."""
         try:
             # Update portfolio value in risk manager from position data
@@ -262,7 +265,7 @@ class TradingEngine:
 
                 # Update state
                 self.state = TradingEngineState.RUNNING
-                self.start_time = datetime.now(timezone.utc)
+                self.start_time = datetime.now(UTC)
                 self.stats['start_time'] = self.start_time
 
                 self.logger.info("Trading Engine started successfully")
@@ -308,7 +311,7 @@ class TradingEngine:
                 self.state = TradingEngineState.STOPPED
 
                 self.logger.info("Trading Engine stopped")
-                self._notify_event('engine_stopped', {'timestamp': datetime.now(timezone.utc)})
+                self._notify_event('engine_stopped', {'timestamp': datetime.now(UTC)})
 
                 return True
 
@@ -324,7 +327,7 @@ class TradingEngine:
 
             self.state = TradingEngineState.PAUSED
             self.logger.info("Trading Engine paused")
-            self._notify_event('engine_paused', {'timestamp': datetime.now(timezone.utc)})
+            self._notify_event('engine_paused', {'timestamp': datetime.now(UTC)})
 
             return True
 
@@ -336,7 +339,7 @@ class TradingEngine:
 
             self.state = TradingEngineState.RUNNING
             self.logger.info("Trading Engine resumed")
-            self._notify_event('engine_resumed', {'timestamp': datetime.now(timezone.utc)})
+            self._notify_event('engine_resumed', {'timestamp': datetime.now(UTC)})
 
             return True
 
@@ -372,7 +375,7 @@ class TradingEngine:
 
                 self._notify_event('emergency_stop', {
                     'reason': reason,
-                    'timestamp': datetime.now(timezone.utc)
+                    'timestamp': datetime.now(UTC)
                 })
 
             except Exception as e:
@@ -437,8 +440,8 @@ class TradingEngine:
 
                 # F11: Check circuit breaker
                 if self._api_paused_until:
-                    if datetime.now(timezone.utc) < self._api_paused_until:
-                        remaining = (self._api_paused_until - datetime.now(timezone.utc)).total_seconds()
+                    if datetime.now(UTC) < self._api_paused_until:
+                        remaining = (self._api_paused_until - datetime.now(UTC)).total_seconds()
                         self.logger.debug(f"API circuit breaker active, {remaining:.0f}s remaining")
                         time.sleep(min(10, remaining))
                         continue
@@ -460,7 +463,7 @@ class TradingEngine:
                 self._check_ml_optimization()
 
                 # Update timestamp
-                self.last_update = datetime.now(timezone.utc)
+                self.last_update = datetime.now(UTC)
 
                 # F9: Bar-boundary aligned sleep
                 # For 1h strategies, sleep until just after the next hour boundary
@@ -483,7 +486,7 @@ class TradingEngine:
         Falls back to standard interval if bar-boundary alignment is not meaningful.
         """
         try:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             # Next hour boundary + 10 seconds (allow bar to finalize)
             next_bar = now.replace(minute=0, second=10, microsecond=0) + timedelta(hours=1)
             sleep_secs = (next_bar - now).total_seconds()
@@ -531,13 +534,13 @@ class TradingEngine:
         """F11: Track API failures and trigger circuit breaker if threshold exceeded."""
         self._api_failure_count += 1
         if self._api_failure_count >= self._api_failure_threshold:
-            self._api_paused_until = datetime.now(timezone.utc) + timedelta(seconds=self._api_pause_duration)
+            self._api_paused_until = datetime.now(UTC) + timedelta(seconds=self._api_pause_duration)
             self.logger.warning(
                 f"Circuit breaker triggered: {self._api_failure_count} consecutive failures. "
                 f"Pausing API calls for {self._api_pause_duration}s"
             )
 
-    def _fetch_higher_tf_data(self, symbol: str) -> Dict[str, pd.DataFrame]:
+    def _fetch_higher_tf_data(self, symbol: str) -> dict[str, pd.DataFrame]:
         """F4: Fetch higher timeframe data for multi-TF confirmation."""
         htf_data = {}
         for tf in self._htf_timeframes:
@@ -552,7 +555,7 @@ class TradingEngine:
                 self.logger.debug(f"HTF {tf} data unavailable for {symbol}: {e}")
         return htf_data
 
-    def _analyze_symbol(self, symbol: str) -> Optional[Dict]:
+    def _analyze_symbol(self, symbol: str) -> dict | None:
         """
         Analyze a single symbol with full pipeline.
         F3: Thread-safe — passes all mutable context as arguments.
@@ -637,7 +640,7 @@ class TradingEngine:
                 self.symbol_data[symbol] = {
                     'data': df,
                     'strategy_result': strategy_result,
-                    'last_update': datetime.now(timezone.utc),
+                    'last_update': datetime.now(UTC),
                     'analysis_latency_ms': latency_ms,
                 }
 
@@ -655,7 +658,7 @@ class TradingEngine:
         if latency_ms > 5000:  # Log slow analyses
             self.logger.warning(f"Slow analysis for {symbol}: {latency_ms:.0f}ms")
 
-    def _process_analysis_result(self, symbol: str, result: Dict) -> None:
+    def _process_analysis_result(self, symbol: str, result: dict) -> None:
         """Process analysis result for a symbol."""
         try:
             signals = result.get('signals', [])
@@ -668,7 +671,7 @@ class TradingEngine:
         except Exception as e:
             self.logger.error(f"Error processing result for {symbol}: {e}")
 
-    def _process_trading_signal(self, signal: Dict) -> None:
+    def _process_trading_signal(self, signal: dict) -> None:
         """Process a trading signal through risk validation. F13: Log to trade journal."""
         try:
             # Guard: do not submit orders if engine is not running
@@ -709,10 +712,10 @@ class TradingEngine:
             self.logger.error(f"Error processing signal: {e}")
             self._journal_log(signal, 'ERROR', str(e))
 
-    def _journal_log(self, signal: Dict, outcome: str, detail: str = '') -> None:
+    def _journal_log(self, signal: dict, outcome: str, detail: str = '') -> None:
         """F13: Append entry to trade journal for analytics."""
         entry = {
-            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'timestamp': datetime.now(UTC).isoformat(),
             'symbol': signal.get('symbol', ''),
             'side': signal.get('side', ''),
             'mode': signal.get('mode', ''),
@@ -774,7 +777,7 @@ class TradingEngine:
         except Exception as e:
             self.logger.error(f"Error handling critical risk: {e}")
 
-    def _get_market_data_for_risk(self, symbol: str) -> Dict:
+    def _get_market_data_for_risk(self, symbol: str) -> dict:
         """Get market data for risk calculations."""
         try:
             with self._symbol_data_lock:
@@ -905,7 +908,7 @@ class TradingEngine:
             with self._stats_lock:
                 if self.start_time:
                     self.stats['uptime'] = (
-                        datetime.now(timezone.utc) - self.start_time
+                        datetime.now(UTC) - self.start_time
                     ).total_seconds()
 
                 # Calculate win rate
@@ -926,7 +929,7 @@ class TradingEngine:
         except Exception as e:
             self.logger.error(f"Error updating statistics: {e}")
 
-    def _update_symbol_metrics(self, symbol: str, result: Dict) -> None:
+    def _update_symbol_metrics(self, symbol: str, result: dict) -> None:
         """Update metrics for a symbol."""
         try:
             if symbol not in self.performance_metrics:
@@ -959,7 +962,7 @@ class TradingEngine:
             return
 
         try:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
             # Check if enough time has passed
             if self._ml_last_optimization:
@@ -1009,7 +1012,7 @@ class TradingEngine:
     # EVENT SYSTEM
     # =========================================================================
 
-    def _notify_event(self, event_type: str, data: Dict) -> None:
+    def _notify_event(self, event_type: str, data: dict) -> None:
         """Notify registered event callbacks."""
         callbacks = self.event_callbacks.get(event_type, [])
 
@@ -1030,7 +1033,7 @@ class TradingEngine:
     # STATUS AND CONFIGURATION
     # =========================================================================
 
-    def get_status(self) -> Dict:
+    def get_status(self) -> dict:
         """Get current engine status."""
         return {
             'engine_state': self.state.value,
@@ -1047,7 +1050,7 @@ class TradingEngine:
             'performance_metrics': self.performance_metrics.copy()
         }
 
-    def get_detailed_status(self) -> Dict:
+    def get_detailed_status(self) -> dict:
         """Get detailed engine status including trade journal stats."""
         basic_status = self.get_status()
 
@@ -1083,12 +1086,12 @@ class TradingEngine:
 
         return basic_status
 
-    def get_trade_journal(self, last_n: int = 100) -> List[Dict]:
+    def get_trade_journal(self, last_n: int = 100) -> list[dict]:
         """F13: Get recent trade journal entries."""
         with self._journal_lock:
             return list(self.trade_journal[-last_n:])
 
-    def _get_execution_quality(self) -> Dict:
+    def _get_execution_quality(self) -> dict:
         """Get execution quality metrics — latency statistics."""
         if not self._execution_latencies:
             return {'samples': 0}
@@ -1105,7 +1108,7 @@ class TradingEngine:
             'min_ms': round(float(np.min(lats)), 1),
         }
 
-    def _get_symbol_data_snapshot(self) -> Dict:
+    def _get_symbol_data_snapshot(self) -> dict:
         """Get a thread-safe snapshot of symbol data for status reporting."""
         with self._symbol_data_lock:
             return {
@@ -1117,7 +1120,7 @@ class TradingEngine:
                 for symbol, data in self.symbol_data.items()
             }
 
-    def update_config(self, new_config: Dict) -> bool:
+    def update_config(self, new_config: dict) -> bool:
         """Update engine configuration."""
         try:
             self.config.update(new_config)

@@ -1,3 +1,4 @@
+# FILE LOCATION: src/core/strategy_manager.py
 """
 NOCTURNA Trading System - Enhanced Strategy Manager v3
 Production-grade: multi-indicator confluence, volume confirmation,
@@ -8,13 +9,13 @@ Thread-safe: all mutable state passed as arguments, not instance fields.
 """
 
 import logging
+import threading
+from collections import deque
+from datetime import UTC, datetime
+from enum import Enum
+
 import numpy as np
 import pandas as pd
-from datetime import datetime, timezone
-from typing import Dict, List, Optional
-from enum import Enum
-from collections import deque
-import threading
 
 
 class TradingMode(Enum):
@@ -49,42 +50,42 @@ class StrategyManager:
 
     MIN_DATA_POINTS = 200
 
-    def __init__(self, config: Dict):
+    def __init__(self, config: dict):
         self.config = config
         self.logger = logging.getLogger(__name__)
 
         self.current_mode = TradingMode.SENTINEL
         self.current_market_state = MarketState.UNKNOWN
         self.current_regime = MarketRegime.UNKNOWN
-        self.last_analysis_time: Optional[datetime] = None
+        self.last_analysis_time: datetime | None = None
 
         self.parameters = self._load_parameters()
 
-        self.analysis_cache: Dict[str, Dict] = {}
-        self.mode_history: List[Dict] = []
+        self.analysis_cache: dict[str, dict] = {}
+        self.mode_history: list[dict] = []
 
         # Grid levels per-symbol — protected by lock (S2 fix)
         self._grid_lock = threading.Lock()
-        self.grid_levels: Dict[str, List[Dict]] = {}
-        self.grid_base_prices: Dict[str, float] = {}
+        self.grid_levels: dict[str, list[dict]] = {}
+        self.grid_base_prices: dict[str, float] = {}
 
         # F7: Grid aggregate exposure tracking
-        self.grid_fill_count: Dict[str, int] = {}
+        self.grid_fill_count: dict[str, int] = {}
         self.max_grid_fills = config.get('max_grid_fills', 5)
 
         # F8: Mode-specific cooldowns — {symbol: {mode: last_signal_time}}
         self._cooldown_lock = threading.Lock()
-        self._mode_cooldowns: Dict[str, Dict[str, datetime]] = {}
+        self._mode_cooldowns: dict[str, dict[str, datetime]] = {}
 
         # Signal history
         self.signal_history = deque(maxlen=200)
 
         # F5: Pullback state for SENTINEL
-        self._pullback_state: Dict[str, Dict] = {}
+        self._pullback_state: dict[str, dict] = {}
 
         self.logger.info("Enhanced Strategy Manager v3 initialized")
 
-    def _load_parameters(self) -> Dict:
+    def _load_parameters(self) -> dict:
         default_params = {
             'ema_fast': 8, 'ema_medium': 34, 'ema_slow': 50, 'ema_trend': 200,
             'macd_fast': 12, 'macd_slow': 26, 'macd_signal': 9,
@@ -130,9 +131,9 @@ class StrategyManager:
     # =========================================================================
 
     def update_strategy(self, df: pd.DataFrame, symbol: str,
-                        positions: Dict[str, Dict] = None,
-                        sentiment: Dict[str, Dict] = None,
-                        higher_tf_data: Dict[str, pd.DataFrame] = None) -> Dict:
+                        positions: dict[str, dict] = None,
+                        sentiment: dict[str, dict] = None,
+                        higher_tf_data: dict[str, pd.DataFrame] = None) -> dict:
         """
         Thread-safe strategy update. All mutable context passed as arguments.
 
@@ -165,12 +166,12 @@ class StrategyManager:
 
             self.current_mode = mode
             self.current_market_state = state
-            self.last_analysis_time = datetime.now(timezone.utc)
+            self.last_analysis_time = datetime.now(UTC)
 
             for s in signals:
                 self.signal_history.append({
                     'symbol': symbol, 'signal': s,
-                    'timestamp': datetime.now(timezone.utc),
+                    'timestamp': datetime.now(UTC),
                 })
 
             return {
@@ -188,7 +189,7 @@ class StrategyManager:
                 'symbol': symbol, 'market_state': MarketState.UNKNOWN.value,
                 'trading_mode': self.current_mode.value,
                 'regime': self.current_regime.value,
-                'signals': [], 'timestamp': datetime.now(timezone.utc),
+                'signals': [], 'timestamp': datetime.now(UTC),
                 'error': str(e),
             }
 
@@ -197,7 +198,7 @@ class StrategyManager:
     # =========================================================================
 
     def _detect_regime(self, df: pd.DataFrame,
-                       higher_tf: Dict[str, pd.DataFrame]) -> MarketRegime:
+                       higher_tf: dict[str, pd.DataFrame]) -> MarketRegime:
         """
         Detect macro regime from 200-day MA slope + higher TF trend.
         Bull: price > 200 EMA and 200 EMA rising
@@ -261,7 +262,7 @@ class StrategyManager:
     # INDICATOR HELPERS
     # =========================================================================
 
-    def _rsi(self, df: pd.DataFrame) -> Dict:
+    def _rsi(self, df: pd.DataFrame) -> dict:
         try:
             L = df.iloc[-1]
             rsi = L.get('rsi', 50)
@@ -278,7 +279,7 @@ class StrategyManager:
             return {'value': 50, 'overbought': False, 'oversold': False,
                     'bullish': False, 'bearish': False, 'rising': False, 'falling': False}
 
-    def _bb(self, df: pd.DataFrame) -> Dict:
+    def _bb(self, df: pd.DataFrame) -> dict:
         try:
             L = df.iloc[-1]
             pos = L.get('bb_position', 0.5)
@@ -295,7 +296,7 @@ class StrategyManager:
             return {'position': 0.5, 'upper': 0, 'lower': 0, 'middle': 0,
                     'squeeze': False, 'above_upper': False, 'below_lower': False}
 
-    def _stoch(self, df: pd.DataFrame) -> Dict:
+    def _stoch(self, df: pd.DataFrame) -> dict:
         try:
             L = df.iloc[-1]
             k, d = L.get('stoch_k', 50), L.get('stoch_d', 50)
@@ -311,7 +312,7 @@ class StrategyManager:
     # F4: MULTI-TIMEFRAME CONFIRMATION
     # =========================================================================
 
-    def _htf_trend_aligned(self, side: str, higher_tf: Dict[str, pd.DataFrame]) -> bool:
+    def _htf_trend_aligned(self, side: str, higher_tf: dict[str, pd.DataFrame]) -> bool:
         """
         Check if higher timeframe (4h or daily) trend supports the signal direction.
         Returns True if aligned or if higher TF data is unavailable (fail-open).
@@ -385,7 +386,7 @@ class StrategyManager:
             last_signal = sym_cooldowns.get(mode)
             if last_signal is None:
                 return True
-            elapsed = (datetime.now(timezone.utc) - last_signal).total_seconds()
+            elapsed = (datetime.now(UTC) - last_signal).total_seconds()
             return elapsed >= cooldown_secs
 
     def _record_cooldown(self, symbol: str, mode: str) -> None:
@@ -393,7 +394,7 @@ class StrategyManager:
         with self._cooldown_lock:
             if symbol not in self._mode_cooldowns:
                 self._mode_cooldowns[symbol] = {}
-            self._mode_cooldowns[symbol][mode] = datetime.now(timezone.utc)
+            self._mode_cooldowns[symbol][mode] = datetime.now(UTC)
 
     # =========================================================================
     # MARKET STATE + MODE SELECTION
@@ -474,7 +475,7 @@ class StrategyManager:
         if selected != self.current_mode:
             self.logger.info(f"Mode: {self.current_mode.value} → {selected.value} (regime={regime.value})")
             self.mode_history.append({
-                'timestamp': datetime.now(timezone.utc),
+                'timestamp': datetime.now(UTC),
                 'from': self.current_mode.value, 'to': selected.value,
                 'state': state.value, 'regime': regime.value,
             })
@@ -489,8 +490,8 @@ class StrategyManager:
 
     def generate_trading_signals(self, df: pd.DataFrame, symbol: str,
                                   mode: TradingMode,
-                                  positions: Dict, sentiment: Dict,
-                                  higher_tf: Dict) -> List[Dict]:
+                                  positions: dict, sentiment: dict,
+                                  higher_tf: dict) -> list[dict]:
         signals = []
         try:
             if mode == TradingMode.EVE:
@@ -514,7 +515,7 @@ class StrategyManager:
     # --- SENTINEL: A-grade trend following ------------------------------------
 
     def _gen_sentinel(self, df: pd.DataFrame, symbol: str,
-                      htf: Dict[str, pd.DataFrame]) -> List[Dict]:
+                      htf: dict[str, pd.DataFrame]) -> list[dict]:
         """
         SENTINEL v3: EMA trend + MACD cross + RSI + volume + price>EMA50 + HTF.
         F5: Also detects pullback entries (retracement to EMA50 after confluence).
@@ -584,7 +585,7 @@ class StrategyManager:
     # --- LUCIFER: A-grade breakout with tight SL (F6) -------------------------
 
     def _gen_lucifer(self, df: pd.DataFrame, symbol: str,
-                     htf: Dict[str, pd.DataFrame]) -> List[Dict]:
+                     htf: dict[str, pd.DataFrame]) -> list[dict]:
         """
         LUCIFER v3: EMA200 break held 2 bars + volume surge 2x + BB squeeze +
         RSI direction + HTF alignment.
@@ -619,7 +620,7 @@ class StrategyManager:
                     'quantity': self.parameters['max_position_size'],
                     'stop_loss': breakout_sl, 'take_profit': tp,
                     'mode': 'LUCIFER', 'signal_type': 'bullish_breakout_tight_sl',
-                    'confidence': conf, 'timestamp': datetime.now(timezone.utc),
+                    'confidence': conf, 'timestamp': datetime.now(UTC),
                 })
 
             # BEARISH breakout
@@ -638,7 +639,7 @@ class StrategyManager:
                     'quantity': self.parameters['max_position_size'],
                     'stop_loss': breakout_sl, 'take_profit': tp,
                     'mode': 'LUCIFER', 'signal_type': 'bearish_breakout_tight_sl',
-                    'confidence': conf, 'timestamp': datetime.now(timezone.utc),
+                    'confidence': conf, 'timestamp': datetime.now(UTC),
                 })
 
             return signals
@@ -649,7 +650,7 @@ class StrategyManager:
     # --- REAPER: A-grade reversal — S/R + candles + RSI divergence + 9 checks ---
 
     def _gen_reaper(self, df: pd.DataFrame, symbol: str,
-                    htf: Dict[str, pd.DataFrame]) -> List[Dict]:
+                    htf: dict[str, pd.DataFrame]) -> list[dict]:
         """
         REAPER A-grade: Multi-layer reversal detection.
         9 confirmation checks — requires 5+ (confidence >= 0.55) for entry.
@@ -755,10 +756,7 @@ class StrategyManager:
             if not swing_lows:
                 return False
             # Check if current price is within 1.5×ATR of any swing low
-            for sl in swing_lows[-5:]:  # Check 5 most recent
-                if abs(price - sl) < atr * 1.5:
-                    return True
-            return False
+            return any(abs(price - sl) < atr * 1.5 for sl in swing_lows[-5:])
         except Exception:
             return False
 
@@ -772,10 +770,7 @@ class StrategyManager:
                     swing_highs.append(highs.iloc[i])
             if not swing_highs:
                 return False
-            for sh in swing_highs[-5:]:
-                if abs(price - sh) < atr * 1.5:
-                    return True
-            return False
+            return any(abs(price - sh) < atr * 1.5 for sh in swing_highs[-5:])
         except Exception:
             return False
 
@@ -796,11 +791,7 @@ class StrategyManager:
                 return True
 
             # Bullish engulfing: current bar's body completely covers previous bar's body
-            if (c > o and P['close'] < P['open'] and
-                    o <= P['close'] and c >= P['open']):
-                return True
-
-            return False
+            return bool(c > o and P['close'] < P['open'] and o <= P['close'] and c >= P['open'])
         except Exception:
             return False
 
@@ -821,11 +812,7 @@ class StrategyManager:
                 return True
 
             # Bearish engulfing
-            if (c < o and P['close'] > P['open'] and
-                    o >= P['close'] and c <= P['open']):
-                return True
-
-            return False
+            return bool(c < o and P['close'] > P['open'] and o >= P['close'] and c <= P['open'])
         except Exception:
             return False
 
@@ -875,7 +862,7 @@ class StrategyManager:
 
     # --- EVE: A-grade grid — trend pause + per-grid SL + profit target ----------
 
-    def _gen_eve(self, df: pd.DataFrame, symbol: str) -> List[Dict]:
+    def _gen_eve(self, df: pd.DataFrame, symbol: str) -> list[dict]:
         """
         EVE A-grade: Dynamic grid with full risk controls.
         - ATR-based spacing + BB boundaries
@@ -936,7 +923,7 @@ class StrategyManager:
                             'price': level['price'],
                             'quantity': self.parameters['grid_position_size'],
                             'mode': 'EVE', 'level_id': level['id'],
-                            'confidence': 0.7, 'timestamp': datetime.now(timezone.utc),
+                            'confidence': 0.7, 'timestamp': datetime.now(UTC),
                         })
                         level['filled'] = True
                         level['fill_price'] = price
@@ -948,7 +935,7 @@ class StrategyManager:
                             'price': level['price'],
                             'quantity': self.parameters['grid_position_size'],
                             'mode': 'EVE', 'level_id': level['id'],
-                            'confidence': 0.7, 'timestamp': datetime.now(timezone.utc),
+                            'confidence': 0.7, 'timestamp': datetime.now(UTC),
                         })
                         level['filled'] = True
                         level['fill_price'] = price
@@ -976,8 +963,8 @@ class StrategyManager:
         except Exception:
             return False
 
-    def _check_grid_stop_losses(self, grids: List[Dict], price: float,
-                                 atr: float, symbol: str) -> List[Dict]:
+    def _check_grid_stop_losses(self, grids: list[dict], price: float,
+                                 atr: float, symbol: str) -> list[dict]:
         """
         Per-grid stop loss: if a filled grid position has moved 2x grid spacing against it,
         generate a close signal.
@@ -1000,7 +987,7 @@ class StrategyManager:
                             'quantity': self.parameters['grid_position_size'],
                             'mode': 'EVE', 'signal_type': 'grid_stop_loss',
                             'level_id': level['id'],
-                            'confidence': 0.9, 'timestamp': datetime.now(timezone.utc),
+                            'confidence': 0.9, 'timestamp': datetime.now(UTC),
                         })
                         level['filled'] = False  # Reset level
                         self.logger.info(f"Grid SL triggered for {symbol} {level['id']}")
@@ -1013,7 +1000,7 @@ class StrategyManager:
                             'quantity': self.parameters['grid_position_size'],
                             'mode': 'EVE', 'signal_type': 'grid_stop_loss',
                             'level_id': level['id'],
-                            'confidence': 0.9, 'timestamp': datetime.now(timezone.utc),
+                            'confidence': 0.9, 'timestamp': datetime.now(UTC),
                         })
                         level['filled'] = False
                         self.logger.info(f"Grid SL triggered for {symbol} {level['id']}")
@@ -1023,7 +1010,7 @@ class StrategyManager:
 
         return close_signals
 
-    def _init_grid(self, base: float, atr: float, bb: Dict, symbol: str) -> None:
+    def _init_grid(self, base: float, atr: float, bb: dict, symbol: str) -> None:
         """Initialize ATR-based grid bounded by BB. Must hold _grid_lock."""
         self.grid_base_prices[symbol] = base
         levels = []
@@ -1056,7 +1043,7 @@ class StrategyManager:
 
     def _build_signal(self, symbol: str, side: str, price: float, atr: float,
                       sl_mult: float, tp_mult: float,
-                      mode: str, signal_type: str, confidence: float) -> Dict:
+                      mode: str, signal_type: str, confidence: float) -> dict:
         if side == 'buy':
             sl, tp = price - atr * sl_mult, price + atr * tp_mult
         else:
@@ -1066,15 +1053,15 @@ class StrategyManager:
             'quantity': self.parameters['max_position_size'],
             'stop_loss': sl, 'take_profit': tp,
             'mode': mode, 'signal_type': signal_type,
-            'confidence': confidence, 'timestamp': datetime.now(timezone.utc),
+            'confidence': confidence, 'timestamp': datetime.now(UTC),
         }
 
     # =========================================================================
     # FILTERS
     # =========================================================================
 
-    def _apply_risk_filters(self, signals: List[Dict], df: pd.DataFrame,
-                            symbol: str) -> List[Dict]:
+    def _apply_risk_filters(self, signals: list[dict], df: pd.DataFrame,
+                            symbol: str) -> list[dict]:
         filtered = []
         for s in signals:
             if self._volatility_spike(df):
@@ -1096,8 +1083,8 @@ class StrategyManager:
             filtered.append(s)
         return filtered
 
-    def _apply_sentiment_filter(self, signals: List[Dict], symbol: str,
-                                sentiment: Dict) -> List[Dict]:
+    def _apply_sentiment_filter(self, signals: list[dict], symbol: str,
+                                sentiment: dict) -> list[dict]:
         if not sentiment:
             return signals
         sym_sent = sentiment.get(symbol, {})
@@ -1120,7 +1107,7 @@ class StrategyManager:
             filtered.append(s)
         return filtered
 
-    def _apply_cooldown_filter(self, signals: List[Dict], symbol: str) -> List[Dict]:
+    def _apply_cooldown_filter(self, signals: list[dict], symbol: str) -> list[dict]:
         """F8: Filter signals that are within mode-specific cooldown."""
         filtered = []
         for s in signals:
@@ -1132,8 +1119,8 @@ class StrategyManager:
                 self.logger.debug(f"Cooldown active for {symbol}/{mode}")
         return filtered
 
-    def _filter_position_conflicts(self, signals: List[Dict], symbol: str,
-                                   positions: Dict) -> List[Dict]:
+    def _filter_position_conflicts(self, signals: list[dict], symbol: str,
+                                   positions: dict) -> list[dict]:
         pos = positions.get(symbol, {})
         qty = pos.get('quantity', 0)
         return [s for s in signals
@@ -1144,7 +1131,7 @@ class StrategyManager:
     # STATUS
     # =========================================================================
 
-    def get_strategy_status(self) -> Dict:
+    def get_strategy_status(self) -> dict:
         return {
             'current_mode': self.current_mode.value,
             'current_market_state': self.current_market_state.value,

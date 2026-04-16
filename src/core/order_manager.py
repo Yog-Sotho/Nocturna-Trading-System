@@ -1,18 +1,19 @@
+# FILE LOCATION: src/core/order_manager.py
 """
 Order Execution Manager for NOCTURNA v2.0 Trading System
 Production-grade order management with enhanced error handling and validation.
 """
 
-import os
 import logging
-import time
-from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Callable
-from enum import Enum
+import os
 import threading
+import time
 import uuid
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from enum import Enum
 
 
 class OrderStatus(Enum):
@@ -54,15 +55,15 @@ class OrderRecord:
     avg_fill_price: float = 0.0
     status: OrderStatus = OrderStatus.PENDING
     client_order_id: str = ""
-    submitted_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    filled_at: Optional[datetime] = None
-    cancelled_at: Optional[datetime] = None
-    last_update: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    stop_loss: Optional[float] = None
-    take_profit: Optional[float] = None
+    submitted_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    filled_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    last_update: datetime = field(default_factory=lambda: datetime.now(UTC))
+    stop_loss: float | None = None
+    take_profit: float | None = None
     filled_avg_price: float = 0.0
-    error_message: Optional[str] = None
-    metadata: Dict = field(default_factory=dict)
+    error_message: str | None = None
+    metadata: dict = field(default_factory=dict)
 
 
 class OrderExecutionManager:
@@ -75,7 +76,7 @@ class OrderExecutionManager:
     MAX_ORDER_HISTORY = 10000
     MAX_DAILY_ORDERS = 500
 
-    def __init__(self, config: Dict):
+    def __init__(self, config: dict):
         self.config = config
         self.logger = logging.getLogger(__name__)
 
@@ -83,21 +84,21 @@ class OrderExecutionManager:
         self.alpaca_client = None
 
         # Order management
-        self.active_orders: Dict[str, OrderRecord] = {}
-        self.order_history: List[OrderRecord] = []
-        self.positions: Dict[str, Dict] = {}
+        self.active_orders: dict[str, OrderRecord] = {}
+        self.order_history: list[OrderRecord] = []
+        self.positions: dict[str, dict] = {}
 
         # Trailing stops
-        self.trailing_stops: Dict[str, Dict] = {}
+        self.trailing_stops: dict[str, dict] = {}
 
         # Monitoring thread
-        self.monitor_thread: Optional[threading.Thread] = None
+        self.monitor_thread: threading.Thread | None = None
         self.running = False
         self.monitor_interval = 5  # seconds
 
         # Callbacks
-        self.order_callbacks: List[Callable] = []
-        self.position_callbacks: List[Callable] = []
+        self.order_callbacks: list[Callable] = []
+        self.position_callbacks: list[Callable] = []
 
         # Risk limits
         self.max_daily_loss = float(config.get('max_daily_loss', 0.05))
@@ -105,7 +106,7 @@ class OrderExecutionManager:
 
         # Daily tracking
         self.daily_order_count = 0
-        self.daily_reset_time = datetime.now(timezone.utc).date()
+        self.daily_reset_time = datetime.now(UTC).date()
 
         # Performance tracking
         self.performance_history = deque(maxlen=1000)
@@ -170,7 +171,7 @@ class OrderExecutionManager:
                         'avg_price': float(pos.avg_entry_price),
                         'market_value': float(pos.market_value),
                         'unrealized_pnl': float(pos.unrealized_pl),
-                        'last_update': datetime.now(timezone.utc)
+                        'last_update': datetime.now(UTC)
                     }
 
                 self.logger.info(f"Loaded {len(self.positions)} existing positions")
@@ -178,7 +179,7 @@ class OrderExecutionManager:
             except Exception as e:
                 self.logger.error(f"Error loading positions: {e}")
 
-    def submit_order(self, signal: Dict) -> Optional[str]:
+    def submit_order(self, signal: dict) -> str | None:
         """
         Submit a new order based on trading signal.
 
@@ -244,7 +245,7 @@ class OrderExecutionManager:
                 self.logger.error(f"Error submitting order: {e}")
                 return None
 
-    def _validate_signal(self, signal: Dict) -> bool:
+    def _validate_signal(self, signal: dict) -> bool:
         """Validate trading signal structure and values."""
         required_fields = ['symbol', 'side', 'type', 'quantity']
 
@@ -281,10 +282,9 @@ class OrderExecutionManager:
             return False
 
         # Validate prices for limit orders
-        if signal['type'] in ['limit', 'stop_limit']:
-            if 'price' not in signal or signal['price'] <= 0:
-                self.logger.error("Limit price required for limit orders")
-                return False
+        if signal['type'] in ['limit', 'stop_limit'] and ('price' not in signal or signal['price'] <= 0):
+            self.logger.error("Limit price required for limit orders")
+            return False
 
         if signal['type'] in ['stop', 'stop_limit']:
             if 'stop_price' not in signal or signal['stop_price'] <= 0:
@@ -293,7 +293,7 @@ class OrderExecutionManager:
 
         return True
 
-    def _check_risk_limits(self, signal: Dict) -> bool:
+    def _check_risk_limits(self, signal: dict) -> bool:
         """Check if order passes risk limits."""
         try:
             # Check daily loss limit — compare as fraction of portfolio
@@ -338,10 +338,7 @@ class OrderExecutionManager:
                 return False
 
             # F18: Pattern day trader protection
-            if not self._check_pdt_limit(signal):
-                return False
-
-            return True
+            return self._check_pdt_limit(signal)
 
         except Exception as e:
             self.logger.error(f"Error checking risk limits: {e}")
@@ -359,7 +356,7 @@ class OrderExecutionManager:
         total_mv = sum(pos.get('market_value', 0) for pos in self.positions.values())
         return max(total_mv, 100000.0)  # Minimum $100K assumption
 
-    def _check_wash_sale(self, signal: Dict) -> bool:
+    def _check_wash_sale(self, signal: dict) -> bool:
         """
         F18: Wash sale detection — block repurchase of a symbol within 30 days
         of selling it at a loss. IRC Section 1091.
@@ -368,7 +365,7 @@ class OrderExecutionManager:
             return True  # Only applies to buy orders
 
         symbol = signal['symbol']
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         wash_window = timedelta(days=30)
 
         # Check recent order history for loss sales of this symbol
@@ -391,7 +388,7 @@ class OrderExecutionManager:
 
         return True
 
-    def _check_pdt_limit(self, signal: Dict) -> bool:
+    def _check_pdt_limit(self, signal: dict) -> bool:
         """
         F18: Pattern Day Trader protection — block if account would exceed
         3 day trades in 5 business days (for accounts under $25K).
@@ -402,7 +399,7 @@ class OrderExecutionManager:
                 return True  # PDT rule doesn't apply above $25K
 
             # Count day trades in last 5 business days
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             five_bdays_ago = now - timedelta(days=7)  # Conservative: 7 calendar days
 
             day_trades = 0
@@ -457,7 +454,7 @@ class OrderExecutionManager:
             self.logger.warning(f"Error checking market hours: {e}, assuming market open")
             return True
 
-    def _prepare_order(self, signal: Dict) -> Optional[Dict]:
+    def _prepare_order(self, signal: dict) -> dict | None:
         """Prepare order data for broker submission."""
         try:
             order_data = {
@@ -517,7 +514,7 @@ class OrderExecutionManager:
             self.logger.error(f"Error preparing order: {e}")
             return None
 
-    def _submit_to_broker(self, order_data: Dict) -> Optional[str]:
+    def _submit_to_broker(self, order_data: dict) -> str | None:
         """Submit order to broker API."""
         try:
             if self.alpaca_client:
@@ -546,7 +543,7 @@ class OrderExecutionManager:
             self.logger.error(f"Error submitting to broker: {e}")
             return None
 
-    def _schedule_simulated_fill(self, order_id: str, order_data: Dict) -> None:
+    def _schedule_simulated_fill(self, order_id: str, order_data: dict) -> None:
         """Simulate fill for market orders in sim mode using realistic pricing."""
         def _fill():
             time.sleep(0.1)  # Brief simulated latency (reduced from 0.5s — V4 fix)
@@ -584,7 +581,7 @@ class OrderExecutionManager:
                     order.status = OrderStatus.FILLED
                     order.filled_quantity = order.quantity
                     order.filled_avg_price = sim_price
-                    order.filled_at = datetime.now(timezone.utc)
+                    order.filled_at = datetime.now(UTC)
                     self._update_position_from_fill(order)
                     del self.active_orders[order_id]
                     self._notify_order_callbacks(order)
@@ -593,7 +590,7 @@ class OrderExecutionManager:
         fill_thread = threading.Thread(target=_fill, daemon=True, name=f"SimFill-{order_id}")
         fill_thread.start()
 
-    def _is_duplicate_signal(self, signal: Dict) -> bool:
+    def _is_duplicate_signal(self, signal: dict) -> bool:
         """
         Check if a signal is a duplicate of a recent active order.
         Prevents double-submission from retries or repeated signals.
@@ -604,11 +601,11 @@ class OrderExecutionManager:
             if (order.symbol == symbol and
                     order.side == side and
                     order.status in [OrderStatus.PENDING, OrderStatus.SUBMITTED] and
-                    (datetime.now(timezone.utc) - order.submitted_at).total_seconds() < 60):
+                    (datetime.now(UTC) - order.submitted_at).total_seconds() < 60):
                 return True
         return False
 
-    def _register_order(self, order_id: str, order_data: Dict, signal: Dict) -> None:
+    def _register_order(self, order_id: str, order_data: dict, signal: dict) -> None:
         """Register order in tracking system."""
         order_record = OrderRecord(
             id=order_id,
@@ -619,7 +616,7 @@ class OrderExecutionManager:
             filled_quantity=0.0,
             status=OrderStatus.SUBMITTED,
             client_order_id=order_data.get('client_order_id', ''),
-            submitted_at=datetime.now(timezone.utc),
+            submitted_at=datetime.now(UTC),
             stop_loss=signal.get('stop_loss'),
             take_profit=signal.get('take_profit'),
             metadata={
@@ -635,7 +632,7 @@ class OrderExecutionManager:
         if len(self.order_history) > self.MAX_ORDER_HISTORY:
             self.order_history = self.order_history[-self.MAX_ORDER_HISTORY:]
 
-    def _setup_trailing_stop(self, order_id: str, signal: Dict) -> None:
+    def _setup_trailing_stop(self, order_id: str, signal: dict) -> None:
         """Configure trailing stop for order."""
         if not signal.get('trail_trigger'):
             return
@@ -649,7 +646,7 @@ class OrderExecutionManager:
             'active': False,
             'highest_price': None,
             'lowest_price': None,
-            'created_at': datetime.now(timezone.utc)
+            'created_at': datetime.now(UTC)
         }
 
         self.trailing_stops[order_id] = trailing_config
@@ -687,8 +684,8 @@ class OrderExecutionManager:
 
                 # Update local status
                 order.status = OrderStatus.CANCELLED
-                order.cancelled_at = datetime.now(timezone.utc)
-                order.last_update = datetime.now(timezone.utc)
+                order.cancelled_at = datetime.now(UTC)
+                order.last_update = datetime.now(UTC)
 
                 # Remove from active orders
                 del self.active_orders[order_id]
@@ -708,7 +705,7 @@ class OrderExecutionManager:
                 self.logger.error(f"Error cancelling order {order_id}: {e}")
                 return False
 
-    def get_order_status(self, order_id: str) -> Optional[Dict]:
+    def get_order_status(self, order_id: str) -> dict | None:
         """Get status of a specific order."""
         with self._lock:
             # Check active orders
@@ -723,7 +720,7 @@ class OrderExecutionManager:
 
             return None
 
-    def _order_to_dict(self, order: OrderRecord) -> Dict:
+    def _order_to_dict(self, order: OrderRecord) -> dict:
         """Convert OrderRecord to dictionary."""
         return {
             'id': order.id,
@@ -742,12 +739,12 @@ class OrderExecutionManager:
             'error': order.error_message
         }
 
-    def get_positions(self) -> Dict:
+    def get_positions(self) -> dict:
         """Get all active positions."""
         with self._lock:
             return self.positions.copy()
 
-    def get_position(self, symbol: str) -> Optional[Dict]:
+    def get_position(self, symbol: str) -> dict | None:
         """Get position for a specific symbol."""
         with self._lock:
             return self.positions.get(symbol)
@@ -823,11 +820,11 @@ class OrderExecutionManager:
                     )
                     order.filled_quantity = float(broker_order.filled_qty or 0)
                     order.filled_avg_price = float(broker_order.filled_avg_price or 0)
-                    order.last_update = datetime.now(timezone.utc)
+                    order.last_update = datetime.now(UTC)
 
                     # Handle filled order
                     if order.status == OrderStatus.FILLED:
-                        order.filled_at = datetime.now(timezone.utc)
+                        order.filled_at = datetime.now(UTC)
                         self._update_position_from_fill(order)
                         del self.active_orders[order_id]
                         self._notify_order_callbacks(order)
@@ -856,7 +853,7 @@ class OrderExecutionManager:
                         'avg_price': float(pos.avg_entry_price),
                         'market_value': float(pos.market_value),
                         'unrealized_pnl': float(pos.unrealized_pl),
-                        'last_update': datetime.now(timezone.utc)
+                        'last_update': datetime.now(UTC)
                     }
 
                 # Remove closed positions
@@ -895,7 +892,7 @@ class OrderExecutionManager:
                     position['quantity'] = 0
                     position['avg_price'] = 0
 
-            position['last_update'] = datetime.now(timezone.utc)
+            position['last_update'] = datetime.now(UTC)
 
             # Notify callbacks
             self._notify_position_callbacks(position)
@@ -941,7 +938,7 @@ class OrderExecutionManager:
                 except Exception as e:
                     self.logger.error(f"Error processing trailing stop {order_id}: {e}")
 
-    def _get_current_price(self, symbol: str) -> Optional[float]:
+    def _get_current_price(self, symbol: str) -> float | None:
         """Get current price for a symbol."""
         try:
             if self.alpaca_client:
@@ -953,7 +950,7 @@ class OrderExecutionManager:
         except Exception:
             return None
 
-    def _execute_trailing_stop(self, order_id: str, config: Dict, current_price: float) -> None:
+    def _execute_trailing_stop(self, order_id: str, config: dict, current_price: float) -> None:
         """
         Execute a trailing stop order.
         Submits directly to broker, bypassing market hours and risk limits,
@@ -1000,7 +997,7 @@ class OrderExecutionManager:
         """Update daily performance metrics."""
         with self._lock:
             # Reset daily count if new day
-            current_date = datetime.now(timezone.utc).date()
+            current_date = datetime.now(UTC).date()
             if current_date > self.daily_reset_time:
                 self.daily_order_count = 0
                 self.daily_reset_time = current_date
@@ -1012,7 +1009,7 @@ class OrderExecutionManager:
 
             # Record performance
             self.performance_history.append({
-                'timestamp': datetime.now(timezone.utc),
+                'timestamp': datetime.now(UTC),
                 'unrealized_pnl': total_unrealized,
                 'positions_count': len(self.positions),
                 'active_orders': len(self.active_orders)
@@ -1020,7 +1017,7 @@ class OrderExecutionManager:
 
     def _increment_daily_count(self) -> None:
         """Increment daily order count."""
-        current_date = datetime.now(timezone.utc).date()
+        current_date = datetime.now(UTC).date()
         if current_date > self.daily_reset_time:
             self.daily_order_count = 0
             self.daily_reset_time = current_date
@@ -1035,7 +1032,7 @@ class OrderExecutionManager:
             except Exception as e:
                 self.logger.error(f"Error in order callback: {e}")
 
-    def _notify_position_callbacks(self, position: Dict) -> None:
+    def _notify_position_callbacks(self, position: dict) -> None:
         """Notify registered position callbacks."""
         for callback in self.position_callbacks:
             try:
@@ -1051,7 +1048,7 @@ class OrderExecutionManager:
         """Register a callback for position events."""
         self.position_callbacks.append(callback)
 
-    def get_trading_summary(self) -> Dict:
+    def get_trading_summary(self) -> dict:
         """Get summary of trading activity."""
         with self._lock:
             return {
@@ -1060,5 +1057,5 @@ class OrderExecutionManager:
                 'daily_orders': self.daily_order_count,
                 'trailing_stops': len(self.trailing_stops),
                 'total_orders_history': len(self.order_history),
-                'last_update': datetime.now(timezone.utc)
+                'last_update': datetime.now(UTC)
             }

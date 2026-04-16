@@ -1,3 +1,4 @@
+# FILE LOCATION: src/core/external_signals.py
 """
 NOCTURNA Trading System - External Signal Aggregator (F16)
 Integrates third-party signal sources for supplementary confirmation.
@@ -13,9 +14,8 @@ The aggregator blends all available sources into a composite external signal.
 
 import logging
 import threading
-from datetime import datetime, timezone
-from typing import Dict, Optional
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 
 @dataclass
@@ -25,8 +25,8 @@ class ExternalSignal:
     score: float          # -1.0 (extreme bearish) to +1.0 (extreme bullish)
     confidence: float     # 0.0 to 1.0
     raw_value: float      # Original value from source
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    metadata: Dict = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict = field(default_factory=dict)
 
 
 class ExternalSignalAggregator:
@@ -49,11 +49,11 @@ class ExternalSignalAggregator:
         'x70_signals': 0.4,    # AI signals — highest signal quality
     }
 
-    def __init__(self, config: Dict = None):
+    def __init__(self, config: dict = None):
         self.config = config or {}
         self.logger = logging.getLogger(__name__)
 
-        self._cache: Dict[str, ExternalSignal] = {}
+        self._cache: dict[str, ExternalSignal] = {}
         self._lock = threading.Lock()
 
         # Source availability
@@ -72,7 +72,7 @@ class ExternalSignalAggregator:
     # PUBLIC API
     # =========================================================================
 
-    def get_composite_signal(self, symbol: str = 'BTC') -> Dict:
+    def get_composite_signal(self, symbol: str = 'BTC') -> dict:
         """
         Get blended external signal from all available sources.
 
@@ -100,7 +100,7 @@ class ExternalSignalAggregator:
                 'score': sig.score,
                 'confidence': sig.confidence,
                 'raw_value': sig.raw_value,
-                'age_seconds': (datetime.now(timezone.utc) - sig.timestamp).total_seconds(),
+                'age_seconds': (datetime.now(UTC) - sig.timestamp).total_seconds(),
             }
 
             weight = self.SOURCE_WEIGHTS.get(source, 0.25) * sig.confidence
@@ -115,10 +115,10 @@ class ExternalSignalAggregator:
             'confidence': composite_conf,
             'sources': signals,
             'source_count': len(signals),
-            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'timestamp': datetime.now(UTC).isoformat(),
         }
 
-    def get_fear_greed_signal(self) -> Optional[ExternalSignal]:
+    def get_fear_greed_signal(self) -> ExternalSignal | None:
         """Get Fear & Greed Index signal directly."""
         return self._get_cached_or_fetch('fear_greed')
 
@@ -126,7 +126,7 @@ class ExternalSignalAggregator:
     # CACHE MANAGEMENT
     # =========================================================================
 
-    def _get_cached_or_fetch(self, source: str, symbol: str = 'BTC') -> Optional[ExternalSignal]:
+    def _get_cached_or_fetch(self, source: str, symbol: str = 'BTC') -> ExternalSignal | None:
         """Return cached signal if fresh, otherwise fetch."""
         cache_key = f"{source}_{symbol}"
         ttl = self.CACHE_TTL.get(source, 600)
@@ -134,7 +134,7 @@ class ExternalSignalAggregator:
         with self._lock:
             cached = self._cache.get(cache_key)
             if cached:
-                age = (datetime.now(timezone.utc) - cached.timestamp).total_seconds()
+                age = (datetime.now(UTC) - cached.timestamp).total_seconds()
                 if age < ttl:
                     return cached
 
@@ -160,15 +160,15 @@ class ExternalSignalAggregator:
     # SOURCE: Alternative.me Fear & Greed Index
     # =========================================================================
 
-    def _fetch_fear_greed(self) -> Optional[ExternalSignal]:
+    def _fetch_fear_greed(self) -> ExternalSignal | None:
         """
         Fetch Crypto Fear & Greed Index from Alternative.me.
         Free API, no key required. Returns 0-100 index.
         0 = Extreme Fear (contrarian bullish), 100 = Extreme Greed (contrarian bearish).
         """
         try:
-            import urllib.request
             import json
+            import urllib.request
 
             url = 'https://api.alternative.me/fng/?limit=1'
             req = urllib.request.Request(url, headers={'User-Agent': 'NOCTURNA/2.0'})
@@ -210,7 +210,7 @@ class ExternalSignalAggregator:
     # SOURCE: Alpaca News Sentiment
     # =========================================================================
 
-    def _fetch_alpaca_news_sentiment(self, symbol: str) -> Optional[ExternalSignal]:
+    def _fetch_alpaca_news_sentiment(self, symbol: str) -> ExternalSignal | None:
         """
         Fetch recent news for a symbol via Alpaca and run basic sentiment scoring.
         Uses VADER if available, otherwise simple keyword count.
@@ -223,8 +223,8 @@ class ExternalSignalAggregator:
             if not alpaca_key or not alpaca_secret:
                 return None
 
-            import urllib.request
             import json
+            import urllib.request
 
             # Alpaca news endpoint
             news_url = f"https://data.alpaca.markets/v1beta1/news?symbols={symbol}&limit=10&sort=desc"
@@ -284,16 +284,16 @@ class ExternalSignalAggregator:
     # SOURCE: x70.ai Trading Signals (optional)
     # =========================================================================
 
-    def _fetch_x70_signal(self, symbol: str) -> Optional[ExternalSignal]:
+    def _fetch_x70_signal(self, symbol: str) -> ExternalSignal | None:
         """
         Fetch AI trading signals from x70.ai.
         Requires API key set in config or env var X70_API_KEY.
         Returns directional signal with confidence.
         """
         try:
+            import json
             import os
             import urllib.request
-            import json
 
             api_key = self.config.get('x70_api_key') or os.environ.get('X70_API_KEY')
             if not api_key:
@@ -346,12 +346,12 @@ class ExternalSignalAggregator:
     # STATUS
     # =========================================================================
 
-    def get_status(self) -> Dict:
+    def get_status(self) -> dict:
         """Get aggregator status."""
         with self._lock:
             cache_status = {}
             for key, sig in self._cache.items():
-                age = (datetime.now(timezone.utc) - sig.timestamp).total_seconds()
+                age = (datetime.now(UTC) - sig.timestamp).total_seconds()
                 cache_status[key] = {
                     'score': sig.score,
                     'confidence': sig.confidence,
@@ -362,5 +362,5 @@ class ExternalSignalAggregator:
         return {
             'sources_enabled': self._sources_enabled,
             'cache': cache_status,
-            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'timestamp': datetime.now(UTC).isoformat(),
         }
