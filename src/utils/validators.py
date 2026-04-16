@@ -1,15 +1,15 @@
+# FILE LOCATION: src/utils/validators.py
 """
 NOCTURNA Trading System - Input Validators
 Production-grade input validation using Pydantic schemas.
 """
 
 import os
-import sys
 import re
-from typing import Dict, List, Optional
-from enum import Enum
+import sys
+from enum import StrEnum
 
-from pydantic import BaseModel, Field, field_validator, model_validator, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 class ValidationException(Exception):
     """Custom exception for validation errors."""
 
-    def __init__(self, errors: List[Dict]):
+    def __init__(self, errors: list[dict]):
         self.errors = errors
         super().__init__(f"Validation failed: {errors}")
 
@@ -30,13 +30,13 @@ class ValidationException(Exception):
 # ENUMS FOR VALIDATION
 # =============================================================================
 
-class OrderSide(str, Enum):
+class OrderSide(StrEnum):
     """Order side enum."""
     BUY = "buy"
     SELL = "sell"
 
 
-class OrderType(str, Enum):
+class OrderType(StrEnum):
     """Order type enum."""
     MARKET = "market"
     LIMIT = "limit"
@@ -44,7 +44,7 @@ class OrderType(str, Enum):
     STOP_LIMIT = "stop_limit"
 
 
-class RiskLevel(str, Enum):
+class RiskLevel(StrEnum):
     """Risk level enum."""
     LOW = "LOW"
     MEDIUM = "MEDIUM"
@@ -52,7 +52,7 @@ class RiskLevel(str, Enum):
     AGGRESSIVE = "AGGRESSIVE"
 
 
-class TradingMode(str, Enum):
+class TradingMode(StrEnum):
     """Trading mode enum."""
     PAPER = "PAPER"
     LIVE = "LIVE"
@@ -66,100 +66,100 @@ class ConfigurationSchema(BaseModel):
     """
     Validates and types the system configuration.
     """
-    symbols: Optional[List[str]] = Field(
+    symbols: list[str] | None = Field(
         default_factory=list,
         description="List of trading symbols",
         max_length=50
     )
 
-    update_interval: Optional[int] = Field(
+    update_interval: int | None = Field(
         default=60,
         ge=1,
         le=3600,
         description="Update interval in seconds"
     )
 
-    max_position_size: Optional[float] = Field(
+    max_position_size: float | None = Field(
         default=0.2,
         ge=0.001,
         le=1.0,
         description="Maximum position size as fraction of portfolio"
     )
 
-    risk_level: Optional[RiskLevel] = Field(
+    risk_level: RiskLevel | None = Field(
         default=RiskLevel.LOW,
         description="Risk level setting"
     )
 
-    trading_mode: Optional[TradingMode] = Field(
+    trading_mode: TradingMode | None = Field(
         default=TradingMode.PAPER,
         description="Trading mode (PAPER or LIVE)"
     )
 
-    grid_spacing: Optional[float] = Field(
+    grid_spacing: float | None = Field(
         default=0.005,
         ge=0.0001,
         le=0.1,
         description="Grid spacing for EVE mode"
     )
 
-    atr_mult_sl: Optional[float] = Field(
+    atr_mult_sl: float | None = Field(
         default=2.0,
         ge=0.5,
         le=10.0,
         description="ATR multiplier for stop loss"
     )
 
-    atr_mult_tp: Optional[float] = Field(
+    atr_mult_tp: float | None = Field(
         default=4.0,
         ge=0.5,
         le=20.0,
         description="ATR multiplier for take profit"
     )
 
-    volatility_threshold: Optional[float] = Field(
+    volatility_threshold: float | None = Field(
         default=2.0,
         ge=0.1,
         le=10.0,
         description="Volatility threshold for mode switching"
     )
 
-    trend_strength_threshold: Optional[float] = Field(
+    trend_strength_threshold: float | None = Field(
         default=0.5,
         ge=0.0,
         le=1.0,
         description="Trend strength threshold"
     )
 
-    reversal_confirmation_bars: Optional[int] = Field(
+    reversal_confirmation_bars: int | None = Field(
         default=3,
         ge=1,
         le=20,
         description="Confirmation bars for reversal signals"
     )
 
-    breakout_volume_mult: Optional[float] = Field(
+    breakout_volume_mult: float | None = Field(
         default=1.5,
         ge=1.0,
         le=5.0,
         description="Volume multiplier for breakout confirmation"
     )
 
-    max_daily_loss: Optional[float] = Field(
+    max_daily_loss: float | None = Field(
         default=0.05,
         ge=0.001,
         le=0.5,
         description="Maximum daily loss as fraction of capital"
     )
 
-    max_drawdown: Optional[float] = Field(
+    max_drawdown: float | None = Field(
         default=0.15,
         ge=0.001,
         le=0.5,
         description="Maximum drawdown as fraction of capital"
     )
 
-    emergency_close_positions: Optional[bool] = Field(
+    emergency_close_positions: bool | None = Field(
         default=False,
         description="Whether to close positions on emergency stop"
     )
@@ -182,9 +182,8 @@ class ConfigurationSchema(BaseModel):
     @model_validator(mode='after')
     def validate_atr_multipliers(self):
         """Ensure ATR multipliers are logically consistent."""
-        if self.atr_mult_tp and self.atr_mult_sl:
-            if self.atr_mult_tp < self.atr_mult_sl:
-                raise ValueError('Take profit ATR multiplier must be >= stop loss ATR multiplier')
+        if self.atr_mult_tp and self.atr_mult_sl and self.atr_mult_tp < self.atr_mult_sl:
+            raise ValueError('Take profit ATR multiplier must be >= stop loss ATR multiplier')
         return self
 
 
@@ -215,43 +214,43 @@ class TradingSignalSchema(BaseModel):
         description="Order quantity"
     )
 
-    price: Optional[float] = Field(
+    price: float | None = Field(
         default=None,
         gt=0,
         description="Limit price (required for limit orders)"
     )
 
-    stop_price: Optional[float] = Field(
+    stop_price: float | None = Field(
         default=None,
         gt=0,
         description="Stop price (required for stop orders)"
     )
 
-    stop_loss: Optional[float] = Field(
+    stop_loss: float | None = Field(
         default=None,
         gt=0,
         description="Stop loss price"
     )
 
-    take_profit: Optional[float] = Field(
+    take_profit: float | None = Field(
         default=None,
         gt=0,
         description="Take profit price"
     )
 
-    time_in_force: Optional[str] = Field(
+    time_in_force: str | None = Field(
         default='day',
         description="Time in force (day, gtc, opg, cls, etc.)"
     )
 
-    trail_trigger: Optional[float] = Field(
+    trail_trigger: float | None = Field(
         default=None,
         ge=0,
         le=1,
         description="Trailing stop trigger as profit fraction"
     )
 
-    trail_offset: Optional[float] = Field(
+    trail_offset: float | None = Field(
         default=None,
         ge=0,
         le=0.1,
@@ -304,7 +303,7 @@ class TradingSignalSchema(BaseModel):
 
 class EmergencyStopSchema(BaseModel):
     """Validates emergency stop requests."""
-    reason: Optional[str] = Field(
+    reason: str | None = Field(
         default="Emergency stop triggered via API",
         max_length=500,
         description="Reason for emergency stop"
@@ -438,7 +437,7 @@ class RegisterSchema(BaseModel):
 # VALIDATION HELPER FUNCTIONS
 # =============================================================================
 
-def validate_config_input(data: Dict) -> tuple[bool, Optional[ConfigurationSchema], List[Dict]]:
+def validate_config_input(data: dict) -> tuple[bool, ConfigurationSchema | None, list[dict]]:
     """
     Validate configuration input.
 
@@ -460,7 +459,7 @@ def validate_config_input(data: Dict) -> tuple[bool, Optional[ConfigurationSchem
         return False, None, errors
 
 
-def validate_trading_signal(data: Dict) -> tuple[bool, Optional[TradingSignalSchema], List[Dict]]:
+def validate_trading_signal(data: dict) -> tuple[bool, TradingSignalSchema | None, list[dict]]:
     """
     Validate trading signal input.
 
@@ -482,7 +481,7 @@ def validate_trading_signal(data: Dict) -> tuple[bool, Optional[TradingSignalSch
         return False, None, errors
 
 
-def validate_emergency_stop(data: Dict) -> tuple[bool, Optional[EmergencyStopSchema], List[Dict]]:
+def validate_emergency_stop(data: dict) -> tuple[bool, EmergencyStopSchema | None, list[dict]]:
     """
     Validate emergency stop request.
 
@@ -504,7 +503,7 @@ def validate_emergency_stop(data: Dict) -> tuple[bool, Optional[EmergencyStopSch
         return False, None, errors
 
 
-def validate_login(data: Dict) -> tuple[bool, Optional[LoginSchema], List[Dict]]:
+def validate_login(data: dict) -> tuple[bool, LoginSchema | None, list[dict]]:
     """
     Validate login request.
 
@@ -526,7 +525,7 @@ def validate_login(data: Dict) -> tuple[bool, Optional[LoginSchema], List[Dict]]
         return False, None, errors
 
 
-def validate_registration(data: Dict) -> tuple[bool, Optional[RegisterSchema], List[Dict]]:
+def validate_registration(data: dict) -> tuple[bool, RegisterSchema | None, list[dict]]:
     """
     Validate registration request.
 
