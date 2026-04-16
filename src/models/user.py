@@ -1,16 +1,16 @@
+# FILE LOCATION: src/models/user.py
 """
 NOCTURNA Trading System - Database Models
 Production-grade SQLAlchemy models for user management and audit logging.
 """
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from flask_sqlalchemy import SQLAlchemy
-from werkzeug.security import generate_password_hash, check_password_hash
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text, Float, ForeignKey, JSON
+from sqlalchemy import JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
-
+from werkzeug.security import check_password_hash, generate_password_hash
 
 db = SQLAlchemy()
 
@@ -39,9 +39,9 @@ class User(db.Model):
     settings = Column(JSON, default=dict)
 
     # Timestamps
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
-                        onupdate=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
+    updated_at = Column(DateTime, default=lambda: datetime.now(UTC),
+                        onupdate=lambda: datetime.now(UTC))
     last_login = Column(DateTime)
 
     # Security
@@ -62,14 +62,12 @@ class User(db.Model):
 
     def is_locked(self) -> bool:
         """Check if the account is locked."""
-        if self.locked_until and self.locked_until > datetime.now(timezone.utc):
-            return True
-        return False
+        return bool(self.locked_until and self.locked_until > datetime.now(UTC))
 
     def lock_account(self, duration_minutes: int = 15) -> None:
         """Lock the user account for a specified duration."""
         from datetime import timedelta
-        self.locked_until = datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)
+        self.locked_until = datetime.now(UTC) + timedelta(minutes=duration_minutes)
 
     def unlock_account(self) -> None:
         """Unlock the user account."""
@@ -129,7 +127,7 @@ class APIKey(db.Model):
     rate_limit = Column(Integer, default=100)  # requests per minute
 
     # Timestamps
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
     expires_at = Column(DateTime)
     last_used = Column(DateTime)
     use_count = Column(Integer, default=0)
@@ -139,9 +137,7 @@ class APIKey(db.Model):
 
     def is_expired(self) -> bool:
         """Check if the API key is expired."""
-        if self.expires_at and self.expires_at < datetime.now(timezone.utc):
-            return True
-        return False
+        return bool(self.expires_at and self.expires_at < datetime.now(UTC))
 
     def is_valid(self) -> bool:
         """Check if the API key is valid and active."""
@@ -150,7 +146,7 @@ class APIKey(db.Model):
     def increment_usage(self) -> None:
         """Increment usage counter and update last used timestamp."""
         self.use_count += 1
-        self.last_used = datetime.now(timezone.utc)
+        self.last_used = datetime.now(UTC)
 
 
 class AuditLog(db.Model):
@@ -159,7 +155,7 @@ class AuditLog(db.Model):
     __tablename__ = 'audit_logs'
 
     id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    timestamp = Column(DateTime, default=lambda: datetime.now(UTC), index=True)
 
     # Event details
     event_type = Column(String(50), nullable=False, index=True)
@@ -206,7 +202,7 @@ class TradeRecord(db.Model):
     __tablename__ = 'trade_records'
 
     id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    timestamp = Column(DateTime, default=lambda: datetime.now(UTC), index=True)
 
     # Trade details
     order_id = Column(String(100), index=True)
@@ -268,9 +264,9 @@ class SystemConfig(db.Model):
     category = Column(String(50), index=True)
 
     # Timestamps
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
-                        onupdate=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
+    updated_at = Column(DateTime, default=lambda: datetime.now(UTC),
+                        onupdate=lambda: datetime.now(UTC))
     updated_by = Column(Integer, ForeignKey('users.id'))
 
     def get_value(self):
