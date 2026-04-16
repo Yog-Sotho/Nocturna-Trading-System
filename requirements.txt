@@ -1,3 +1,4 @@
+# FILE LOCATION: requirements.txt (project root)
 # =============================================================================
 # NOCTURNA Trading System - Production Dependencies
 # =============================================================================
@@ -32,7 +33,9 @@ xgboost==2.1.3
 lightgbm==4.6.0
 
 # Technical Analysis
-pandas-ta==0.3.14b0
+# pandas-ta removed: v0.3.14b0 was deleted from PyPI (2025-09-08).
+# Indicators are computed manually via pandas (ewm, rolling) in market_data.py.
+# If needed in future, use: pandas-ta>=0.4.67b0 (new maintained fork)
 
 # Trading APIs
 alpaca-trade-api==3.2.0
@@ -45,7 +48,7 @@ redis==5.2.1
 
 # Web & API
 requests==2.33.0
-websockets==14.1
+websockets==10.4
 aiohttp==3.13.4
 
 # WSGI Server
@@ -110,7 +113,7 @@ twilio==9.4.0
 
 # Development & Testing
 pytest==9.0.3
-pytest-asyncio==0.25.0
+pytest-asyncio==1.4.0a1
 pytest-mock==3.14.0
 pytest-cov==6.0.0
 black==26.3.1
