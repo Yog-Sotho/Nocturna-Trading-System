@@ -1,3 +1,4 @@
+# FILE LOCATION: src/tests/test_risk_manager.py
 """
 Tests for the risk management module.
 Covers: validate_trade, drawdown tracking, portfolio monitoring, risk levels.
@@ -5,6 +6,7 @@ Covers: validate_trade, drawdown tracking, portfolio monitoring, risk levels.
 
 import numpy as np
 import pytest
+
 from src.core.risk_manager import RiskLevel, RiskManager
 
 

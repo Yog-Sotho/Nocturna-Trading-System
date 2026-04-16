@@ -1,3 +1,4 @@
+# FILE LOCATION: src/tests/test_auth.py
 """
 Tests for authentication middleware — JWT tokens, API keys, decorators.
 Covers: SEC-02 (API key auth), SEC-03 (token blacklist), SEC-08 (rate limiting).
@@ -7,6 +8,7 @@ from datetime import UTC
 
 import jwt as pyjwt
 import pytest
+
 from src.middleware.auth import (
     APIKeyManager,
     TokenManager,

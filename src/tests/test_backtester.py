@@ -1,3 +1,4 @@
+# FILE LOCATION: src/tests/test_backtester.py
 """
 Tests for the backtesting engine.
 Covers: CQ-08 (entry timestamps), P&L arithmetic, equity curve, Monte Carlo.
@@ -8,6 +9,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 import pytest
+
 from src.advanced.backtester import (
     AdvancedBacktester,
     BacktestPosition,

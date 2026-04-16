@@ -1,9 +1,11 @@
+# FILE LOCATION: src/tests/test_paper_trading.py
 """
 Tests for the paper trading engine and API routes.
 Covers: order lifecycle, position tracking, P&L, equity curve, API endpoints.
 """
 
 import pytest
+
 from src.core.paper_trading import (
     PaperTradingEngine,
 )
