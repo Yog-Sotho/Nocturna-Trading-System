@@ -1,18 +1,18 @@
+# FILE LOCATION: src/utils/logger.py
 """
 NOCTURNA Trading System - Secure Logging Utilities
 Production-grade logging with rotation, sanitization, and audit trails.
 """
 
-import os
-import sys
+import json
 import logging
 import logging.handlers
-from datetime import datetime, timezone
-from typing import Optional
-from functools import wraps
-import traceback
-import json
+import os
 import re
+import sys
+import traceback
+from datetime import UTC, datetime
+from functools import wraps
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
@@ -74,7 +74,7 @@ class AuditLogger:
 
     def __init__(self, app=None):
         self.app = app
-        self.audit_logger: Optional[logging.Logger] = None
+        self.audit_logger: logging.Logger | None = None
 
         if app is not None:
             self.init_app(app)
@@ -142,7 +142,7 @@ class AuditLogger:
             'user_id': user_id,
             'success': success,
             'request_id': request_id,
-            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'timestamp': datetime.now(UTC).isoformat(),
             'details': sanitized_details
         }
 
