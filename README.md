@@ -1,9 +1,9 @@
 <div align="center">
   <img src="src/assets/banner.png" alt="Nocturna Banner" width="420" style="margin-bottom: 20px;">
 
-# NOCTURNA v2.0 - Advanced Trading Bot
+# NOCTURNA v2.0 - Advanced Trading System
 
-## 🚀 The Most Advanced Automated Trading Bot Ever Created
+## 🚀 Event driven automated trading system
 
 NOCTURNA v2.0 is an enterprise‑level algorithmic trading system that implements a multi‑modal adaptive quantitative algorithm for trend following and range trading. It combines artificial intelligence, machine learning, and sentiment analysis to create an autonomous, highly profitable trading machine.
 
