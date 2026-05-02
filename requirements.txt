@@ -60,7 +60,7 @@ plotly==5.24.1
 seaborn==0.13.2
 
 # Utilities
-python-dotenv==1.0.1
+python-dotenv==1.2.2
 schedule==1.2.2
 pytz==2024.2
 
