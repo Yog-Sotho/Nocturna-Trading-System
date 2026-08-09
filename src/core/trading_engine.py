@@ -1,7 +1,7 @@
 # FILE LOCATION: src/core/trading_engine.py
 """
 Trading Engine for NOCTURNA v2.0 Trading System
-Production-grade core trading engine with event-driven architecture.
+Production-grade core trading engine with event-driven architecture foundation.
 """
 
 import logging
@@ -16,8 +16,10 @@ from typing import Any
 
 import pandas as pd
 
+from .event_bus import EventBus, default_bus
 from .market_data import MarketDataHandler
 from .order_manager import OrderExecutionManager
+from .order_state_machine import OrderStateMachine
 from .risk_manager import RiskManager
 from .strategy_manager import StrategyManager
 
@@ -55,6 +57,12 @@ class TradingEngine:
     """
     Production-grade core trading engine.
     Coordinates all system components and manages the trading lifecycle.
+
+    Architecture note (v2.1 foundation):
+    - Owns an EventBus instance for structured pub/sub.
+    - Existing callback system remains fully functional.
+    - All key lifecycle points also publish events → enables progressive
+      decoupling of market-data / signal / risk / execution services.
     """
 
     # Maximum analysis timeout in seconds
@@ -66,6 +74,12 @@ class TradingEngine:
     def __init__(self, config: dict):
         self.config = config
         self.logger = logging.getLogger(__name__)
+
+        # -----------------------------------------------------------------
+        # Event-driven foundation (non-breaking addition)
+        # -----------------------------------------------------------------
+        self.bus: EventBus = config.get("event_bus") or default_bus
+        self.order_sm = OrderStateMachine(bus=self.bus)
 
         # State management
         self.state = TradingEngineState.STOPPED
@@ -123,7 +137,7 @@ class TradingEngine:
         self.running = False
         self._executor_lock = threading.Lock()
 
-        # Event callbacks
+        # Event callbacks (legacy – still fully supported)
         self.event_callbacks: dict[str, list[Callable]] = {}
 
         # Cache and state
@@ -163,7 +177,7 @@ class TradingEngine:
         # Setup callbacks
         self._setup_callbacks()
 
-        self.logger.info("Trading Engine initialized")
+        self.logger.info("Trading Engine initialized (EventBus + OrderStateMachine active)")
 
     def _setup_callbacks(self) -> None:
         """Setup internal callbacks between components."""
@@ -207,6 +221,8 @@ class TradingEngine:
 
             self.logger.info(f"Order filled: {order_id}")
             self._notify_event('order_filled', {'order': order})
+            # Structured bus event
+            self.bus.publish("order.filled", {"order": order}, source="trading_engine")
 
         except Exception as e:
             self.logger.error(f"Error handling order filled: {e}")
@@ -214,9 +230,8 @@ class TradingEngine:
     def _on_position_update(self, position: dict) -> None:
         """Handle position update event — track unrealized P&L without counting wins/losses."""
         try:
-            # Update portfolio value in risk manager from position data
             self._notify_event('position_updated', {'position': position})
-
+            self.bus.publish("portfolio.update", {"position": position}, source="trading_engine")
         except Exception as e:
             self.logger.error(f"Error handling position update: {e}")
 
@@ -224,6 +239,7 @@ class TradingEngine:
         """Handle risk event."""
         self.logger.warning(f"Risk event detected: {event}")
         self._notify_event('risk_event', {'event': str(event)})
+        self.bus.publish("risk.event", {"event": str(event)}, source="trading_engine")
 
     # =========================================================================
     # ENGINE LIFECYCLE METHODS
@@ -270,12 +286,22 @@ class TradingEngine:
 
                 self.logger.info("Trading Engine started successfully")
                 self._notify_event('engine_started', {'timestamp': self.start_time})
+                self.bus.publish(
+                    "engine.state",
+                    {"state": "RUNNING", "timestamp": self.start_time.isoformat()},
+                    source="trading_engine",
+                )
 
                 return True
 
             except Exception as e:
                 self.logger.error(f"Error starting engine: {e}")
                 self.state = TradingEngineState.ERROR
+                self.bus.publish(
+                    "engine.state",
+                    {"state": "ERROR", "error": str(e)},
+                    source="trading_engine",
+                )
                 return False
 
     def stop(self) -> bool:
@@ -312,6 +338,11 @@ class TradingEngine:
 
                 self.logger.info("Trading Engine stopped")
                 self._notify_event('engine_stopped', {'timestamp': datetime.now(UTC)})
+                self.bus.publish(
+                    "engine.state",
+                    {"state": "STOPPED", "timestamp": datetime.now(UTC).isoformat()},
+                    source="trading_engine",
+                )
 
                 return True
 
@@ -328,7 +359,11 @@ class TradingEngine:
             self.state = TradingEngineState.PAUSED
             self.logger.info("Trading Engine paused")
             self._notify_event('engine_paused', {'timestamp': datetime.now(UTC)})
-
+            self.bus.publish(
+                "engine.state",
+                {"state": "PAUSED", "timestamp": datetime.now(UTC).isoformat()},
+                source="trading_engine",
+            )
             return True
 
     def resume(self) -> bool:
@@ -340,7 +375,11 @@ class TradingEngine:
             self.state = TradingEngineState.RUNNING
             self.logger.info("Trading Engine resumed")
             self._notify_event('engine_resumed', {'timestamp': datetime.now(UTC)})
-
+            self.bus.publish(
+                "engine.state",
+                {"state": "RUNNING", "timestamp": datetime.now(UTC).isoformat()},
+                source="trading_engine",
+            )
             return True
 
     def emergency_stop(self, reason: str = "Emergency stop triggered") -> None:
@@ -377,6 +416,16 @@ class TradingEngine:
                     'reason': reason,
                     'timestamp': datetime.now(UTC)
                 })
+                self.bus.publish(
+                    "engine.state",
+                    {
+                        "state": "EMERGENCY_STOP",
+                        "reason": reason,
+                        "timestamp": datetime.now(UTC).isoformat(),
+                    },
+                    source="trading_engine",
+                )
+                self.bus.publish("risk.critical", {"reason": reason}, source="trading_engine")
 
             except Exception as e:
                 self.logger.error(f"Error in emergency stop: {e}")
@@ -466,7 +515,6 @@ class TradingEngine:
                 self.last_update = datetime.now(UTC)
 
                 # F9: Bar-boundary aligned sleep
-                # For 1h strategies, sleep until just after the next hour boundary
                 loop_time = time.time() - loop_start
                 sleep_time = self._calc_bar_boundary_sleep(loop_time)
 
@@ -487,11 +535,9 @@ class TradingEngine:
         """
         try:
             now = datetime.now(UTC)
-            # Next hour boundary + 10 seconds (allow bar to finalize)
             next_bar = now.replace(minute=0, second=10, microsecond=0) + timedelta(hours=1)
             sleep_secs = (next_bar - now).total_seconds()
 
-            # Cap: don't sleep more than the configured interval
             max_sleep = max(0, self.update_interval - elapsed)
             return min(sleep_secs, max_sleep)
 
@@ -508,14 +554,13 @@ class TradingEngine:
                     future = self.executor.submit(self._analyze_symbol, symbol)
                     futures_map[future] = symbol
 
-            # F12: Process results as they complete, not sequentially
             for future in as_completed(futures_map, timeout=self.MAX_ANALYSIS_TIMEOUT):
                 symbol = futures_map[future]
                 try:
-                    result = future.result(timeout=5)  # Short timeout since already completed
+                    result = future.result(timeout=5)
                     if result:
                         self._process_analysis_result(symbol, result)
-                        self._api_failure_count = 0  # F11: Reset on success
+                        self._api_failure_count = 0
 
                 except FuturesTimeoutError:
                     self.logger.warning(f"Analysis timeout for {symbol}")
@@ -564,7 +609,6 @@ class TradingEngine:
         """
         analysis_start = time.time()
         try:
-            # Get historical data
             df = self.market_data.get_historical_data(
                 symbol=symbol, timeframe='1h', limit=500
             )
@@ -572,13 +616,10 @@ class TradingEngine:
             if df.empty:
                 return None
 
-            # Calculate indicators
             df = self.market_data.calculate_technical_indicators(df)
 
-            # Get current positions (snapshot — thread-safe read)
             positions = self.order_manager.get_positions()
 
-            # Get sentiment data (if available)
             sentiment = {}
             if self.sentiment_analyzer:
                 try:
@@ -589,19 +630,16 @@ class TradingEngine:
                 except Exception as e:
                     self.logger.debug(f"Sentiment unavailable for {symbol}: {e}")
 
-            # F16: Merge external signal into sentiment data
             if self.external_signals:
                 try:
                     ext = self.external_signals.get_composite_signal(symbol)
                     if ext and ext.get('confidence', 0) > 0.2:
-                        # Merge external score into sentiment (blend 50/50 with internal)
                         sym_sent = sentiment.get(symbol, {})
                         internal_score = sym_sent.get('sentiment_score', 0.0)
                         internal_conf = sym_sent.get('confidence', 0.0)
                         ext_score = ext['score']
                         ext_conf = ext['confidence']
 
-                        # Weighted blend
                         total_w = internal_conf + ext_conf
                         if total_w > 0:
                             blended_score = (internal_score * internal_conf + ext_score * ext_conf) / total_w
@@ -620,10 +658,8 @@ class TradingEngine:
                 except Exception as e:
                     self.logger.debug(f"External signals unavailable for {symbol}: {e}")
 
-            # F4: Fetch higher timeframe data
             higher_tf = self._fetch_higher_tf_data(symbol)
 
-            # F3: Pass all context as arguments — no shared mutable state
             strategy_result = self.strategy_manager.update_strategy(
                 df, symbol,
                 positions=positions,
@@ -631,11 +667,9 @@ class TradingEngine:
                 higher_tf_data=higher_tf
             )
 
-            # Track analysis latency
             latency_ms = (time.time() - analysis_start) * 1000
             self._track_latency(latency_ms, symbol)
 
-            # Cache data — thread-safe write
             with self._symbol_data_lock:
                 self.symbol_data[symbol] = {
                     'data': df,
@@ -655,7 +689,7 @@ class TradingEngine:
         self._execution_latencies.append(latency_ms)
         if len(self._execution_latencies) > self._max_latency_samples:
             self._execution_latencies = self._execution_latencies[-self._max_latency_samples:]
-        if latency_ms > 5000:  # Log slow analyses
+        if latency_ms > 5000:
             self.logger.warning(f"Slow analysis for {symbol}: {latency_ms:.0f}ms")
 
     def _process_analysis_result(self, symbol: str, result: dict) -> None:
@@ -674,17 +708,19 @@ class TradingEngine:
     def _process_trading_signal(self, signal: dict) -> None:
         """Process a trading signal through risk validation. F13: Log to trade journal."""
         try:
-            # Guard: do not submit orders if engine is not running
             if self.state != TradingEngineState.RUNNING:
                 self.logger.info(f"Signal dropped — engine state is {self.state.value}")
                 self._journal_log(signal, 'DROPPED', f'engine_state={self.state.value}')
+                self.bus.publish(
+                    "signal.rejected",
+                    {"signal": signal, "reason": f"engine_state={self.state.value}"},
+                    source="trading_engine",
+                )
                 return
 
-            # Get positions and market data
             positions = self.order_manager.get_positions()
             market_data = self._get_market_data_for_risk(signal['symbol'])
 
-            # Validate with risk manager
             is_valid, reason, adjusted_signal = self.risk_manager.validate_trade(
                 signal, positions, market_data
             )
@@ -692,9 +728,20 @@ class TradingEngine:
             if not is_valid:
                 self.logger.info(f"Signal rejected for {signal['symbol']}: {reason}")
                 self._journal_log(signal, 'REJECTED', reason)
+                self.bus.publish(
+                    "signal.rejected",
+                    {"signal": signal, "reason": reason},
+                    source="trading_engine",
+                )
                 return
 
-            # Submit order
+            # Publish generated signal before submission
+            self.bus.publish(
+                "signal.generated",
+                {"signal": adjusted_signal},
+                source="trading_engine",
+            )
+
             order_id = self.order_manager.submit_order(adjusted_signal)
 
             if order_id:
@@ -705,8 +752,18 @@ class TradingEngine:
                     'signal': adjusted_signal,
                     'order_id': order_id
                 })
+                self.bus.publish(
+                    "order.submitted",
+                    {"order_id": order_id, "signal": adjusted_signal},
+                    source="trading_engine",
+                )
             else:
                 self._journal_log(signal, 'SUBMIT_FAILED', 'order_manager returned None')
+                self.bus.publish(
+                    "order.rejected",
+                    {"signal": signal, "reason": "order_manager returned None"},
+                    source="trading_engine",
+                )
 
         except Exception as e:
             self.logger.error(f"Error processing signal: {e}")
@@ -726,7 +783,6 @@ class TradingEngine:
         }
         with self._journal_lock:
             self.trade_journal.append(entry)
-            # Cap journal size
             if len(self.trade_journal) > 10000:
                 self.trade_journal = self.trade_journal[-5000:]
 
@@ -735,7 +791,6 @@ class TradingEngine:
         try:
             positions = self.order_manager.get_positions()
 
-            # Update portfolio value from actual positions (5h fix)
             if self.order_manager.alpaca_client:
                 try:
                     account = self.order_manager.alpaca_client.get_account()
@@ -752,7 +807,6 @@ class TradingEngine:
             risk_report = self.risk_manager.monitor_portfolio_risk(positions, market_data)
             risk_events = risk_report.get('risk_events', [])
 
-            # Check for critical events
             if 'DRAWDOWN_LIMIT' in risk_events or 'DAILY_LOSS_LIMIT' in risk_events:
                 self.emergency_stop("Risk limit exceeded")
 
@@ -766,14 +820,10 @@ class TradingEngine:
     def _handle_critical_risk(self) -> None:
         """Handle critical risk situations."""
         try:
-            # Cancel pending orders
             self._cancel_pending_orders()
-
-            # Reduce exposure
             self._reduce_exposure()
-
             self._notify_event('critical_risk', {'action': 'risk_reduction'})
-
+            self.bus.publish("risk.critical", {"action": "risk_reduction"}, source="trading_engine")
         except Exception as e:
             self.logger.error(f"Error handling critical risk: {e}")
 
@@ -812,7 +862,6 @@ class TradingEngine:
                 self.symbol_data[symbol]['last_price'] = price
                 self.symbol_data[symbol]['last_price_update'] = timestamp
 
-            # Update price history for correlation calculations
             self.risk_manager._update_price_history(symbol, price)
 
         except Exception as e:
@@ -911,14 +960,12 @@ class TradingEngine:
                         datetime.now(UTC) - self.start_time
                     ).total_seconds()
 
-                # Calculate win rate
                 total_closed = self.stats['winning_trades'] + self.stats['losing_trades']
                 if total_closed > 0:
                     self.stats['win_rate'] = self.stats['winning_trades'] / total_closed
                 else:
                     self.stats['win_rate'] = 0.0
 
-                # Update drawdown
                 positions = self.order_manager.get_positions()
                 current_drawdown = self.risk_manager._calculate_current_drawdown(positions)
                 self.stats['max_drawdown'] = max(
@@ -964,20 +1011,17 @@ class TradingEngine:
         try:
             now = datetime.now(UTC)
 
-            # Check if enough time has passed
             if self._ml_last_optimization:
                 elapsed = (now - self._ml_last_optimization).total_seconds()
                 if elapsed < self._ml_optimization_interval:
                     return
 
-            # Need at least some trade history for meaningful optimization
             if self.stats.get('total_trades', 0) < 10:
                 return
 
             self.logger.info("Starting periodic ML parameter optimization")
             self._ml_last_optimization = now
 
-            # Gather recent performance for adaptive tuning
             risk_level_map = {'LOW': 0.1, 'MEDIUM': 0.2, 'HIGH': 0.35, 'CRITICAL': 0.5}
             recent_performance = {
                 'win_rate': self.stats.get('win_rate', 0.5),
@@ -985,7 +1029,6 @@ class TradingEngine:
                 'volatility': risk_level_map.get(self.risk_manager.current_risk_level.value, 0.2),
             }
 
-            # Get market data for first symbol as representative
             if self.symbols:
                 with self._symbol_data_lock:
                     symbol_cache = self.symbol_data.get(self.symbols[0], {})
@@ -996,7 +1039,6 @@ class TradingEngine:
                         df, self.strategy_manager.parameters, recent_performance
                     )
 
-                    # Apply adjusted parameters to strategy manager
                     if adjusted_params:
                         self.strategy_manager.parameters.update(adjusted_params)
                         self.logger.info("ML optimizer updated strategy parameters")
@@ -1009,21 +1051,41 @@ class TradingEngine:
             self.logger.error(f"Error in ML optimization check: {e}")
 
     # =========================================================================
-    # EVENT SYSTEM
+    # EVENT SYSTEM (legacy callbacks + EventBus bridge)
     # =========================================================================
 
     def _notify_event(self, event_type: str, data: dict) -> None:
-        """Notify registered event callbacks."""
+        """Notify registered event callbacks (legacy) and publish on EventBus."""
+        # Legacy callback path – fully preserved
         callbacks = self.event_callbacks.get(event_type, [])
-
         for callback in callbacks:
             try:
                 callback(event_type, data)
             except Exception as e:
                 self.logger.error(f"Error in event callback for {event_type}: {e}")
 
+        # Bridge to structured EventBus (additive, non-breaking)
+        # Map common legacy event names to canonical topics when useful
+        topic_map = {
+            "engine_started": "engine.state",
+            "engine_stopped": "engine.state",
+            "engine_paused": "engine.state",
+            "engine_resumed": "engine.state",
+            "emergency_stop": "engine.state",
+            "order_filled": "order.filled",
+            "signal_executed": "order.submitted",
+            "risk_event": "risk.event",
+            "critical_risk": "risk.critical",
+            "position_updated": "portfolio.update",
+        }
+        topic = topic_map.get(event_type, f"legacy.{event_type}")
+        try:
+            self.bus.publish(topic, data, source="trading_engine")
+        except Exception as e:
+            self.logger.debug(f"EventBus publish skipped for {event_type}: {e}")
+
     def add_event_callback(self, event_type: str, callback: Callable) -> None:
-        """Register a callback for an event type."""
+        """Register a callback for an event type (legacy API)."""
         if event_type not in self.event_callbacks:
             self.event_callbacks[event_type] = []
 
@@ -1047,14 +1109,14 @@ class TradingEngine:
             'current_market_state': self.strategy_manager.current_market_state.value,
             'risk_level': self.risk_manager.current_risk_level.value,
             'statistics': self.stats.copy(),
-            'performance_metrics': self.performance_metrics.copy()
+            'performance_metrics': self.performance_metrics.copy(),
+            'event_bus': self.bus.get_stats(),
         }
 
     def get_detailed_status(self) -> dict:
         """Get detailed engine status including trade journal stats."""
         basic_status = self.get_status()
 
-        # F13: Trade journal summary
         with self._journal_lock:
             journal_len = len(self.trade_journal)
             recent_outcomes = {}
@@ -1082,6 +1144,7 @@ class TradingEngine:
             },
             'execution_quality': self._get_execution_quality(),
             'external_signals': self.external_signals.get_status() if self.external_signals else None,
+            'order_state_machine_active': len(self.order_sm.get_active()),
         })
 
         return basic_status
@@ -1125,15 +1188,12 @@ class TradingEngine:
         try:
             self.config.update(new_config)
 
-            # Update symbols if changed
             if 'symbols' in new_config:
                 self.symbols = new_config['symbols']
 
-            # Update strategy parameters
             if 'strategy' in new_config:
                 self.strategy_manager.parameters.update(new_config['strategy'])
 
-            # Update risk parameters
             if 'risk' in new_config:
                 self.risk_manager.risk_parameters.update(new_config['risk'])
 
