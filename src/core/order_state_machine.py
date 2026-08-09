@@ -11,6 +11,7 @@ OrderStatus enum used by OrderExecutionManager.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
@@ -114,7 +115,7 @@ class OrderStateMachine:
     def __init__(self, bus: EventBus | None = None) -> None:
         self.bus = bus or default_bus
         self._orders: dict[str, OrderStateRecord] = {}
-        self._lock = __import__("threading").RLock()
+        self._lock = threading.RLock()
 
     def create(
         self,
