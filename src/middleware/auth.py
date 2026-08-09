@@ -178,10 +178,10 @@ class TokenManager:
                     )
                     self._redis.setex(f"{self._blacklist_prefix}{jti}", ttl, "1")
                 except Exception as exc:
-                    logger.error("Failed to persist revoked token: %s", exp)
+                    logger.error("Failed to persist revoked token: %s", exc)
             return True
         except Exception as exc:
-            logger.error("Error revoking token: %s", exp)
+            logger.error("Error revoking token: %s", exc)
             return False
 
     def revoke_all_user_tokens(self, user_id: int | str) -> int:
