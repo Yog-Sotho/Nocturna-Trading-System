@@ -43,6 +43,8 @@ class Settings(BaseSettings):
 
     # HTTP / browser security
     allowed_origins: str = ""
+    # Number of reverse proxies in front of the app whose X-Forwarded-* headers are trusted
+    trusted_proxy_count: int = Field(default=0, ge=0, le=5)
     secure_cookies: bool = True
     session_cookie_samesite: Literal["Lax", "Strict", "None"] = "Lax"
     session_lifetime_hours: int = Field(default=24, ge=1, le=24 * 30)

@@ -51,6 +51,13 @@ def reset_ip_manager():
     ip_manager.failed_attempts.clear()
 
 
+@pytest.fixture(autouse=True)
+def reset_rate_limits(app):
+    """Rate-limit counters are shared by the session-wide app; start every test at zero."""
+    app.extensions["rate_limiter"].reset()
+    yield
+
+
 @pytest.fixture()
 def client(app, db):
     """Flask test client."""

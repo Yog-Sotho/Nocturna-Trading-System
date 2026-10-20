@@ -9,7 +9,6 @@ from datetime import UTC, datetime, timedelta
 
 import jwt
 from flask import Blueprint, g, jsonify, request
-from flask_cors import cross_origin
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from src.middleware.auth import (
@@ -78,15 +77,14 @@ def format_response(success: bool, data=None, error: str = None,
 # =============================================================================
 
 @user_bp.route('/auth/login', methods=['POST'])
-@cross_origin()
 def login():
     """
     User login endpoint.
     Validates credentials and returns JWT tokens.
     """
     try:
-        data = request.get_json()
-        if not data:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not data:
             return format_response(False, error='Request body required', status_code=400)
 
         # Validate input
@@ -150,7 +148,6 @@ def login():
 
 
 @user_bp.route('/auth/refresh', methods=['POST'])
-@cross_origin()
 def refresh_token():
     """
     Exchange a refresh token for a new access and refresh token pair.
@@ -320,8 +317,8 @@ def create_user():
     Single-operator deployment: public self-registration is disabled.
     """
     try:
-        data = request.get_json()
-        if not data:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not data:
             return format_response(False, error='Request body required', status_code=400)
 
         # Validate input
@@ -438,8 +435,8 @@ def change_password(user_id):
         if not user:
             return format_response(False, error='User not found', status_code=404)
 
-        data = request.get_json()
-        if not data:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not data:
             return format_response(False, error='Request body required', status_code=400)
 
         current_password = data.get('current_password')

@@ -4,109 +4,97 @@ Production-grade security headers, rate limiting, and protection mechanisms.
 """
 
 import os
+import threading
 from datetime import UTC, datetime, timedelta
-from functools import wraps
 from typing import Any
 
-from flask import Flask, current_app, g, jsonify, request
+from flask import Flask, current_app, request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 # =============================================================================
 # RATE LIMITING CONFIGURATION
 # =============================================================================
 
-def setup_rate_limiting(app: Flask) -> Limiter:
+#: Applies to every route without its own limit, per client IP.
+DEFAULT_RATE_LIMIT = "300 per minute"
+
+#: Per-endpoint limits, per client IP. Each replaces the default for that route.
+ROUTE_RATE_LIMITS: dict[str, str] = {
+    "user.login": "10 per minute",
+    "user.refresh_token": "30 per minute",
+    "user.change_password": "5 per minute",
+    "user.create_user": "5 per minute",
+    "user.create_api_key": "10 per hour",
+    "trading.create_order": "60 per minute",
+    "trading.cancel_order": "60 per minute",
+    "trading.update_config": "20 per minute",
+    "trading.start_engine": "20 per minute",
+    "trading.stop_engine": "20 per minute",
+    "trading.pause_engine": "20 per minute",
+    "trading.resume_engine": "20 per minute",
+    "paper_trading.paper_submit_order": "120 per minute",
+    "paper_trading.paper_reset": "10 per minute",
+}
+
+#: Never rate limited: load-balancer probes, and the emergency stop, which must
+#: always get through.
+RATE_LIMIT_EXEMPT = frozenset({"health_check", "trading.emergency_stop"})
+
+
+def setup_rate_limiting(app: Flask, storage_uri: str | None = None) -> Limiter:
     """
-    Configure rate limiting for the application.
+    Attach rate limits to the application's routes.
+
+    Call after every blueprint and route is registered: limits are attached
+    to the registered view functions by endpoint name.
 
     Args:
-        app: Flask application instance
+        app: Flask application instance.
+        storage_uri: Limit storage (e.g. the Redis URL); in-process memory if None.
 
     Returns:
-        Configured Limiter instance
-    """
-    # Determine storage backend
-    redis_url = os.environ.get('REDIS_URL')
-    if redis_url:
-        # Use Redis for distributed rate limiting
-        storage_uri = redis_url
-    else:
-        # Fallback to in-memory storage (not recommended for production)
-        storage_uri = "memory://"
+        The configured Limiter, also stored as ``app.extensions["rate_limiter"]``.
 
-    # Create limiter with appropriate storage
+    Raises:
+        KeyError: If a configured endpoint does not exist (a renamed route).
+    """
     limiter = Limiter(
         key_func=get_remote_address,
         app=app,
-        storage_uri=storage_uri,
-        default_limits=[],
-        strategy="fixed-window",
+        storage_uri=storage_uri or "memory://",
+        default_limits=[DEFAULT_RATE_LIMIT],
+        strategy="moving-window",
         headers_enabled=True,
+        in_memory_fallback_enabled=True,
     )
 
-    # =============================================================================
-    # DEFAULT RATE LIMITS BY ENDPOINT TYPE
-    # =============================================================================
+    @limiter.request_filter
+    def _whitelisted() -> bool:
+        return ip_manager.is_whitelisted(get_remote_address())
 
-    # Public endpoints - very restrictive
-    limiter.limit("100 per minute")(
-        lambda: request.endpoint and
-        any(request.endpoint.startswith(p) for p in ['health', 'api_version', 'serve'])
-    )
+    for endpoint, limit in ROUTE_RATE_LIMITS.items():
+        app.view_functions[endpoint] = limiter.limit(limit)(app.view_functions[endpoint])
+    for endpoint in RATE_LIMIT_EXEMPT:
+        app.view_functions[endpoint] = limiter.exempt(app.view_functions[endpoint])
 
-    # Authentication endpoints - rate limit to prevent brute force
-    limiter.limit("10 per minute")(
-        lambda: request.endpoint and
-        any(request.endpoint.startswith(p) for p in ['login', 'auth', 'token', 'register'])
-    )
-
-    # Trading read endpoints - moderate limits
-    limiter.limit("120 per minute")(
-        lambda: request.endpoint and
-        any(request.endpoint.startswith(p) for p in ['status', 'positions', 'orders', 'performance'])
-    )
-
-    # Trading write endpoints - stricter limits to prevent abuse
-    limiter.limit("30 per minute")(
-        lambda: request.endpoint and
-        any(request.endpoint in [p] for p in ['submit_order', 'create_order', 'update_config'])
-    )
-
-    # System control endpoints - most restrictive
-    limiter.limit("20 per minute")(
-        lambda: request.endpoint and
-        any(request.endpoint in [p] for p in ['start_engine', 'stop_engine', 'emergency_stop'])
-    )
-
-    # User creation endpoint (admin only) - strict limit
-    limiter.limit("5 per minute")(
-        lambda: request.endpoint and request.endpoint == 'user.create_user'
-    )
-
-    # =============================================================================
-    # CONFIGURATION
-    # =============================================================================
-    # Rate limit 429 errors are handled by the global errorhandler in main.py
-
-    app.logger.info(f"Rate limiting configured with storage: {storage_uri}")
+    # 429 responses are rendered by the global errorhandler in main.py
+    app.extensions["rate_limiter"] = limiter
+    app.logger.info("Rate limiting configured with %s storage", "redis" if storage_uri else "memory")
     return limiter
 
 
-def get_user_identifier() -> str:
+def configure_proxy(app: Flask, trusted_proxy_count: int) -> None:
     """
-    Get a unique identifier for the current request.
-    Combines IP address with authenticated user ID if available.
+    Trust X-Forwarded-For/-Proto from this many reverse proxies.
 
-    Returns:
-        Unique identifier string
+    Without it, behind a proxy every client shares the proxy's address, so
+    rate limits and login lockouts would apply to all clients at once. Never
+    enable it without a proxy: clients could then forge their address.
     """
-    ip = get_remote_address()
-    user_id = getattr(g, 'user_id', None)
-
-    if user_id:
-        return f"{user_id}@{ip}"
-    return ip
+    if trusted_proxy_count > 0:
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=trusted_proxy_count, x_proto=trusted_proxy_count)
 
 
 # =============================================================================
@@ -462,101 +450,80 @@ class InputSanitizer:
 
 class IPManager:
     """
-    Manages IP whitelisting and blacklisting for additional security.
+    Static allow/deny lists (IP_WHITELIST / IP_BLACKLIST) plus a temporary
+    lockout of addresses with repeated failed logins.
+
+    An address is locked out while it has ``failed_threshold`` failures within
+    the last ``lockout_duration``; the lockout ends on its own as failures age.
+    Whitelisted addresses bypass rate limits and lockout, not the deny list.
     """
 
-    def __init__(self):
-        self.whitelist = set()
-        self.blacklist = set()
-        self.failed_attempts = {}  # Track failed auth attempts
-        self.failed_threshold = 5  # Lockout after 5 failed attempts
-        self.lockout_duration = timedelta(minutes=15)
+    #: Prune every address once this many are tracked, bounding memory.
+    MAX_TRACKED = 10_000
 
+    def __init__(self, failed_threshold: int = 5, lockout_duration: timedelta = timedelta(minutes=15)):
+        self.whitelist: set[str] = set()
+        self.blacklist: set[str] = set()
+        self.failed_attempts: dict[str, list[datetime]] = {}
+        self.failed_threshold = failed_threshold
+        self.lockout_duration = lockout_duration
+        self._lock = threading.Lock()
         self._load_lists()
 
-    def _load_lists(self):
+    def _load_lists(self) -> None:
         """Load IP lists from environment variables."""
-        # Load whitelist
-        whitelist_str = os.environ.get('IP_WHITELIST', '')
-        if whitelist_str:
-            self.whitelist.update(
-                ip.strip() for ip in whitelist_str.split(',') if ip.strip()
-            )
+        for env_name, target in (("IP_WHITELIST", self.whitelist), ("IP_BLACKLIST", self.blacklist)):
+            target.update(ip.strip() for ip in os.environ.get(env_name, "").split(",") if ip.strip())
 
-        # Load blacklist
-        blacklist_str = os.environ.get('IP_BLACKLIST', '')
-        if blacklist_str:
-            self.blacklist.update(
-                ip.strip() for ip in blacklist_str.split(',') if ip.strip()
-            )
+    def _recent_failures(self, ip: str, now: datetime) -> list[datetime]:
+        """Failures of ``ip`` inside the window. Caller holds the lock."""
+        recent = [t for t in self.failed_attempts.get(ip, []) if now - t < self.lockout_duration]
+        if recent:
+            self.failed_attempts[ip] = recent
+        else:
+            self.failed_attempts.pop(ip, None)
+        return recent
 
     def is_blacklisted(self, ip: str) -> bool:
-        """Check if an IP is blacklisted."""
-        return ip in self.blacklist
+        """True if the address is on the deny list or currently locked out."""
+        if ip in self.blacklist:
+            return True
+        if ip in self.whitelist:
+            return False
+        with self._lock:
+            return len(self._recent_failures(ip, datetime.now(UTC))) >= self.failed_threshold
 
     def is_whitelisted(self, ip: str) -> bool:
-        """Check if an IP is whitelisted (bypasses rate limits)."""
+        """Check if an IP is whitelisted (bypasses rate limits and lockout)."""
         return ip in self.whitelist
 
     def record_failed_attempt(self, ip: str) -> bool:
         """
-        Record a failed authentication attempt.
-        Returns True if IP should be blacklisted due to too many failures.
+        Record a failed login from ``ip``.
+
+        Returns:
+            True if the address is now locked out.
         """
         now = datetime.now(UTC)
+        with self._lock:
+            if len(self.failed_attempts) >= self.MAX_TRACKED:
+                for tracked in list(self.failed_attempts):
+                    self._recent_failures(tracked, now)
+            failures = self._recent_failures(ip, now)
+            failures.append(now)
+            self.failed_attempts[ip] = failures
+            count = len(failures)
 
-        if ip not in self.failed_attempts:
-            self.failed_attempts[ip] = []
-
-        # Clean old attempts
-        self.failed_attempts[ip] = [
-            t for t in self.failed_attempts[ip]
-            if now - t < self.lockout_duration
-        ]
-
-        # Add new attempt
-        self.failed_attempts[ip].append(now)
-
-        # Check if threshold exceeded
-        if len(self.failed_attempts[ip]) >= self.failed_threshold:
-            self.blacklist.add(ip)
-            current_app.logger.critical(
-                f"IP {ip} blacklisted due to multiple failed authentication attempts"
+        if count == self.failed_threshold:
+            current_app.logger.warning(
+                "IP %s locked out for %s after %d failed logins", ip, self.lockout_duration, count
             )
-            return True
-
-        return False
+        return count >= self.failed_threshold
 
     def clear_failed_attempts(self, ip: str) -> None:
         """Clear failed attempts for an IP."""
-        if ip in self.failed_attempts:
-            del self.failed_attempts[ip]
+        with self._lock:
+            self.failed_attempts.pop(ip, None)
 
 
 ip_manager = IPManager()
-
-
-def check_ip_blacklist():
-    """
-    Before request hook to check IP blacklist.
-    """
-    def decorator(f):
-        @wraps(f)
-        def decorated_function(*args, **kwargs):
-            ip = get_remote_address()
-
-            # Check blacklist
-            if ip_manager.is_blacklisted(ip):
-                current_app.logger.warning(
-                    f"Blacklisted IP attempted access: {ip} | "
-                    f"Path: {request.path} | Request ID: {getattr(g, 'request_id', 'unknown')}"
-                )
-                return jsonify({
-                    'success': False,
-                    'error': 'Access denied',
-                    'request_id': getattr(g, 'request_id', None)
-                }), 403
-
-            return f(*args, **kwargs)
-        return decorated_function
-    return decorator

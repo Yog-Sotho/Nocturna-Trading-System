@@ -5,6 +5,7 @@ Production-grade configuration with security hardening.
 
 import logging
 import os
+import re
 import secrets
 import sys
 import time as time_module
@@ -13,16 +14,19 @@ from datetime import UTC, datetime, timedelta
 # DON'T CHANGE THIS !!!
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from flask import Flask, g, jsonify, request, send_from_directory
+from flask import Flask, abort, g, jsonify, request, send_from_directory
 from flask_cors import CORS
+from werkzeug.exceptions import MethodNotAllowed
 
 from src.config import ensure_sqlite_directory, load_settings
 from src.core.safety import assert_paper_only
-from src.middleware.security import setup_rate_limiting, setup_security_headers
+from src.middleware.security import configure_proxy, setup_rate_limiting, setup_security_headers
 from src.models.user import db
 from src.routes.trading import trading_bp
 from src.routes.user import user_bp
 from src.utils.logger import setup_secure_logging
+
+_REQUEST_ID_PATTERN = re.compile(r'[A-Za-z0-9._-]{1,64}')
 
 
 def create_app(config_override=None):
@@ -43,6 +47,7 @@ def create_app(config_override=None):
 
     app = Flask(__name__)
     app.extensions['settings'] = settings
+    configure_proxy(app, settings.trusted_proxy_count)
 
     # =============================================================================
     # SECRETS
@@ -96,7 +101,7 @@ def create_app(config_override=None):
     # =============================================================================
     app.config['JSON_SORT_KEYS'] = False
     app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False
-    app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max request size
+    app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024  # 1 MB; no endpoint takes more
 
     # =============================================================================
     # PRODUCTION MODE SETTINGS
@@ -150,11 +155,6 @@ def create_app(config_override=None):
         app.logger.warning("CORS enabled for local development only. Configure ALLOWED_ORIGINS for production.")
 
     # =============================================================================
-    # RATE LIMITING SETUP
-    # =============================================================================
-    setup_rate_limiting(app)
-
-    # =============================================================================
     # SECURITY HEADERS
     # =============================================================================
     setup_security_headers(app)
@@ -201,8 +201,17 @@ def create_app(config_override=None):
     @app.before_request
     def add_request_id():
         """Add unique request ID for tracing."""
-        g.request_id = request.headers.get('X-Request-ID', secrets.token_hex(16))
+        supplied = request.headers.get('X-Request-ID', '')
+        # Accept a caller's ID only if it is safe to log and store
+        g.request_id = supplied if _REQUEST_ID_PATTERN.fullmatch(supplied) else secrets.token_hex(16)
         g.start_time = time_module.time()
+
+    @app.before_request
+    def reject_oversized_body():
+        """Refuse bodies over MAX_CONTENT_LENGTH before any route reads them."""
+        limit = app.config.get('MAX_CONTENT_LENGTH')
+        if limit and request.content_length and request.content_length > limit:
+            abort(413)
 
     @app.after_request
     def add_response_headers(response):
@@ -252,6 +261,24 @@ def create_app(config_override=None):
             'timestamp': datetime.now(UTC).isoformat()
         }), 404
 
+    @app.errorhandler(405)
+    def method_not_allowed(error):
+        return jsonify({
+            'success': False,
+            'error': 'Method not allowed',
+            'request_id': g.get('request_id'),
+            'timestamp': datetime.now(UTC).isoformat()
+        }), 405
+
+    @app.errorhandler(413)
+    def payload_too_large(error):
+        return jsonify({
+            'success': False,
+            'error': 'Request body too large',
+            'request_id': g.get('request_id'),
+            'timestamp': datetime.now(UTC).isoformat()
+        }), 413
+
     @app.errorhandler(429)
     def rate_limit_exceeded(error):
         app.logger.warning(f"Rate limit exceeded: {request.path} from {request.remote_addr} | Request ID: {g.get('request_id')}")
@@ -293,6 +320,14 @@ def create_app(config_override=None):
     @app.route('/<path:path>')
     def serve(path):
         """Serve static files or return index.html for SPA."""
+        if path == 'api' or path.startswith('api/'):
+            # API paths never fall through to the SPA: a known path called with
+            # the wrong method is a 405, anything else a 404 (both JSON)
+            adapter = app.url_map.bind_to_environ(request.environ)
+            api_methods = set(adapter.allowed_methods(request.path)) - {'GET', 'HEAD', 'OPTIONS'}
+            if api_methods:
+                raise MethodNotAllowed(valid_methods=sorted(api_methods))
+            abort(404)
         if path != "" and os.path.exists(os.path.join(static_folder, path)):
             return send_from_directory(static_folder, path)
         else:
@@ -317,6 +352,11 @@ def create_app(config_override=None):
             'environment': settings.flask_env,
             'timestamp': datetime.now(UTC).isoformat()
         })
+
+    # =============================================================================
+    # RATE LIMITING (after every route is registered)
+    # =============================================================================
+    setup_rate_limiting(app, storage_uri=settings.redis_url)
 
     app.logger.info("NOCTURNA Trading System initialized successfully")
     app.logger.info(f"Environment: {settings.flask_env}")

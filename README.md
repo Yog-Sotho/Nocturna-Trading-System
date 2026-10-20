@@ -36,7 +36,6 @@ These are documented in the codebase audit and are scheduled in the roadmap:
   triggers an emergency stop on its first risk check.
 - Orders submitted through `POST /api/trading/orders` are rejected (field-name mismatch
   between the API schema and the order manager).
-- Rate limits are configured but not attached to any route.
 - Positions, orders and risk state live in memory and are lost on restart.
 - Market data is fetched without a start date, so Alpaca returns only the current day's bars.
 - Realized P&L is never computed, so win rate and loss-based limits do not work.
@@ -84,6 +83,13 @@ status are read from the database on every request, so changes apply immediately
 an account whose trading is not disabled.
 
 **System:** `GET /health`, `GET /api/version`
+
+Requests are rate limited per client IP: 300 per minute by default, with tighter limits on
+login (10/min), token refresh (30/min), password changes (5/min), user creation (5/min) and
+API key creation (10/hour); see `ROUTE_RATE_LIMITS` in `src/middleware/security.py`.
+`/health` and the emergency stop are never limited. Five failed logins from one address
+within 15 minutes block logins from it until the failures are 15 minutes old. Request bodies
+are limited to 1 MB.
 
 **Auth and users** (`/api`)
 
@@ -134,6 +140,8 @@ to start and lists every problem if the configuration is unsafe. The ones that m
 | `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_BASE_URL` | Alpaca paper account; without keys the engine runs in simulation |
 | `DATABASE_URL` | Defaults to SQLite at `src/database/nocturna.db`; PostgreSQL is required in production |
 | `ALLOWED_ORIGINS` | Required in production (CORS allowlist) |
+| `TRUSTED_PROXY_COUNT` | Number of reverse proxies in front of the app (default 0). Set it behind nginx or a load balancer, or every client shares the proxy's IP for rate limits and login lockout |
+| `REDIS_URL` | Rate-limit storage; in-process memory when unset |
 | `ADMIN_USERNAME`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` | Read by `flask create-admin` |
 
 ## Development

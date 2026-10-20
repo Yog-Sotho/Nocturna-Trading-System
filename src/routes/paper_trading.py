@@ -119,8 +119,8 @@ def paper_submit_order():
         stop_price: float (required for stop / stop_limit)
     """
     try:
-        data = request.get_json()
-        if not data:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not data:
             return _response(False, error="Request body required", status_code=400)
 
         required = ["symbol", "side", "order_type", "quantity"]
@@ -265,8 +265,8 @@ def paper_update_prices():
         prices: {"AAPL": 185.50, "MSFT": 420.10, ...}
     """
     try:
-        data = request.get_json()
-        if not data or "prices" not in data:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or "prices" not in data:
             return _response(False, error="prices dict required", status_code=400)
 
         engine = get_engine()
