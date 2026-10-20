@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from flask import Flask, g, jsonify, request, send_from_directory
 from flask_cors import CORS
 
+from src.config import load_settings
 from src.core.safety import assert_paper_only
 from src.middleware.security import setup_rate_limiting, setup_security_headers
 from src.models.user import db
@@ -37,67 +38,57 @@ def create_app(config_override=None):
     # Live trading is hard-disabled: refuse to boot with a live configuration
     assert_paper_only()
 
+    # Validate the whole environment up front (fails fast in production)
+    settings = load_settings()
+
     app = Flask(__name__)
+    app.extensions['settings'] = settings
 
     # =============================================================================
-    # SECURITY: Load configuration from environment variables (not hardcoded)
+    # SECRETS
     # =============================================================================
-
-    # Flask secret key - MUST be set via environment variable
-    secret_key = os.environ.get('FLASK_SECRET_KEY', None)
-    if secret_key is None:
-        if os.environ.get('FLASK_ENV') == 'production':
-            raise ValueError(
-                "FLASK_SECRET_KEY environment variable MUST be set in production. "
-                "Generate one using: python -c \"import secrets; print(secrets.token_hex(32))\""
-            )
-        else:
-            # Development mode: generate a warning but allow to continue
-            logging.warning(
-                "FLASK_SECRET_KEY not set. Using insecure generated key. "
-                "Set FLASK_SECRET_KEY environment variable for production."
-            )
-            secret_key = secrets.token_hex(32)
+    if settings.flask_secret_key is None:
+        # Development/testing only — load_settings() rejects this in production
+        logging.warning(
+            "FLASK_SECRET_KEY not set. Using an ephemeral generated key; "
+            "tokens will not survive a restart."
+        )
+        secret_key = secrets.token_hex(32)
+    else:
+        secret_key = settings.flask_secret_key.get_secret_value()
 
     app.config['SECRET_KEY'] = secret_key
-    app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', secret_key)
-    app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(
-        hours=int(os.environ.get('JWT_EXPIRATION_HOURS', 24))
+    app.config['JWT_SECRET_KEY'] = (
+        settings.jwt_secret_key.get_secret_value() if settings.jwt_secret_key else secret_key
     )
+    app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=settings.jwt_expiration_hours)
 
     # =============================================================================
     # DATABASE CONFIGURATION
     # =============================================================================
-    database_url = os.environ.get(
-        'DATABASE_URL',
-        f"sqlite:///{os.path.join(os.path.dirname(__file__), 'database', 'nocturna.db')}"
-    )
+    database_url = settings.resolved_database_url
     app.config['SQLALCHEMY_DATABASE_URI'] = database_url
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
     # Engine options — only apply pool settings for non-SQLite databases
     if database_url.startswith('sqlite'):
-        app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-            'echo': os.environ.get('SQLALCHEMY_ECHO', 'false').lower() == 'true'
-        }
+        app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'echo': settings.sqlalchemy_echo}
     else:
         app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
             'pool_size': 10,
             'pool_recycle': 3600,
             'pool_pre_ping': True,
             'max_overflow': 20,
-            'echo': os.environ.get('SQLALCHEMY_ECHO', 'false').lower() == 'true'
+            'echo': settings.sqlalchemy_echo
         }
 
     # =============================================================================
     # SESSION CONFIGURATION
     # =============================================================================
-    app.config['SESSION_COOKIE_SECURE'] = os.environ.get('SECURE_COOKIES', 'true').lower() == 'true'
+    app.config['SESSION_COOKIE_SECURE'] = settings.secure_cookies
     app.config['SESSION_COOKIE_HTTPONLY'] = True
-    app.config['SESSION_COOKIE_SAMESITE'] = os.environ.get('SESSION_COOKIE_SAMESITE', 'Lax')
-    app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(
-        hours=int(os.environ.get('SESSION_LIFETIME_HOURS', 24))
-    )
+    app.config['SESSION_COOKIE_SAMESITE'] = settings.session_cookie_samesite
+    app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=settings.session_lifetime_hours)
 
     # =============================================================================
     # APPLICATION SETTINGS
@@ -109,7 +100,7 @@ def create_app(config_override=None):
     # =============================================================================
     # PRODUCTION MODE SETTINGS
     # =============================================================================
-    app.config['DEBUG'] = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
+    app.config['DEBUG'] = settings.flask_debug
     app.config['TESTING'] = False
 
     # =============================================================================
@@ -126,10 +117,9 @@ def create_app(config_override=None):
     # =============================================================================
     # CORS CONFIGURATION - STRICT ORIGIN CHECKING
     # =============================================================================
-    allowed_origins = os.environ.get('ALLOWED_ORIGINS', '')
-    if allowed_origins:
-        # Production: only allow specific origins
-        allowed_list = [origin.strip() for origin in allowed_origins.split(',') if origin.strip()]
+    allowed_list = settings.allowed_origin_list
+    if allowed_list:
+        # Only allow the configured origins
         cors_config = {
             'resources': {
                 r'/*': {
@@ -146,24 +136,17 @@ def create_app(config_override=None):
         CORS(app, **cors_config)
         app.logger.info(f"CORS enabled for allowed origins: {allowed_list}")
     else:
-        # No origins configured - restrict to same origin in production
-        if os.environ.get('FLASK_ENV') == 'production':
-            raise ValueError(
-                "ALLOWED_ORIGINS environment variable MUST be set in production. "
-                "Example: ALLOWED_ORIGINS=https://yourdomain.com,https://app.yourdomain.com"
-            )
-        else:
-            # Development mode: allow local development
-            CORS(app, resources={
-                r'/*': {
-                    'origins': ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5000'],
-                    'methods': ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-                    'allow_headers': ['Content-Type', 'Authorization', 'X-API-Key', 'X-Request-ID'],
-                    'supports_credentials': True,
-                    'max_age': 600
-                }
-            })
-            app.logger.warning("CORS enabled for local development only. Configure ALLOWED_ORIGINS for production.")
+        # Development only — load_settings() requires ALLOWED_ORIGINS in production
+        CORS(app, resources={
+            r'/*': {
+                'origins': ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5000'],
+                'methods': ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+                'allow_headers': ['Content-Type', 'Authorization', 'X-API-Key', 'X-Request-ID'],
+                'supports_credentials': True,
+                'max_age': 600
+            }
+        })
+        app.logger.warning("CORS enabled for local development only. Configure ALLOWED_ORIGINS for production.")
 
     # =============================================================================
     # RATE LIMITING SETUP
@@ -205,9 +188,9 @@ def create_app(config_override=None):
     app.register_blueprint(paper_bp, url_prefix='/api/paper')
     with app.app_context():
         paper_config = {
-            'initial_capital': float(os.environ.get('PAPER_INITIAL_CAPITAL', 100000)),
-            'commission_rate': float(os.environ.get('PAPER_COMMISSION_RATE', 0.001)),
-            'slippage_rate': float(os.environ.get('PAPER_SLIPPAGE_RATE', 0.0005)),
+            'initial_capital': settings.paper_initial_capital,
+            'commission_rate': settings.paper_commission_rate,
+            'slippage_rate': settings.paper_slippage_rate,
         }
         init_paper_engine(paper_config)
 
@@ -302,7 +285,7 @@ def create_app(config_override=None):
     # =============================================================================
     # STATIC FILE SERVING
     # =============================================================================
-    static_folder = os.environ.get('STATIC_FOLDER', os.path.join(os.path.dirname(__file__), 'static'))
+    static_folder = str(settings.static_folder or os.path.join(os.path.dirname(__file__), 'static'))
     app.config['STATIC_FOLDER'] = static_folder
 
     @app.route('/', defaults={'path': ''})
@@ -330,12 +313,12 @@ def create_app(config_override=None):
         return jsonify({
             'version': '2.0.0',
             'api_version': 'v1',
-            'environment': os.environ.get('FLASK_ENV', 'development'),
+            'environment': settings.flask_env,
             'timestamp': datetime.now(UTC).isoformat()
         })
 
     app.logger.info("NOCTURNA Trading System initialized successfully")
-    app.logger.info(f"Environment: {os.environ.get('FLASK_ENV', 'development')}")
+    app.logger.info(f"Environment: {settings.flask_env}")
 
     return app
 

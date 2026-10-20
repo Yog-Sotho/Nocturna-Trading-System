@@ -117,14 +117,15 @@ refresh endpoints require a bearer token. Endpoints marked *admin* also require 
 ## Configuration
 
 All settings come from environment variables; `.env.example` lists them with comments.
-The ones that matter most:
+They are validated at startup (`src/config.py`); with `FLASK_ENV=production` the app refuses
+to start and lists every problem if the configuration is unsafe. The ones that matter most:
 
 | Variable | Purpose |
 |---|---|
-| `FLASK_SECRET_KEY`, `JWT_SECRET_KEY` | Required in production |
+| `FLASK_SECRET_KEY`, `JWT_SECRET_KEY` | Required in production: 32+ characters each, and different from each other |
 | `TRADING_MODE` | Must be `PAPER` |
 | `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_BASE_URL` | Alpaca paper account; without keys the engine runs in simulation |
-| `DATABASE_URL` | Defaults to SQLite at `src/database/nocturna.db` |
+| `DATABASE_URL` | Defaults to SQLite at `src/database/nocturna.db`; PostgreSQL is required in production |
 | `ALLOWED_ORIGINS` | Required in production (CORS allowlist) |
 | `ADMIN_USERNAME`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` | Read by `flask create-admin` |
 
