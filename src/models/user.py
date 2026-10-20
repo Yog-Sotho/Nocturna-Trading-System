@@ -14,6 +14,10 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 db = SQLAlchemy()
 
+#: Roles stored in User.roles. Admin rights come only from User.is_admin.
+ASSIGNABLE_ROLES = frozenset({"trader", "reader"})
+ADMIN_ROLE = "admin"
+
 
 class UTCDateTime(TypeDecorator):
     """
@@ -72,6 +76,19 @@ class User(db.Model):
     # Security
     failed_login_attempts = Column(Integer, default=0)
     locked_until = Column(UTCDateTime)
+    # Embedded in every JWT; bumping it invalidates all of the user's tokens
+    token_version = Column(Integer, nullable=False, default=0)
+
+    def effective_roles(self) -> list[str]:
+        """Roles used for authorization: assignable roles, plus admin if is_admin."""
+        roles = sorted(r for r in (self.roles or []) if r in ASSIGNABLE_ROLES)
+        if self.is_admin:
+            roles.append(ADMIN_ROLE)
+        return roles
+
+    def revoke_all_tokens(self) -> None:
+        """Invalidate every access and refresh token issued to this user."""
+        self.token_version = (self.token_version or 0) + 1
 
     def set_password(self, password: str) -> None:
         """Hash and set the user's password."""
@@ -189,6 +206,18 @@ class APIKey(db.Model):
         """Increment usage counter and update last used timestamp."""
         self.use_count = (self.use_count or 0) + 1
         self.last_used = datetime.now(UTC)
+
+
+class RevokedToken(db.Model):
+    """JWT IDs revoked before their expiry (logout, refresh rotation)."""
+
+    __tablename__ = 'revoked_tokens'
+
+    jti = Column(String(64), primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), index=True)
+    token_type = Column(String(10), nullable=False)
+    expires_at = Column(UTCDateTime, nullable=False, index=True)
+    revoked_at = Column(UTCDateTime, default=lambda: datetime.now(UTC), nullable=False)
 
 
 class AuditLog(db.Model):
@@ -348,7 +377,7 @@ def create_admin_user(username: str, email: str, password: str) -> User:
         email=email,
         is_active=True,
         is_admin=True,
-        roles=['admin', 'trader']
+        roles=['trader']
     )
     admin.set_password(password)
 

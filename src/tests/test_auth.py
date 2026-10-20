@@ -294,6 +294,177 @@ class TestAPIKeyEndpoints:
             assert _get_key(data["key"]["id"]).use_count == 2
 
 
+class TestSessionLifecycle:
+    """Revocation persists, refresh tokens rotate, password and role changes apply at once."""
+
+    PASSWORD = "SecureP@ss123"
+
+    def _login(self, client):
+        resp = client.post("/api/auth/login", json={"username": "testuser", "password": self.PASSWORD})
+        assert resp.status_code == 200, resp.get_json()
+        return resp.get_json()["data"]
+
+    @staticmethod
+    def _bearer(token):
+        return {"Authorization": f"Bearer {token}"}
+
+    def _me(self, client, token):
+        return client.get("/api/auth/me", headers=self._bearer(token)).status_code
+
+    def _refresh(self, client, refresh_token):
+        return client.post("/api/auth/refresh", json={"refresh_token": refresh_token})
+
+    def test_logout_revocation_survives_a_new_token_manager(self, client, test_user, monkeypatch):
+        extensions = client.application.extensions
+        monkeypatch.setitem(extensions, "token_manager", extensions["token_manager"])
+        tokens = self._login(client)
+        resp = client.post("/api/auth/logout", headers=self._bearer(tokens["access_token"]))
+        assert resp.status_code == 200
+        assert self._me(client, tokens["access_token"]) == 401
+        with client.application.app_context():
+            fresh = TokenManager()
+            fresh.init_app(client.application)
+            with pytest.raises(pyjwt.InvalidTokenError, match="revoked"):
+                fresh.verify_token(tokens["access_token"])
+
+    def test_logout_also_revokes_refresh_token_in_body(self, client, test_user):
+        tokens = self._login(client)
+        client.post("/api/auth/logout", headers=self._bearer(tokens["access_token"]),
+                    json={"refresh_token": tokens["refresh_token"]})
+        assert self._refresh(client, tokens["refresh_token"]).status_code == 401
+
+    def test_logout_requires_bearer_token(self, client, auth_headers):
+        raw = client.post("/api/api-keys", json={"permissions": ["read"]},
+                          headers=auth_headers).get_json()["data"]["api_key"]
+        assert client.post("/api/auth/logout", headers={"X-API-Key": raw}).status_code == 400
+
+    def test_refresh_rotates_tokens(self, client, test_user):
+        tokens = self._login(client)
+        resp = self._refresh(client, tokens["refresh_token"])
+        assert resp.status_code == 200
+        new = resp.get_json()["data"]
+        assert new["refresh_token"] != tokens["refresh_token"]
+        assert self._me(client, new["access_token"]) == 200
+
+    def test_refresh_token_reuse_revokes_every_session(self, client, test_user):
+        tokens = self._login(client)
+        new = self._refresh(client, tokens["refresh_token"]).get_json()["data"]
+        assert self._refresh(client, tokens["refresh_token"]).status_code == 401
+        assert self._me(client, new["access_token"]) == 401
+        assert self._refresh(client, new["refresh_token"]).status_code == 401
+
+    def test_access_token_is_not_a_refresh_token(self, client, test_user):
+        tokens = self._login(client)
+        assert self._refresh(client, tokens["access_token"]).status_code == 401
+
+    @pytest.mark.parametrize("body", [{}, {"refresh_token": 123}, {"refresh_token": ""}])
+    def test_refresh_requires_token(self, client, body):
+        assert client.post("/api/auth/refresh", json=body).status_code == 400
+
+    def test_own_password_change_invalidates_old_tokens_and_returns_new(self, client, test_user):
+        user, _ = test_user
+        tokens = self._login(client)
+        resp = client.put(f"/api/users/{user.id}/password", headers=self._bearer(tokens["access_token"]),
+                          json={"current_password": self.PASSWORD, "new_password": "N3w!Passw0rd-xyz"})
+        assert resp.status_code == 200
+        assert self._me(client, tokens["access_token"]) == 401
+        assert self._refresh(client, tokens["refresh_token"]).status_code == 401
+        assert self._me(client, resp.get_json()["data"]["access_token"]) == 200
+
+    def test_admin_password_reset_invalidates_users_tokens(self, client, test_user, admin_headers):
+        user, _ = test_user
+        tokens = self._login(client)
+        resp = client.put(f"/api/users/{user.id}/password", headers=admin_headers,
+                          json={"current_password": "unused", "new_password": "N3w!Passw0rd-xyz"})
+        assert resp.status_code == 200
+        assert "data" not in resp.get_json()
+        assert self._me(client, tokens["access_token"]) == 401
+
+    def test_logout_all(self, client, test_user):
+        first, second = self._login(client), self._login(client)
+        assert client.post("/api/auth/logout-all", headers=self._bearer(first["access_token"])).status_code == 200
+        assert self._me(client, first["access_token"]) == 401
+        assert self._me(client, second["access_token"]) == 401
+        assert self._me(client, self._login(client)["access_token"]) == 200
+
+    def test_removing_trader_role_applies_to_existing_token(self, client, test_user, admin_headers):
+        user, _ = test_user
+        tokens = self._login(client)
+        trade = self._bearer(tokens["access_token"])
+        assert client.post("/api/paper/stop", headers=trade).status_code not in (401, 403)
+        resp = client.put(f"/api/users/{user.id}", headers=admin_headers, json={"roles": ["reader"]})
+        assert resp.status_code == 200
+        assert client.post("/api/paper/stop", headers=trade).status_code == 403
+
+    def test_deactivation_applies_to_existing_token(self, client, test_user, admin_headers):
+        user, _ = test_user
+        tokens = self._login(client)
+        client.put(f"/api/users/{user.id}", headers=admin_headers, json={"is_active": False})
+        assert self._me(client, tokens["access_token"]) == 401
+
+    def test_revoke_rejects_foreign_tokens(self, app, db):
+        foreign = pyjwt.encode({"sub": "1", "jti": "x" * 20, "type": "access", "exp": 9999999999,
+                                "iss": "nocturna-trading-system"}, "not-our-key" * 4, algorithm="HS256")
+        with app.app_context():
+            from src.middleware.auth import token_manager
+            from src.models.user import RevokedToken
+            assert token_manager.revoke_token(foreign) is False
+            assert RevokedToken.query.count() == 0
+
+    def test_expired_revocations_are_purged(self, app, db):
+        from datetime import datetime, timedelta
+
+        from src.middleware.auth import token_manager
+        from src.models.user import RevokedToken
+        with app.app_context():
+            _db_add(RevokedToken(jti="old", token_type="access",
+                                 expires_at=datetime.now(UTC) - timedelta(minutes=1)))
+            token_manager.revoke_token(token_manager.create_access_token("1"))
+            assert db.session.get(RevokedToken, "old") is None
+            assert RevokedToken.query.count() == 1
+
+
+class TestUpdateUserValidation:
+    @pytest.mark.parametrize("body", [
+        {"roles": ["admin"]},
+        {"roles": ["trader", "superuser"]},
+        {"roles": "trader"},
+        {"trading_mode": "LIVE"},
+    ])
+    def test_rejected(self, client, test_user, admin_headers, body):
+        user, _ = test_user
+        assert client.put(f"/api/users/{user.id}", headers=admin_headers, json=body).status_code == 400
+
+    def test_rejected_update_changes_nothing(self, client, test_user, admin_headers):
+        user, _ = test_user
+        resp = client.put(f"/api/users/{user.id}", headers=admin_headers,
+                          json={"is_active": False, "trading_disabled": True, "roles": ["admin"]})
+        assert resp.status_code == 400
+        with client.application.app_context():
+            fresh = User.query.filter_by(username="testuser").first()
+            assert fresh.is_active is True and fresh.trading_disabled is False
+
+    def test_non_object_body_rejected(self, client, test_user, admin_headers):
+        user, _ = test_user
+        assert client.put(f"/api/users/{user.id}", headers=admin_headers, json=["roles"]).status_code == 400
+
+    @pytest.mark.parametrize("body", [{"is_active": False}, {"is_admin": False}])
+    def test_admin_cannot_lock_themselves_out(self, client, admin_user, admin_headers, body):
+        admin, _ = admin_user
+        assert client.put(f"/api/users/{admin.id}", headers=admin_headers, json=body).status_code == 400
+
+    def test_roles_in_db_never_grant_admin(self, client, app, db):
+        with app.app_context():
+            user = User(username="sneaky", email="sneaky@example.com", is_active=True,
+                        is_admin=False, roles=["admin", "trader"])
+            user.set_password("Sn3aky!Passw0rd")
+            _db_add(user)
+            assert user.effective_roles() == ["trader"]
+        resp = client.post("/api/auth/login", json={"username": "sneaky", "password": "Sn3aky!Passw0rd"})
+        token = resp.get_json()["data"]["access_token"]
+        assert client.get("/api/users", headers={"Authorization": f"Bearer {token}"}).status_code == 403
+
+
 class TestCreateAdminCommand:
     """`flask create-admin` is the only way to bootstrap the operator account."""
 
@@ -307,7 +478,7 @@ class TestCreateAdminCommand:
             admin = User.query.filter_by(username="operator").first()
             assert admin is not None
             assert admin.is_admin is True
-            assert "admin" in admin.roles
+            assert admin.effective_roles() == ["trader", "admin"]
             assert admin.email == "ops@example.com"
             assert admin.check_password("Str0ng!Passw0rd")
 

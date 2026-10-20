@@ -14,7 +14,6 @@ import hmac
 import logging
 import os
 import secrets
-import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -34,24 +33,22 @@ logger = logging.getLogger(__name__)
 
 class TokenManager:
     """
-    Manages JWT access and refresh tokens with proper lifecycle controls.
+    Issues and verifies JWT access and refresh tokens.
 
-    Public method signatures match routes and the test suite:
-      create_access_token(user_id, data=None)
-      create_refresh_token(user_id)
-      verify_token(token, token_type="access")  # raises on failure
-      revoke_token(token)
+    Every token carries the user's ``token_version`` as the ``ver`` claim, so
+    bumping the version (password change, logout everywhere, refresh-token
+    reuse) invalidates all of the user's tokens at once. Individual tokens are
+    revoked by storing their ``jti`` in the ``revoked_tokens`` table, which
+    survives restarts.
     """
+
+    ISSUER = "nocturna-trading-system"
 
     def __init__(self, app: Flask | None = None) -> None:
         self._jwt_secret: str | None = None
         self._jwt_algorithm = "HS256"
         self.access_token_expires = timedelta(hours=1)
         self.refresh_token_expires = timedelta(days=7)
-        self._blacklist: set[str] = set()
-        self._blacklist_lock = threading.RLock()
-        self._redis = None
-        self._blacklist_prefix = "token_blacklist:"
         if app is not None:
             self.init_app(app)
 
@@ -85,46 +82,58 @@ class TokenManager:
         return jwt.encode(claims, self._jwt_secret, algorithm=self._jwt_algorithm)
 
     def create_access_token(self, user_id: str | int, data: dict | None = None) -> str:
-        """Create a JWT access token. user_id is stored as string in 'sub'."""
+        """Create a JWT access token. ``data`` may carry username, roles and ver."""
         now = datetime.now(UTC)
-        jti = secrets.token_urlsafe(32)
         data = data or {}
         claims: dict[str, Any] = {
             "sub": str(user_id),
             "iat": now,
             "exp": now + self.access_token_expires,
-            "jti": jti,
+            "jti": secrets.token_urlsafe(32),
             "type": "access",
-            "iss": "nocturna-trading-system",
+            "iss": self.ISSUER,
+            "ver": int(data.get("ver", 0)),
             "username": data.get("username", str(user_id)),
             "roles": data.get("roles", []),
         }
-        for key, value in data.items():
-            if key not in claims:
-                claims[key] = value
         return self._encode(claims)
 
-    def create_refresh_token(self, user_id: str | int, username: str | None = None) -> str:
+    def create_refresh_token(
+        self, user_id: str | int, username: str | None = None, ver: int = 0
+    ) -> str:
         """Create a JWT refresh token."""
         now = datetime.now(UTC)
-        jti = secrets.token_urlsafe(32)
         claims = {
             "sub": str(user_id),
             "username": username or str(user_id),
             "iat": now,
             "exp": now + self.refresh_token_expires,
-            "jti": jti,
+            "jti": secrets.token_urlsafe(32),
             "type": "refresh",
-            "iss": "nocturna-trading-system",
+            "iss": self.ISSUER,
+            "ver": int(ver),
         }
         return self._encode(claims)
 
-    def verify_token(self, token: str, token_type: str = "access") -> dict[str, Any]:
-        """
-        Verify and decode a JWT token.
+    def create_token_pair(self, user: Any) -> dict[str, Any]:
+        """Access and refresh tokens for a user, bound to its current token_version."""
+        ver = user.token_version or 0
+        return {
+            "access_token": self.create_access_token(
+                str(user.id),
+                {"username": user.username, "roles": user.effective_roles(), "ver": ver},
+            ),
+            "refresh_token": self.create_refresh_token(str(user.id), user.username, ver),
+            "token_type": "Bearer",
+            "expires_in": int(self.access_token_expires.total_seconds()),
+        }
 
-        Raises jwt.InvalidTokenError / jwt.ExpiredSignatureError on failure
-        (matches test suite expectations).
+    def decode(self, token: str, token_type: str = "access", verify_exp: bool = True) -> dict[str, Any]:
+        """
+        Verify signature, issuer, required claims and type, without the revocation check.
+
+        Raises:
+            jwt.InvalidTokenError: (or a subclass such as ExpiredSignatureError) on failure.
         """
         if not self._jwt_secret:
             raise jwt.InvalidTokenError("JWT secret not configured")
@@ -133,61 +142,64 @@ class TokenManager:
             token,
             self._jwt_secret,
             algorithms=[self._jwt_algorithm],
-            options={"verify_signature": True, "require": ["exp", "jti", "type"]},
-            issuer="nocturna-trading-system",
+            options={"require": ["exp", "jti", "type", "sub"], "verify_exp": verify_exp},
+            issuer=self.ISSUER,
         )
-
         if claims.get("type") != token_type:
             raise jwt.InvalidTokenError(
                 f"Token type mismatch: expected {token_type}, got {claims.get('type')}"
             )
-
-        jti = claims.get("jti")
-        if jti and self._is_blacklisted(jti):
-            raise jwt.InvalidTokenError("Token has been revoked")
-
         return claims
 
-    def _is_blacklisted(self, jti: str) -> bool:
-        with self._blacklist_lock:
-            if jti in self._blacklist:
-                return True
-        if self._redis:
-            try:
-                return self._redis.exists(f"{self._blacklist_prefix}{jti}") == 1
-            except Exception as exc:
-                logger.error("Redis blacklist check failed: %s", exc)
-        return False
+    def verify_token(self, token: str, token_type: str = "access") -> dict[str, Any]:
+        """
+        Verify and decode a JWT token, rejecting revoked ones.
 
-    def revoke_token(self, token: str) -> bool:
-        """Revoke a token by adding its JTI to the blacklist."""
+        Raises:
+            jwt.InvalidTokenError: (or a subclass such as ExpiredSignatureError) on failure.
+        """
+        claims = self.decode(token, token_type)
+        if self.is_revoked(claims["jti"]):
+            raise jwt.InvalidTokenError("Token has been revoked")
+        return claims
+
+    @staticmethod
+    def is_revoked(jti: str) -> bool:
+        from src.models.user import RevokedToken, db
+
+        return db.session.get(RevokedToken, jti) is not None
+
+    def revoke_claims(self, claims: dict[str, Any]) -> None:
+        """Store a verified token's jti until the token would have expired anyway."""
+        from src.models.user import RevokedToken, db
+
+        now = datetime.now(UTC)
+        expires_at = datetime.fromtimestamp(int(claims["exp"]), UTC)
+        if expires_at <= now:
+            return
+        RevokedToken.query.filter(RevokedToken.expires_at <= now).delete()
+        sub = str(claims.get("sub", ""))
+        db.session.merge(RevokedToken(
+            jti=claims["jti"],
+            user_id=int(sub) if sub.isdigit() else None,
+            token_type=str(claims.get("type", "")),
+            expires_at=expires_at,
+        ))
+        db.session.commit()
+
+    def revoke_token(self, token: str, token_type: str = "access") -> bool:
+        """
+        Revoke one token. Only tokens signed by this server are accepted.
+
+        Returns:
+            True if the token is (now) unusable, False if it was not a valid token.
+        """
         try:
-            unverified = jwt.decode(token, options={"verify_signature": False})
-            jti = unverified.get("jti")
-            if not jti:
-                return False
-            with self._blacklist_lock:
-                self._blacklist.add(jti)
-            if self._redis:
-                try:
-                    exp = unverified.get("exp")
-                    ttl = (
-                        max(0, int(exp - time.time()))
-                        if exp
-                        else int(self.refresh_token_expires.total_seconds())
-                    )
-                    self._redis.setex(f"{self._blacklist_prefix}{jti}", ttl, "1")
-                except Exception as exc:
-                    logger.error("Failed to persist revoked token: %s", exc)
-            return True
-        except Exception as exc:
-            logger.error("Error revoking token: %s", exc)
+            claims = self.decode(token, token_type, verify_exp=False)
+        except jwt.InvalidTokenError:
             return False
-
-    def revoke_all_user_tokens(self, user_id: int | str) -> int:
-        """Best-effort marker for password-change invalidation."""
-        logger.info("All tokens for user %s marked for invalidation", user_id)
-        return 0
+        self.revoke_claims(claims)
+        return True
 
 
 # =============================================================================
@@ -285,23 +297,40 @@ def create_token(user_id: str, user_data: dict | None = None) -> str:
 # =============================================================================
 
 
+def authenticate_access_token(token: str) -> Any | None:
+    """
+    Return the active user an access token belongs to, or None.
+
+    Roles and account status come from the database, not from the token, so
+    role changes and deactivation apply on the next request.
+    """
+    from src.models.user import User, db
+
+    tm = current_app.extensions.get("token_manager", token_manager)
+    try:
+        claims = tm.verify_token(token, token_type="access")
+    except jwt.InvalidTokenError:
+        return None
+    sub = str(claims["sub"])
+    user = db.session.get(User, int(sub)) if sub.isdigit() else None
+    if user is None or not user.is_active or claims.get("ver", 0) != (user.token_version or 0):
+        return None
+    return user
+
+
 def _authenticate_request() -> bool:
     """Populate g.user_id/username/roles/auth_method from a bearer token or API key."""
     auth_header = request.headers.get("Authorization", "")
     api_key = request.headers.get("X-API-Key", "")
 
     if auth_header.startswith("Bearer "):
-        tm = current_app.extensions.get("token_manager", token_manager)
-        try:
-            claims = tm.verify_token(auth_header[7:], token_type="access")
-        except jwt.InvalidTokenError:
-            claims = None
-        if claims is not None:
-            g.user_id = claims["sub"]
-            g.username = claims.get("username", str(claims["sub"]))
-            g.roles = claims.get("roles", [])
+        user = authenticate_access_token(auth_header[7:])
+        if user is not None:
+            g.user_id = str(user.id)
+            g.username = user.username
+            g.roles = user.effective_roles()
             g.auth_method = "jwt"
-            g.trading_mode = claims.get("trading_mode", "PAPER")
+            g.trading_mode = user.trading_mode or "PAPER"
             return True
 
     if api_key:

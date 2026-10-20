@@ -78,7 +78,8 @@ because the engine keeps its state in memory.
 ## API
 
 All endpoints except `/health`, `/api/version`, `/api/trading/health` and the login and
-refresh endpoints require a bearer token or an API key (`X-API-Key` header). Endpoints marked
+refresh endpoints require a bearer token or an API key (`X-API-Key` header). Roles and account
+status are read from the database on every request, so changes apply immediately. Endpoints marked
 *admin* also require the admin role; order and control endpoints require the trader role and
 an account whose trading is not disabled.
 
@@ -88,11 +89,14 @@ an account whose trading is not disabled.
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/auth/login`, `/auth/refresh`, `/auth/logout` | |
+| POST | `/auth/login` | returns an access token (1 h) and a refresh token (7 days) |
+| POST | `/auth/refresh` | body `{"refresh_token": "..."}`; returns a new pair. Refresh tokens are single use: reusing one revokes all of the user's sessions |
+| POST | `/auth/logout` | revokes the bearer token, and the refresh token if sent in the body |
+| POST | `/auth/logout-all` | revokes every token of the caller (API keys are separate) |
 | GET | `/auth/me` | |
 | GET, POST | `/users` | admin; `POST` creates a user |
-| GET, PUT | `/users/<id>` | admin |
-| PUT | `/users/<id>/password` | own account, or admin |
+| GET, PUT | `/users/<id>` | admin; `roles` may contain `trader` and `reader`, admin rights come only from `is_admin` |
+| PUT | `/users/<id>/password` | own account, or admin; revokes all of that user's tokens |
 | GET, POST | `/api-keys` | own keys; `POST` body `{"name": "...", "permissions": ["read", "trade"], "expires_in_days": 90}` returns the key once. Keys are stored hashed, never carry admin rights, and `trade` needs an owner with the trader role |
 | DELETE | `/api-keys/<id>` | revokes one of your keys |
 | GET | `/audit-logs` | admin; the audit table is not yet written to |
