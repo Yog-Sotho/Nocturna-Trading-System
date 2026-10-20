@@ -10,11 +10,13 @@ import jwt as pyjwt
 import pytest
 
 from src.middleware.auth import (
-    APIKeyManager,
     TokenManager,
+    authenticate_api_key,
     generate_api_key,
+    hash_api_key,
+    roles_for_api_key,
 )
-from src.models.user import User
+from src.models.user import APIKey, User
 
 
 class TestTokenManager:
@@ -83,40 +85,34 @@ class TestTokenManager:
                 tm.verify_token("not.a.valid.token")
 
 
-class TestAPIKeyManager:
-    """API key registration and validation (SEC-02 fix)."""
+class TestAPIKeyHelpers:
+    def test_generated_keys_are_prefixed_and_unique(self):
+        a, b = generate_api_key(), generate_api_key()
+        assert a.startswith("ntr_") and b.startswith("ntr_")
+        assert a != b
 
-    def test_register_and_validate(self):
-        mgr = APIKeyManager()
-        raw_key = generate_api_key()
-        mgr.register_key(raw_key, "user-99", permissions=["read", "trade"])
-        result = mgr.validate_key(raw_key)
-        assert result is not None
-        assert result["user_id"] == "user-99"
-        assert "trade" in result["permissions"]
-
-    def test_invalid_key_returns_none(self):
-        mgr = APIKeyManager()
-        assert mgr.validate_key("bogus_key_12345") is None
-
-    def test_revoke_key(self):
-        mgr = APIKeyManager()
-        raw_key = generate_api_key()
-        mgr.register_key(raw_key, "user-99")
-        assert mgr.revoke_key(raw_key) is True
-        assert mgr.validate_key(raw_key) is None
-
-    def test_expired_key_returns_none(self, app):
-        from datetime import datetime, timedelta
+    def test_hash_is_stable_and_not_the_key(self, app):
+        raw = generate_api_key()
         with app.app_context():
-            mgr = APIKeyManager()
-            raw_key = generate_api_key()
-            mgr.register_key(
-                raw_key, "user-99",
-                expires_at=datetime.now(UTC) - timedelta(hours=1),
-            )
-            result = mgr.validate_key(raw_key)
-            assert result is None
+            assert hash_api_key(raw) == hash_api_key(raw)
+            assert raw not in hash_api_key(raw)
+            assert len(hash_api_key(raw)) == 64
+
+    @pytest.mark.parametrize("scopes,owner_roles,owner_is_admin,expected", [
+        (["read"], ["trader"], False, ["reader"]),
+        (["read", "trade"], ["trader"], False, ["reader", "trader"]),
+        (["read", "trade"], [], False, ["reader"]),
+        (["read", "trade"], ["admin"], True, ["reader", "trader"]),
+        (["read", "admin"], ["admin"], True, ["reader"]),
+    ])
+    def test_roles_never_exceed_owner_and_never_include_admin(
+        self, scopes, owner_roles, owner_is_admin, expected
+    ):
+        assert sorted(roles_for_api_key(scopes, owner_roles, owner_is_admin)) == expected
+
+    def test_unknown_key_does_not_authenticate(self, app, db):
+        with app.app_context():
+            assert authenticate_api_key("ntr_not-a-real-key") is None
 
 
 class TestAuthEndpoints:
@@ -179,22 +175,6 @@ class TestAuthEndpoints:
         assert resp.status_code == 409
 
 
-    def test_api_key_in_require_auth(self, client, app, test_user):
-        """SEC-02: Verify API key path in require_auth actually works."""
-        from src.middleware.auth import api_key_manager, generate_api_key
-        with app.app_context():
-            user, _ = test_user
-            raw_key = generate_api_key()
-            api_key_manager.register_key(
-                raw_key, str(user.id), permissions=["read", "trade"]
-            )
-            resp = client.get(
-                "/api/auth/me",
-                headers={"X-API-Key": raw_key},
-            )
-            # Should authenticate via API key now (SEC-02 fix)
-            assert resp.status_code == 200
-
     def test_invalid_api_key_returns_401(self, client):
         """SEC-02: Invalid API key must be rejected."""
         resp = client.get(
@@ -202,6 +182,116 @@ class TestAuthEndpoints:
             headers={"X-API-Key": "ntr_invalid_key_12345678901234567890"},
         )
         assert resp.status_code == 401
+
+
+class TestAPIKeyEndpoints:
+    """DB-backed API keys: created via the API, accepted by auth, scoped, revocable."""
+
+    def _create(self, client, headers, **body):
+        return client.post("/api/api-keys", json=body, headers=headers)
+
+    def _key(self, client, headers, permissions):
+        resp = self._create(client, headers, name="bot", permissions=permissions)
+        assert resp.status_code == 201, resp.get_json()
+        return resp.get_json()["data"]
+
+    def test_raw_key_is_returned_once_and_only_its_hash_is_stored(self, client, auth_headers):
+        data = self._key(client, auth_headers, ["read"])
+        raw = data["api_key"]
+        with client.application.app_context():
+            record = _get_key(data["key"]["id"])
+            assert record.key_hash == hash_api_key(raw)
+            assert raw not in record.key_hash
+        listed = client.get("/api/api-keys", headers=auth_headers).get_json()["data"]["api_keys"]
+        assert [k["id"] for k in listed] == [data["key"]["id"]]
+        assert "api_key" not in listed[0] and "key_hash" not in listed[0]
+
+    def test_read_key_authenticates(self, client, auth_headers):
+        raw = self._key(client, auth_headers, ["read"])["api_key"]
+        resp = client.get("/api/auth/me", headers={"X-API-Key": raw})
+        assert resp.status_code == 200
+        assert resp.get_json()["data"]["user"]["username"] == "testuser"
+
+    def test_read_key_cannot_trade(self, client, auth_headers):
+        raw = self._key(client, auth_headers, ["read"])["api_key"]
+        resp = client.post("/api/paper/stop", headers={"X-API-Key": raw})
+        assert resp.status_code == 403
+
+    def test_trade_key_passes_trading_checks(self, client, auth_headers):
+        raw = self._key(client, auth_headers, ["read", "trade"])["api_key"]
+        resp = client.post("/api/paper/stop", headers={"X-API-Key": raw})
+        assert resp.status_code not in (401, 403)
+
+    def test_admin_owner_key_never_grants_admin(self, client, admin_headers):
+        raw = self._key(client, admin_headers, ["read", "trade"])["api_key"]
+        resp = client.get("/api/users", headers={"X-API-Key": raw})
+        assert resp.status_code == 403
+
+    @pytest.mark.parametrize("body", [
+        {"permissions": ["admin"]},
+        {"permissions": ["read", "admin"]},
+        {"permissions": []},
+        {"permissions": "read"},
+        {"permissions": ["read"], "expires_in_days": 0},
+        {"permissions": ["read"], "expires_in_days": 366},
+        {"permissions": ["read"], "expires_in_days": "30"},
+    ])
+    def test_invalid_requests_rejected(self, client, auth_headers, body):
+        assert self._create(client, auth_headers, **body).status_code == 400
+
+    def test_revoked_key_is_rejected(self, client, auth_headers):
+        data = self._key(client, auth_headers, ["read"])
+        resp = client.delete(f"/api/api-keys/{data['key']['id']}", headers=auth_headers)
+        assert resp.status_code == 200
+        assert client.get("/api/auth/me", headers={"X-API-Key": data["api_key"]}).status_code == 401
+
+    def test_cannot_revoke_another_users_key(self, client, auth_headers, admin_headers):
+        data = self._key(client, admin_headers, ["read"])
+        resp = client.delete(f"/api/api-keys/{data['key']['id']}", headers=auth_headers)
+        assert resp.status_code == 404
+        assert client.get("/api/auth/me", headers={"X-API-Key": data["api_key"]}).status_code == 200
+
+    def test_expired_key_is_rejected(self, client, auth_headers):
+        from datetime import datetime, timedelta
+        data = self._key(client, auth_headers, ["read"])
+        with client.application.app_context():
+            record = _get_key(data["key"]["id"])
+            record.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+            _db_commit()
+        assert client.get("/api/auth/me", headers={"X-API-Key": data["api_key"]}).status_code == 401
+
+    def test_key_of_deactivated_user_is_rejected(self, client, auth_headers, test_user):
+        data = self._key(client, auth_headers, ["read"])
+        with client.application.app_context():
+            user = User.query.filter_by(username="testuser").first()
+            user.is_active = False
+            _db_commit()
+        assert client.get("/api/auth/me", headers={"X-API-Key": data["api_key"]}).status_code == 401
+
+    def test_trading_disabled_user_cannot_trade(self, client, auth_headers):
+        with client.application.app_context():
+            user = User.query.filter_by(username="testuser").first()
+            user.trading_disabled = True
+            _db_commit()
+        resp = client.post("/api/paper/stop", headers=auth_headers)
+        assert resp.status_code == 403
+
+    def test_user_without_trader_role_cannot_trade(self, client):
+        from src.middleware.auth import create_token
+        with client.application.app_context():
+            user = User(username="viewer", email="viewer@example.com", is_active=True, roles=[])
+            user.set_password("ViewerP@ss123")
+            _db_add(user)
+            token = create_token(str(user.id), {"username": "viewer", "roles": [], "is_admin": False})
+        resp = client.post("/api/paper/stop", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 403
+
+    def test_usage_is_counted(self, client, auth_headers):
+        data = self._key(client, auth_headers, ["read"])
+        for _ in range(2):
+            client.get("/api/auth/me", headers={"X-API-Key": data["api_key"]})
+        with client.application.app_context():
+            assert _get_key(data["key"]["id"]).use_count == 2
 
 
 class TestCreateAdminCommand:
@@ -308,6 +398,17 @@ class TestLoginLockout:
 def _db_commit():
     from src.models.user import db
     db.session.commit()
+
+
+def _db_add(obj):
+    from src.models.user import db
+    db.session.add(obj)
+    db.session.commit()
+
+
+def _get_key(key_id):
+    from src.models.user import db
+    return db.session.get(APIKey, key_id)
 
 
 class TestUTCDateTime:

@@ -52,7 +52,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# Edit .env: set FLASK_SECRET_KEY and JWT_SECRET_KEY
+# Edit .env: set FLASK_SECRET_KEY, JWT_SECRET_KEY and API_KEY_PEPPER
 #   python -c "import secrets; print(secrets.token_hex(32))"
 # Keep TRADING_MODE=PAPER and the paper ALPACA_BASE_URL.
 
@@ -78,7 +78,9 @@ because the engine keeps its state in memory.
 ## API
 
 All endpoints except `/health`, `/api/version`, `/api/trading/health` and the login and
-refresh endpoints require a bearer token. Endpoints marked *admin* also require the admin role.
+refresh endpoints require a bearer token or an API key (`X-API-Key` header). Endpoints marked
+*admin* also require the admin role; order and control endpoints require the trader role and
+an account whose trading is not disabled.
 
 **System:** `GET /health`, `GET /api/version`
 
@@ -91,8 +93,8 @@ refresh endpoints require a bearer token. Endpoints marked *admin* also require 
 | GET, POST | `/users` | admin; `POST` creates a user |
 | GET, PUT | `/users/<id>` | admin |
 | PUT | `/users/<id>/password` | own account, or admin |
-| GET, POST | `/api-keys` | key creation works, but keys are not yet accepted by auth |
-| DELETE | `/api-keys/<id>` | |
+| GET, POST | `/api-keys` | own keys; `POST` body `{"name": "...", "permissions": ["read", "trade"], "expires_in_days": 90}` returns the key once. Keys are stored hashed, never carry admin rights, and `trade` needs an owner with the trader role |
+| DELETE | `/api-keys/<id>` | revokes one of your keys |
 | GET | `/audit-logs` | admin; the audit table is not yet written to |
 
 **Trading engine** (`/api/trading`)
@@ -123,6 +125,7 @@ to start and lists every problem if the configuration is unsafe. The ones that m
 | Variable | Purpose |
 |---|---|
 | `FLASK_SECRET_KEY`, `JWT_SECRET_KEY` | Required in production: 32+ characters each, and different from each other |
+| `API_KEY_PEPPER` | Required in production (32+ characters); secret mixed into API key hashes. Changing it invalidates every API key |
 | `TRADING_MODE` | Must be `PAPER` |
 | `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_BASE_URL` | Alpaca paper account; without keys the engine runs in simulation |
 | `DATABASE_URL` | Defaults to SQLite at `src/database/nocturna.db`; PostgreSQL is required in production |

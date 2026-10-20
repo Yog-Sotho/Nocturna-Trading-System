@@ -4,11 +4,11 @@ Tests for startup settings validation.
 
 import pytest
 
-from src.config import ConfigurationError, load_settings
+from src.config import ConfigurationError, ensure_sqlite_directory, load_settings
 from src.main import create_app
 
 MANAGED_VARS = (
-    "FLASK_ENV", "FLASK_DEBUG", "FLASK_SECRET_KEY", "JWT_SECRET_KEY", "JWT_EXPIRATION_HOURS",
+    "FLASK_ENV", "FLASK_DEBUG", "FLASK_SECRET_KEY", "JWT_SECRET_KEY", "JWT_EXPIRATION_HOURS", "API_KEY_PEPPER",
     "DATABASE_URL", "REDIS_URL", "ALLOWED_ORIGINS", "SECURE_COOKIES",
 )
 STRONG_A = "a" * 64
@@ -17,6 +17,7 @@ GOOD_PRODUCTION = {
     "FLASK_ENV": "production",
     "FLASK_SECRET_KEY": STRONG_A,
     "JWT_SECRET_KEY": STRONG_B,
+    "API_KEY_PEPPER": "c" * 64,
     "ALLOWED_ORIGINS": "https://app.example.com",
     "DATABASE_URL": "postgresql://nocturna:pw@db:5432/nocturna",
 }
@@ -74,7 +75,7 @@ class TestProductionValidation:
         with pytest.raises(ConfigurationError) as exc:
             load_settings()
         message = str(exc.value)
-        for expected in ("FLASK_SECRET_KEY must be set", "JWT_SECRET_KEY must be set",
+        for expected in ("FLASK_SECRET_KEY must be set", "JWT_SECRET_KEY must be set", "API_KEY_PEPPER must be set",
                          "ALLOWED_ORIGINS", "DATABASE_URL"):
             assert expected in message
 
@@ -94,3 +95,25 @@ class TestProductionValidation:
         env({"FLASK_ENV": "production"})
         with pytest.raises(ConfigurationError):
             create_app()
+
+
+
+class TestEnsureSqliteDirectory:
+    def test_creates_missing_parent_of_absolute_path(self, tmp_path):
+        db_path = tmp_path / "missing" / "nocturna.db"
+        ensure_sqlite_directory(f"sqlite:///{db_path}")
+        assert db_path.parent.is_dir()
+
+    def test_default_url_points_into_created_directory(self, env, tmp_path, monkeypatch):
+        import src.config
+        monkeypatch.setattr(src.config, "DEFAULT_SQLITE_PATH", tmp_path / "db" / "nocturna.db")
+        ensure_sqlite_directory(load_settings().resolved_database_url)
+        assert (tmp_path / "db").is_dir()
+
+    @pytest.mark.parametrize("url", [
+        "sqlite:///:memory:", "sqlite:///relative.db", "postgresql://u:p@db/x",
+    ])
+    def test_leaves_other_urls_alone(self, tmp_path, monkeypatch, url):
+        monkeypatch.chdir(tmp_path)
+        ensure_sqlite_directory(url)
+        assert list(tmp_path.iterdir()) == []

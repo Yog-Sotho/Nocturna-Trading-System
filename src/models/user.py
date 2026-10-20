@@ -60,9 +60,6 @@ class User(db.Model):
     trading_mode = Column(String(10), default='PAPER')  # PAPER or LIVE
     trading_disabled = Column(Boolean, default=False)
 
-    # API keys for programmatic access
-    api_keys = Column(JSON, default=list)
-
     # User settings
     settings = Column(JSON, default=dict)
 
@@ -144,7 +141,7 @@ class APIKey(db.Model):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
-    key_hash = Column(String(256), nullable=False, index=True)
+    key_hash = Column(String(64), nullable=False, unique=True, index=True)
     name = Column(String(100), nullable=False)
     description = Column(Text)
 
@@ -172,11 +169,25 @@ class APIKey(db.Model):
 
     def is_valid(self) -> bool:
         """Check if the API key is valid and active."""
-        return self.is_active and not self.is_expired()
+        return bool(self.is_active) and not self.is_expired()
+
+    def to_dict(self) -> dict:
+        """Public metadata only — the key itself is never stored or returned."""
+        return {
+            'id': self.id,
+            'name': self.name,
+            'description': self.description,
+            'permissions': self.permissions or [],
+            'is_active': self.is_active,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'expires_at': self.expires_at.isoformat() if self.expires_at else None,
+            'last_used': self.last_used.isoformat() if self.last_used else None,
+            'use_count': self.use_count or 0,
+        }
 
     def increment_usage(self) -> None:
         """Increment usage counter and update last used timestamp."""
-        self.use_count += 1
+        self.use_count = (self.use_count or 0) + 1
         self.last_used = datetime.now(UTC)
 
 

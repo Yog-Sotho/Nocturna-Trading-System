@@ -5,15 +5,23 @@ Production-grade authentication and user management endpoints.
 """
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from flask import Blueprint, g, jsonify, request
 from flask_cors import cross_origin
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from src.middleware.auth import create_token, generate_api_key, hash_api_key, require_admin, require_auth, token_manager
+from src.middleware.auth import (
+    API_KEY_SCOPES,
+    create_token,
+    generate_api_key,
+    hash_api_key,
+    require_admin,
+    require_auth,
+    token_manager,
+)
 from src.middleware.security import ip_manager
-from src.models.user import AuditLog, User, db
+from src.models.user import APIKey, AuditLog, User, db
 from src.utils.logger import get_audit_logger
 from src.utils.validators import validate_login, validate_registration
 
@@ -462,29 +470,11 @@ def change_password(user_id):
 @user_bp.route('/api-keys', methods=['GET'])
 @require_auth
 def list_api_keys():
-    """List user's API keys."""
+    """List the caller's API keys (metadata only)."""
     try:
         user_id = int(getattr(g, 'user_id', 0))
-        user = User.query.get(user_id)
-
-        if not user:
-            return format_response(False, error='User not found', status_code=404)
-
-        api_keys = user.api_keys or []
-
-        # Return keys without showing the actual key
-        safe_keys = [{
-            'id': k.get('id'),
-            'name': k.get('name'),
-            'permissions': k.get('permissions', []),
-            'created_at': k.get('created_at'),
-            'expires_at': k.get('expires_at'),
-            'last_used': k.get('last_used'),
-            'use_count': k.get('use_count', 0),
-            'is_active': k.get('is_active', True)
-        } for k in api_keys]
-
-        return format_response(True, data={'api_keys': safe_keys})
+        keys = APIKey.query.filter_by(user_id=user_id).order_by(APIKey.created_at.desc()).all()
+        return format_response(True, data={'api_keys': [k.to_dict() for k in keys]})
 
     except Exception as e:
         logger.error(f"List API keys error: {e}")
@@ -494,49 +484,60 @@ def list_api_keys():
 @user_bp.route('/api-keys', methods=['POST'])
 @require_auth
 def create_api_key():
-    """Create a new API key."""
+    """
+    Create an API key for the caller.
+
+    Body: name (str), description (str), permissions (subset of "read", "trade";
+    default ["read"]), expires_in_days (1-365, optional).
+    API keys can never carry admin rights.
+    """
     try:
         user_id = int(getattr(g, 'user_id', 0))
-        user = User.query.get(user_id)
-
+        user = db.session.get(User, user_id)
         if not user:
             return format_response(False, error='User not found', status_code=404)
 
-        data = request.get_json() or {}
-        name = data.get('name', 'API Key')
-        description = data.get('description', '')
+        data = request.get_json(silent=True) or {}
+        name = str(data.get('name') or 'API Key')[:100]
+        description = str(data.get('description') or '')[:500]
+
         permissions = data.get('permissions', ['read'])
+        if (not isinstance(permissions, list) or not permissions
+                or not all(isinstance(p, str) and p in API_KEY_SCOPES for p in permissions)):
+            return format_response(
+                False, error=f'permissions must be a non-empty subset of {sorted(API_KEY_SCOPES)}',
+                status_code=400
+            )
 
-        # Generate API key
+        expires_at = None
+        expires_in_days = data.get('expires_in_days')
+        if expires_in_days is not None:
+            if not isinstance(expires_in_days, int) or isinstance(expires_in_days, bool) \
+                    or not 1 <= expires_in_days <= 365:
+                return format_response(False, error='expires_in_days must be an integer from 1 to 365',
+                                       status_code=400)
+            expires_at = datetime.now(UTC) + timedelta(days=expires_in_days)
+
         raw_key = generate_api_key()
-        key_hash = hash_api_key(raw_key)
-
-        import uuid
-        key_record = {
-            'id': str(uuid.uuid4()),
-            'name': name,
-            'description': description,
-            'permissions': permissions,
-            'key_hash': key_hash,
-            'created_at': datetime.now(UTC).isoformat(),
-            'expires_at': None,
-            'last_used': None,
-            'use_count': 0,
-            'is_active': True
-        }
-
-        # Add to user's API keys
-        api_keys = user.api_keys or []
-        api_keys.append(key_record)
-        user.api_keys = api_keys
+        record = APIKey(
+            user_id=user.id,
+            key_hash=hash_api_key(raw_key),
+            name=name,
+            description=description,
+            permissions=sorted(set(permissions)),
+            is_active=True,
+            expires_at=expires_at,
+        )
+        db.session.add(record)
         db.session.commit()
 
-        log_audit_event('API_KEY_CREATED', True, {'user_id': user.id, 'name': name})
+        log_audit_event('API_KEY_CREATED', True, {'user_id': user.id, 'key_id': record.id,
+                                                   'permissions': record.permissions})
 
-        # Return the raw key only once
+        # The raw key is returned exactly once and never stored
         return format_response(True, data={
             'api_key': raw_key,
-            'name': name,
+            'key': record.to_dict(),
             'message': 'Store this key securely. It will not be shown again.'
         }, status_code=201)
 
@@ -546,29 +547,20 @@ def create_api_key():
         return format_response(False, error='Failed to create API key', status_code=500)
 
 
-@user_bp.route('/api-keys/<key_id>', methods=['DELETE'])
+@user_bp.route('/api-keys/<int:key_id>', methods=['DELETE'])
 @require_auth
 def revoke_api_key(key_id):
-    """Revoke an API key."""
+    """Revoke one of the caller's API keys."""
     try:
         user_id = int(getattr(g, 'user_id', 0))
-        user = User.query.get(user_id)
-
-        if not user:
-            return format_response(False, error='User not found', status_code=404)
-
-        api_keys = user.api_keys or []
-        original_count = len(api_keys)
-
-        api_keys = [k for k in api_keys if k.get('id') != key_id]
-
-        if len(api_keys) == original_count:
+        record = APIKey.query.filter_by(id=key_id, user_id=user_id).first()
+        if record is None or not record.is_active:
             return format_response(False, error='API key not found', status_code=404)
 
-        user.api_keys = api_keys
+        record.is_active = False
         db.session.commit()
 
-        log_audit_event('API_KEY_REVOKED', True, {'user_id': user.id, 'key_id': key_id})
+        log_audit_event('API_KEY_REVOKED', True, {'user_id': user_id, 'key_id': key_id})
 
         return format_response(True, message='API key revoked')
 

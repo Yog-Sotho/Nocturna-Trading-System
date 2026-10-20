@@ -191,91 +191,81 @@ class TokenManager:
 
 
 # =============================================================================
-# API Key Manager
+# API keys (database-backed)
 # =============================================================================
 
+API_KEY_PREFIX = "ntr_"
+API_KEY_SCOPES = frozenset({"read", "trade"})
 
-class APIKeyManager:
+#: Roles an API key can carry. Keys never grant admin.
+READER_ROLE = "reader"
+TRADER_ROLE = "trader"
+
+
+def generate_api_key() -> str:
+    """Generate a high-entropy API key string."""
+    return f"{API_KEY_PREFIX}{secrets.token_urlsafe(32)}"
+
+
+def _api_key_pepper() -> bytes:
     """
-    In-memory API key registry used by routes and tests.
+    Server-side secret mixed into API key hashes.
 
-    Methods:
-      register_key(raw_key, user_id, permissions=None, expires_at=None)
-      validate_key(raw_key) -> metadata dict | None
-      revoke_key(raw_key) -> bool
+    Uses API_KEY_PEPPER when set (required in production). Otherwise it is
+    derived from SECRET_KEY, so keys stay valid as long as SECRET_KEY does.
     """
+    settings = current_app.extensions.get("settings")
+    if settings is not None and settings.api_key_pepper is not None:
+        return settings.api_key_pepper.get_secret_value().encode()
+    return hmac.new(
+        current_app.config["SECRET_KEY"].encode(), b"nocturna-api-key-pepper", hashlib.sha256
+    ).hexdigest().encode()
 
-    def __init__(self, app: Flask | None = None) -> None:
-        self._server_pepper = os.environ.get("API_KEY_PEPPER", secrets.token_hex(32))
-        self._keys: dict[str, dict[str, Any]] = {}
-        self._lock = threading.RLock()
-        if app is not None:
-            self.init_app(app)
 
-    def init_app(self, app: Flask) -> None:
-        app.extensions = getattr(app, "extensions", {})
-        app.extensions["api_key_manager"] = self
+def hash_api_key(raw_key: str) -> str:
+    """Hash an API key for storage and lookup (HMAC-SHA256 with the server pepper)."""
+    return hmac.new(_api_key_pepper(), raw_key.encode(), hashlib.sha256).hexdigest()
 
-    def _hash_key(self, api_key: str) -> str:
-        return hmac.new(
-            self._server_pepper.encode(),
-            api_key.encode(),
-            hashlib.sha256,
-        ).hexdigest()
 
-    def register_key(
-        self,
-        raw_key: str,
-        user_id: str | int,
-        permissions: list[str] | None = None,
-        expires_at: datetime | None = None,
-        name: str = "API Key",
-    ) -> str:
-        """Register a raw API key. Returns the key hash."""
-        key_hash = self._hash_key(raw_key)
-        with self._lock:
-            self._keys[key_hash] = {
-                "user_id": str(user_id),
-                "permissions": permissions or ["read"],
-                "scopes": permissions or ["read"],
-                "name": name,
-                "created_at": datetime.now(UTC),
-                "expires_at": expires_at,
-                "last_used": None,
-                "use_count": 0,
-                "is_active": True,
-            }
-        return key_hash
+def roles_for_api_key(scopes: list[str], owner_roles: list[str], owner_is_admin: bool) -> list[str]:
+    """
+    Roles granted by a key: never more than its scopes, never more than its owner.
 
-    def validate_key(self, api_key: str) -> dict[str, Any] | None:
-        """Validate an API key. Returns metadata or None."""
-        if not api_key:
-            return None
-        key_hash = self._hash_key(api_key)
-        with self._lock:
-            meta = self._keys.get(key_hash)
-            if not meta or not meta.get("is_active", True):
-                return None
-            expires_at = meta.get("expires_at")
-            if expires_at is not None and expires_at < datetime.now(UTC):
-                return None
-            meta["last_used"] = datetime.now(UTC)
-            meta["use_count"] = int(meta.get("use_count", 0)) + 1
-            return {
-                "user_id": meta["user_id"],
-                "permissions": meta.get("permissions", []),
-                "scopes": meta.get("scopes", meta.get("permissions", [])),
-                "name": meta.get("name"),
-            }
+    "read" grants the reader role; "trade" adds the trader role only if the
+    owner can trade. Admin is never granted through an API key.
+    """
+    roles = [READER_ROLE]
+    can_trade = owner_is_admin or TRADER_ROLE in (owner_roles or [])
+    if "trade" in scopes and can_trade:
+        roles.append(TRADER_ROLE)
+    return roles
 
-    def revoke_key(self, raw_key: str) -> bool:
-        """Revoke by raw key value."""
-        key_hash = self._hash_key(raw_key)
-        with self._lock:
-            if key_hash not in self._keys:
-                return False
-            self._keys[key_hash]["is_active"] = False
-            return True
+
+def authenticate_api_key(raw_key: str) -> tuple[str, str, list[str]] | None:
+    """
+    Validate a raw API key against the database.
+
+    Returns:
+        (user_id, username, roles) for an active, unexpired key whose owner is
+        active, otherwise None.
+    """
+    from src.models.user import APIKey, db
+
+    if not raw_key or not raw_key.startswith(API_KEY_PREFIX):
+        return None
+
+    record = APIKey.query.filter_by(key_hash=hash_api_key(raw_key)).first()
+    if record is None or not record.is_valid():
+        return None
+    owner = record.user
+    if owner is None or not owner.is_active:
+        return None
+
+    record.increment_usage()
+    db.session.commit()
+    return str(owner.id), owner.username, roles_for_api_key(
+        record.permissions or [], owner.roles or [], bool(owner.is_admin)
+    )
 
 
 # =============================================================================
@@ -283,7 +273,6 @@ class APIKeyManager:
 # =============================================================================
 
 token_manager = TokenManager()
-api_key_manager = APIKeyManager()
 
 
 def create_token(user_id: str, user_data: dict | None = None) -> str:
@@ -291,20 +280,38 @@ def create_token(user_id: str, user_data: dict | None = None) -> str:
     return token_manager.create_access_token(user_id, user_data or {})
 
 
-def generate_api_key() -> str:
-    """Generate a high-entropy API key string."""
-    return f"ntr_{secrets.token_urlsafe(32)}"
-
-
-def hash_api_key(raw_key: str) -> str:
-    """Hash an API key for storage (HMAC-SHA256)."""
-    pepper = os.environ.get("API_KEY_PEPPER", "nocturna-default-pepper-change-in-production")
-    return hmac.new(pepper.encode(), raw_key.encode(), hashlib.sha256).hexdigest()
-
-
 # =============================================================================
 # Decorators
 # =============================================================================
+
+
+def _authenticate_request() -> bool:
+    """Populate g.user_id/username/roles/auth_method from a bearer token or API key."""
+    auth_header = request.headers.get("Authorization", "")
+    api_key = request.headers.get("X-API-Key", "")
+
+    if auth_header.startswith("Bearer "):
+        tm = current_app.extensions.get("token_manager", token_manager)
+        try:
+            claims = tm.verify_token(auth_header[7:], token_type="access")
+        except jwt.InvalidTokenError:
+            claims = None
+        if claims is not None:
+            g.user_id = claims["sub"]
+            g.username = claims.get("username", str(claims["sub"]))
+            g.roles = claims.get("roles", [])
+            g.auth_method = "jwt"
+            g.trading_mode = claims.get("trading_mode", "PAPER")
+            return True
+
+    if api_key:
+        result = authenticate_api_key(api_key)
+        if result is not None:
+            g.user_id, g.username, g.roles = result
+            g.auth_method = "api_key"
+            return True
+
+    return False
 
 
 def require_auth(f: Callable) -> Callable:
@@ -312,74 +319,16 @@ def require_auth(f: Callable) -> Callable:
 
     @wraps(f)
     def decorated_function(*args: Any, **kwargs: Any) -> Any:
-        auth_header = request.headers.get("Authorization", "")
-        api_key = request.headers.get("X-API-Key", "")
-
-        user_id = None
-        username = None
-        roles: list[str] = []
-        auth_method = None
-
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-            tm = current_app.extensions.get("token_manager", token_manager)
-            try:
-                claims = tm.verify_token(token, token_type="access")
-                user_id = claims["sub"]
-                username = claims.get("username", str(user_id))
-                roles = claims.get("roles", [])
-                auth_method = "jwt"
-                g.trading_mode = claims.get("trading_mode", "PAPER")
-                g.trading_disabled = claims.get("trading_disabled", False)
-            except Exception:
-                pass
-
-        if not user_id and api_key:
-            km = current_app.extensions.get("api_key_manager", api_key_manager)
-            metadata = km.validate_key(api_key)
-            if metadata:
-                user_id = metadata["user_id"]
-                username = f"api_key_{user_id}"
-                roles = metadata.get("permissions") or metadata.get("scopes") or []
-                auth_method = "api_key"
-
-        if not user_id:
+        if not _authenticate_request():
             time.sleep(0.05)
             return {"success": False, "error": "Authentication required"}, 401
-
-        g.user_id = user_id
-        g.username = username
-        g.roles = roles
-        g.auth_method = auth_method
-        return f(*args, **kwargs)
-
-    return decorated_function
-
-
-def require_api_key(f: Callable) -> Callable:
-    """Require X-API-Key authentication specifically."""
-
-    @wraps(f)
-    def decorated_function(*args: Any, **kwargs: Any) -> Any:
-        api_key = request.headers.get("X-API-Key", "")
-        if not api_key:
-            return {"success": False, "error": "API key required"}, 401
-        km = current_app.extensions.get("api_key_manager", api_key_manager)
-        metadata = km.validate_key(api_key)
-        if not metadata:
-            time.sleep(0.05)
-            return {"success": False, "error": "Invalid API key"}, 401
-        g.user_id = metadata["user_id"]
-        g.username = f"api_key_{metadata['user_id']}"
-        g.roles = metadata.get("permissions") or metadata.get("scopes") or []
-        g.auth_method = "api_key"
         return f(*args, **kwargs)
 
     return decorated_function
 
 
 def require_roles(*required_roles: str) -> Callable:
-    """Require one of the given roles."""
+    """Require one of the given roles (admin satisfies every role)."""
 
     def decorator(f: Callable) -> Callable:
         @wraps(f)
@@ -402,10 +351,21 @@ def require_admin(f: Callable) -> Callable:
 
 
 def require_trading_permissions(f: Callable) -> Callable:
-    """Enforce trading mode consistency."""
+    """
+    Require the trader role, an account allowed to trade, and a consistent mode.
+
+    The trading_disabled flag is read from the database on every request, so
+    an admin disabling an account takes effect immediately.
+    """
+    from src.models.user import User, db
 
     @wraps(f)
+    @require_roles(TRADER_ROLE)
     def decorated_function(*args: Any, **kwargs: Any) -> Any:
+        user = db.session.get(User, int(g.user_id)) if str(g.user_id).isdigit() else None
+        if user is None or not user.is_active or user.trading_disabled:
+            return {"success": False, "error": "Trading is disabled for this account"}, 403
+
         trading_mode = os.environ.get("TRADING_MODE", "PAPER").upper()
         user_trading_mode = getattr(g, "trading_mode", "PAPER")
         if user_trading_mode == "LIVE" and trading_mode != "LIVE":
@@ -420,27 +380,7 @@ def optional_auth(f: Callable) -> Callable:
 
     @wraps(f)
     def decorated_function(*args: Any, **kwargs: Any) -> Any:
-        auth_header = request.headers.get("Authorization", "")
-        api_key = request.headers.get("X-API-Key", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-            tm = current_app.extensions.get("token_manager", token_manager)
-            try:
-                claims = tm.verify_token(token, token_type="access")
-                g.user_id = claims["sub"]
-                g.username = claims.get("username", str(claims["sub"]))
-                g.roles = claims.get("roles", [])
-                g.auth_method = "jwt"
-            except Exception:
-                pass
-        elif api_key:
-            km = current_app.extensions.get("api_key_manager", api_key_manager)
-            metadata = km.validate_key(api_key)
-            if metadata:
-                g.user_id = metadata["user_id"]
-                g.username = f"api_key_{metadata['user_id']}"
-                g.roles = metadata.get("permissions") or []
-                g.auth_method = "api_key"
+        _authenticate_request()
         return f(*args, **kwargs)
 
     return decorated_function

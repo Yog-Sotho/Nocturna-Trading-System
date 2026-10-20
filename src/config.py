@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     flask_secret_key: SecretStr | None = None
     jwt_secret_key: SecretStr | None = None
     jwt_expiration_hours: int = Field(default=1, ge=1, le=24)
+    api_key_pepper: SecretStr | None = None
 
     # Storage
     database_url: str | None = None
@@ -52,7 +53,8 @@ class Settings(BaseSettings):
     paper_commission_rate: float = Field(default=0.001, ge=0, le=0.05)
     paper_slippage_rate: float = Field(default=0.0005, ge=0, le=0.05)
 
-    @field_validator("flask_secret_key", "jwt_secret_key", "database_url", "redis_url", mode="before")
+    @field_validator("flask_secret_key", "jwt_secret_key", "api_key_pepper", "database_url", "redis_url",
+                     mode="before")
     @classmethod
     def _blank_is_unset(cls, value: object) -> object:
         """Treat empty env vars (e.g. `FLASK_SECRET_KEY=`) as unset."""
@@ -75,7 +77,11 @@ class Settings(BaseSettings):
     def production_problems(self) -> list[str]:
         """Return every reason this configuration is unsafe for production."""
         problems: list[str] = []
-        secrets = {"FLASK_SECRET_KEY": self.flask_secret_key, "JWT_SECRET_KEY": self.jwt_secret_key}
+        secrets = {
+            "FLASK_SECRET_KEY": self.flask_secret_key,
+            "JWT_SECRET_KEY": self.jwt_secret_key,
+            "API_KEY_PEPPER": self.api_key_pepper,
+        }
         for name, secret in secrets.items():
             if secret is None:
                 problems.append(f"{name} must be set")
@@ -96,6 +102,22 @@ class Settings(BaseSettings):
         if self.database_url is None or self.database_url.startswith("sqlite"):
             problems.append("DATABASE_URL must point at a server database (PostgreSQL)")
         return problems
+
+
+def ensure_sqlite_directory(database_url: str) -> None:
+    """
+    Create the parent directory of an absolute file-based SQLite URL.
+
+    The default database directory holds only git-ignored files, so a fresh
+    checkout does not have it. Relative paths are left alone because
+    Flask-SQLAlchemy resolves them against the instance folder.
+    """
+    prefix = "sqlite:///"
+    if not database_url.startswith(prefix):
+        return
+    path = Path(database_url[len(prefix):])
+    if path.is_absolute():
+        path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def load_settings() -> Settings:

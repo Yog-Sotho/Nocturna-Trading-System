@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from flask import Flask, g, jsonify, request, send_from_directory
 from flask_cors import CORS
 
-from src.config import load_settings
+from src.config import ensure_sqlite_directory, load_settings
 from src.core.safety import assert_paper_only
 from src.middleware.security import setup_rate_limiting, setup_security_headers
 from src.models.user import db
@@ -67,6 +67,7 @@ def create_app(config_override=None):
     # DATABASE CONFIGURATION
     # =============================================================================
     database_url = settings.resolved_database_url
+    ensure_sqlite_directory(database_url)
     app.config['SQLALCHEMY_DATABASE_URI'] = database_url
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
@@ -323,11 +324,9 @@ def create_app(config_override=None):
     return app
 
 
-# Create the default application instance
-app = create_app()
-
-
 if __name__ == '__main__':
+    app = create_app()
+
     # =============================================================================
     # PRODUCTION WARNING
     # =============================================================================
