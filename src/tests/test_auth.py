@@ -237,3 +237,91 @@ class TestCreateAdminCommand:
         ])
         assert result.exit_code != 0
         assert "already exists" in result.output
+
+
+class TestLoginLockout:
+    """Regression tests for the naive/aware datetime crash and account enumeration."""
+
+    PASSWORD = "SecureP@ss123"
+
+    def _login(self, client, username, password):
+        return client.post("/api/auth/login", json={"username": username, "password": password})
+
+    def _clear_ip_lockout(self):
+        from src.middleware.security import ip_manager
+        ip_manager.blacklist.clear()
+        ip_manager.failed_attempts.clear()
+
+    def _fail_five_times(self, client):
+        for _ in range(5):
+            self._login(client, "testuser", "WrongP@ssword1")
+            self._clear_ip_lockout()  # isolate account lockout from IP lockout
+
+    def test_locked_account_returns_401_not_500(self, client, test_user):
+        self._fail_five_times(client)
+        resp = self._login(client, "testuser", self.PASSWORD)
+        assert resp.status_code == 401
+        assert resp.get_json()["error"] == "Invalid credentials"
+
+    def test_login_works_again_after_lock_expires(self, app, client, test_user):
+        from datetime import UTC, datetime, timedelta
+
+        self._fail_five_times(client)
+        with app.app_context():
+            user = User.query.filter_by(username="testuser").first()
+            assert user.is_locked()
+            user.locked_until = datetime.now(UTC) - timedelta(seconds=1)
+            _db_commit()
+
+        resp = self._login(client, "testuser", self.PASSWORD)
+        assert resp.status_code == 200
+
+    def test_expired_lock_starts_a_fresh_failure_count(self, app, client, test_user):
+        from datetime import UTC, datetime, timedelta
+
+        self._fail_five_times(client)
+        with app.app_context():
+            user = User.query.filter_by(username="testuser").first()
+            user.locked_until = datetime.now(UTC) - timedelta(seconds=1)
+            _db_commit()
+
+        self._login(client, "testuser", "WrongP@ssword1")
+        with app.app_context():
+            user = User.query.filter_by(username="testuser").first()
+            assert user.failed_login_attempts == 1
+            assert not user.is_locked()
+
+    def test_unknown_and_locked_accounts_are_indistinguishable(self, client, test_user):
+        unknown = self._login(client, "nosuchuser", self.PASSWORD)
+        self._clear_ip_lockout()
+        self._fail_five_times(client)
+        locked = self._login(client, "testuser", self.PASSWORD)
+        assert unknown.status_code == locked.status_code == 401
+        assert unknown.get_json()["error"] == locked.get_json()["error"]
+
+    def test_expires_in_matches_token_lifetime(self, client, test_user):
+        resp = self._login(client, "testuser", self.PASSWORD)
+        assert resp.status_code == 200
+        assert resp.get_json()["data"]["expires_in"] == 3600
+
+
+def _db_commit():
+    from src.models.user import db
+    db.session.commit()
+
+
+class TestUTCDateTime:
+    def test_round_trip_returns_aware_utc(self, app, db, test_user):
+        from datetime import UTC, datetime, timedelta, timezone
+
+        local = datetime(2026, 1, 1, 12, 0, tzinfo=timezone(timedelta(hours=2)))
+        with app.app_context():
+            user = User.query.filter_by(username="testuser").first()
+            user.last_login = local
+            db.session.commit()
+            db.session.expire_all()
+            reloaded = User.query.filter_by(username="testuser").first().last_login
+        assert reloaded.tzinfo is not None
+        assert reloaded == local
+        assert reloaded.utcoffset() == timedelta(0)
+        assert reloaded.tzinfo == UTC

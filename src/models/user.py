@@ -9,9 +9,38 @@ from datetime import UTC, datetime
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
+from sqlalchemy.types import TypeDecorator
 from werkzeug.security import check_password_hash, generate_password_hash
 
 db = SQLAlchemy()
+
+
+class UTCDateTime(TypeDecorator):
+    """
+    Timezone-safe datetime column.
+
+    Values are stored as naive UTC (portable across SQLite and PostgreSQL) and
+    always returned as timezone-aware UTC, so comparisons with
+    ``datetime.now(UTC)`` never mix naive and aware values. Naive inputs are
+    interpreted as UTC.
+    """
+
+    impl = DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value
+        return value.astimezone(UTC).replace(tzinfo=None)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
 
 class User(db.Model):
@@ -38,14 +67,14 @@ class User(db.Model):
     settings = Column(JSON, default=dict)
 
     # Timestamps
-    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
-    updated_at = Column(DateTime, default=lambda: datetime.now(UTC),
+    created_at = Column(UTCDateTime, default=lambda: datetime.now(UTC))
+    updated_at = Column(UTCDateTime, default=lambda: datetime.now(UTC),
                         onupdate=lambda: datetime.now(UTC))
-    last_login = Column(DateTime)
+    last_login = Column(UTCDateTime)
 
     # Security
     failed_login_attempts = Column(Integer, default=0)
-    locked_until = Column(DateTime)
+    locked_until = Column(UTCDateTime)
 
     def set_password(self, password: str) -> None:
         """Hash and set the user's password."""
@@ -79,8 +108,11 @@ class User(db.Model):
         self.locked_until = None
 
     def increment_failed_logins(self) -> None:
-        """Increment failed login counter."""
-        self.failed_login_attempts += 1
+        """Increment failed login counter; an expired lock starts a fresh count."""
+        if self.locked_until is not None and not self.is_locked():
+            self.failed_login_attempts = 0
+            self.locked_until = None
+        self.failed_login_attempts = (self.failed_login_attempts or 0) + 1
         if self.failed_login_attempts >= 5:
             self.lock_account()
 
@@ -126,9 +158,9 @@ class APIKey(db.Model):
     rate_limit = Column(Integer, default=100)  # requests per minute
 
     # Timestamps
-    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
-    expires_at = Column(DateTime)
-    last_used = Column(DateTime)
+    created_at = Column(UTCDateTime, default=lambda: datetime.now(UTC))
+    expires_at = Column(UTCDateTime)
+    last_used = Column(UTCDateTime)
     use_count = Column(Integer, default=0)
 
     # Relationship
@@ -154,7 +186,7 @@ class AuditLog(db.Model):
     __tablename__ = 'audit_logs'
 
     id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, default=lambda: datetime.now(UTC), index=True)
+    timestamp = Column(UTCDateTime, default=lambda: datetime.now(UTC), index=True)
 
     # Event details
     event_type = Column(String(50), nullable=False, index=True)
@@ -201,7 +233,7 @@ class TradeRecord(db.Model):
     __tablename__ = 'trade_records'
 
     id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, default=lambda: datetime.now(UTC), index=True)
+    timestamp = Column(UTCDateTime, default=lambda: datetime.now(UTC), index=True)
 
     # Trade details
     order_id = Column(String(100), index=True)
@@ -263,8 +295,8 @@ class SystemConfig(db.Model):
     category = Column(String(50), index=True)
 
     # Timestamps
-    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
-    updated_at = Column(DateTime, default=lambda: datetime.now(UTC),
+    created_at = Column(UTCDateTime, default=lambda: datetime.now(UTC))
+    updated_at = Column(UTCDateTime, default=lambda: datetime.now(UTC),
                         onupdate=lambda: datetime.now(UTC))
     updated_by = Column(Integer, ForeignKey('users.id'))
 

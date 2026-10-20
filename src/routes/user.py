@@ -5,10 +5,11 @@ Production-grade authentication and user management endpoints.
 """
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from flask import Blueprint, g, jsonify, request
 from flask_cors import cross_origin
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from src.middleware.auth import create_token, generate_api_key, hash_api_key, require_admin, require_auth, token_manager
 from src.middleware.security import ip_manager
@@ -18,6 +19,9 @@ from src.utils.validators import validate_login, validate_registration
 
 user_bp = Blueprint('user', __name__)
 logger = logging.getLogger(__name__)
+
+# Hash checked when no real hash applies, so failed logins take the same time
+_DUMMY_PASSWORD_HASH = generate_password_hash('nocturna-dummy-password', method='pbkdf2:sha256', salt_length=32)
 
 
 # =============================================================================
@@ -94,20 +98,19 @@ def login():
             (User.email == validated_data.username)
         ).first()
 
+        # Unknown, locked and inactive accounts all get the same response, and a
+        # password hash is always checked, so callers cannot enumerate accounts
         if not user:
+            check_password_hash(_DUMMY_PASSWORD_HASH, validated_data.password)
             ip_manager.record_failed_attempt(client_ip)
             log_audit_event('LOGIN_FAILED', False, {'reason': 'User not found'})
             return format_response(False, error='Invalid credentials', status_code=401)
 
-        # Check if account is locked
-        if user.is_locked():
-            log_audit_event('LOGIN_FAILED', False, {'user_id': user.id, 'reason': 'Account locked'})
-            return format_response(False, error='Account locked. Try again later.', status_code=403)
-
-        # Check if account is active
-        if not user.is_active:
-            log_audit_event('LOGIN_FAILED', False, {'user_id': user.id, 'reason': 'Account inactive'})
-            return format_response(False, error='Account is inactive', status_code=403)
+        if user.is_locked() or not user.is_active:
+            check_password_hash(_DUMMY_PASSWORD_HASH, validated_data.password)
+            reason = 'Account locked' if user.is_locked() else 'Account inactive'
+            log_audit_event('LOGIN_FAILED', False, {'user_id': user.id, 'reason': reason})
+            return format_response(False, error='Invalid credentials', status_code=401)
 
         # Verify password
         if not user.check_password(validated_data.password):
@@ -144,7 +147,7 @@ def login():
             'access_token': access_token,
             'refresh_token': refresh_token,
             'token_type': 'Bearer',
-            'expires_in': int(timedelta(hours=24).total_seconds()),
+            'expires_in': int(token_manager.access_token_expires.total_seconds()),
             'user': user.to_dict()
         })
 
@@ -196,7 +199,7 @@ def refresh_token():
         return format_response(True, data={
             'access_token': access_token,
             'token_type': 'Bearer',
-            'expires_in': int(timedelta(hours=24).total_seconds())
+            'expires_in': int(token_manager.access_token_expires.total_seconds())
         })
 
     except Exception as e:
