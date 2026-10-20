@@ -353,7 +353,7 @@ if __name__ == '__main__':
             "=" * 80 + "\n"
             "WARNING: Running Flask development server in PRODUCTION mode!\n"
             "Use a production WSGI server (gunicorn, uwsgi) instead:\n"
-            "gunicorn -w 4 -b 0.0.0.0:5000 'src.main:create_app()' --timeout 120\n"
+            "gunicorn -c gunicorn.conf.py 'src.main:create_app()'\n"
             "=" * 80
         )
 

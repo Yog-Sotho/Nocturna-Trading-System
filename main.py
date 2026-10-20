@@ -5,7 +5,8 @@ This file is a thin shim for local development only.
 The canonical app factory lives in src/main.py.
 
 Production deployments use:
-    gunicorn 'src.main:create_app()' --workers 4 --bind 0.0.0.0:5000
+    gunicorn -c gunicorn.conf.py 'src.main:create_app()'
+    (single worker — the engine keeps state in memory; see gunicorn.conf.py)
 
 Local development:
     python main.py
@@ -27,7 +28,7 @@ if __name__ == "__main__":
         logging.critical(
             "=" * 80 + "\n"
             "WARNING: Running Flask dev server in PRODUCTION mode!\n"
-            "Use: gunicorn 'src.main:create_app()' --workers 4 --bind 0.0.0.0:5000\n"
+            "Use: gunicorn -c gunicorn.conf.py 'src.main:create_app()'\n"
             + "=" * 80
         )
 
