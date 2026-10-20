@@ -160,9 +160,12 @@ src/
 | 2 | Event-driven core with identical backtest / paper / live code paths and broker reconciliation |
 | 3 | Risk engine: pre-trade controls, equity-based loss limits, kill switch, volatility-targeted sizing |
 | 4 | Validation pipeline: walk-forward, purged cross-validation, deflated Sharpe ratio, overfitting tests |
-| 5 | Strategy rebuild, each mode admitted only if it passes the validation gates |
+| 5 | Strategy rebuild (trend, month-end rebalancing flows, crypto breakout, reversal), each admitted only if it passes the validation gates |
 | 6–8 | Operations, API and dashboard, CI quality gates |
 | 9 | Paper-trading soak, then a staged live ramp |
+
+The full plan, operator decisions, strategy lineup and promotion gates are in
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## License
 
