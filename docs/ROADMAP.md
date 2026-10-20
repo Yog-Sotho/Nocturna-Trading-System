@@ -62,7 +62,7 @@ stock selection needs full-market real-time volume, which requires a $99/month d
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Safety freeze: paper-only guard, closed registration, no fabricated data, truthful README | Done |
-| 1 | Platform foundations: dependency clean-up with hashed lockfile, validated settings, auth fixes, DB-backed scoped API keys, token revocation, enforced rate limits, proxy-aware client IPs, Alembic migrations + PostgreSQL, persisted audit log | In progress |
+| 1 | Platform foundations: dependency clean-up with hashed lockfile, validated settings, auth fixes, DB-backed scoped API keys, token revocation, enforced rate limits, proxy-aware client IPs, Alembic migrations + PostgreSQL, persisted audit log | Done |
 | 2 | Event-driven core: domain model, event flow, one broker interface (simulated + Alpaca via `alpaca-py`), data layer with explicit ranges and closed bars, removal of the legacy engine and `alpaca-trade-api` | Planned |
 | 3 | Risk engine: pre-trade controls (price collar, size/exposure caps, duplicate detection, kill switch), equity-based loss limits, volatility-targeted sizing, PDT logic removed | Planned |
 | 4 | Validation pipeline: walk-forward, combinatorial purged cross-validation, deflated Sharpe, overfitting probability, cost stress, regime splits, tear sheets | Planned |
@@ -78,5 +78,8 @@ stock selection needs full-market real-time volume, which requires a $99/month d
   `websockets<11`, which carry known advisories. It is removed in Phase 2 together with the
   legacy engine, when the `alpaca-py` broker adapter replaces it. Until then the dependency
   audit in CI ignores only those pinned advisories, each listed explicitly.
-- Tables for orders, fills and positions arrive with the Phase 2 domain model; Phase 1 adds
+- Tables for orders, fills and positions arrive with the Phase 2 domain model; Phase 1 added
   the migration framework, API keys and the audit log.
+- Until Phase 2 persists them, positions, orders and risk state live in the single gunicorn
+  worker's memory and are lost when it restarts. Phase 1 stopped the routine recycling
+  (`max_requests`), but a crash or redeploy still clears them.

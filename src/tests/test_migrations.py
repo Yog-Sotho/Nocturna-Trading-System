@@ -122,7 +122,19 @@ def test_create_app_migrates_a_fresh_database(tmp_path):
         "app = create_app()\n"
         "assert db_migrations.current_revision(app) == db_migrations.head_revision()\n"
     )
+    # create_app() must leave no pooled connection behind for a forked worker to inherit
+    code = code.replace("app = create_app()\n", "app = create_app()\n"
+                        "from src.models.user import db\n"
+                        "with app.app_context():\n"
+                        "    assert db.engine.pool.checkedin() == 0, db.engine.pool.status()\n")
     result = subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT, env=env,
                             capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stderr[-2000:]
     assert db_path.exists()
+
+
+def test_gunicorn_runs_one_worker_that_is_never_recycled():
+    import runpy
+    config = runpy.run_path(str(REPO_ROOT / "gunicorn.conf.py"))
+    assert config["workers"] == 1
+    assert config["max_requests"] == 0

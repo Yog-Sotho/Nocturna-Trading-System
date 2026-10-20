@@ -167,6 +167,9 @@ def create_app(config_override=None):
     if not app.config.get('TESTING'):
         # The schema is owned by the migrations; tests build theirs per test
         upgrade_database(app)
+        with app.app_context():
+            # gunicorn preloads the app and forks: no pooled connection may be inherited
+            db.engine.dispose()
 
     # =============================================================================
     # INITIALIZE AUTH TOKEN MANAGER
