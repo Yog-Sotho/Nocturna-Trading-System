@@ -336,7 +336,7 @@ def start_engine():
             return format_response(
                 True,
                 message='Engine started',
-                data={'state': engine.state}
+                data={'state': engine.state.value}
             )
         else:
             return format_response(
@@ -375,7 +375,7 @@ def stop_engine():
             return format_response(
                 True,
                 message='Engine stopped',
-                data={'state': engine.state}
+                data={'state': engine.state.value}
             )
         else:
             return format_response(
@@ -414,7 +414,7 @@ def pause_engine():
             return format_response(
                 True,
                 message='Engine paused',
-                data={'state': engine.state}
+                data={'state': engine.state.value}
             )
         else:
             return format_response(
@@ -453,7 +453,7 @@ def resume_engine():
             return format_response(
                 True,
                 message='Engine resumed',
-                data={'state': engine.state}
+                data={'state': engine.state.value}
             )
         else:
             return format_response(
@@ -501,20 +501,19 @@ def emergency_stop():
             f"Request ID: {getattr(g, 'request_id', 'unknown')}"
         )
 
-        # Trigger emergency stop
-        engine.emergency_stop(reason)
+        # The flag must be set before the stop: emergency_stop() reads it to decide
+        # whether to submit closing orders
+        engine.config['emergency_close_positions'] = validated_data.close_all_positions
 
-        # Update config for position closing
-        if validated_data.close_all_positions:
-            engine.config['emergency_close_positions'] = True
+        engine.emergency_stop(reason)
 
         return format_response(
             True,
             message='Emergency stop executed',
             data={
-                'state': engine.state,
+                'state': engine.state.value,
                 'reason': reason,
-                'positions_closed': validated_data.close_all_positions
+                'close_orders_submitted': validated_data.close_all_positions
             }
         )
 
@@ -709,29 +708,18 @@ def update_config():
 @require_admin
 def start_optimization():
     """
-    Start ML optimization process.
+    ML parameter optimization — not implemented yet (returns 501).
     Requires authentication and admin permissions.
     """
-    try:
-        # This would trigger the ML optimizer in a real implementation
-        # For now, return a placeholder response
-        logger.info(
-            f"Optimization requested by {getattr(g, 'user_id', 'unknown')} | "
-            f"Request ID: {getattr(g, 'request_id', 'unknown')}"
-        )
-
-        return format_response(
-            True,
-            message='Optimization started (async process)',
-            data={
-                'status': 'started',
-                'estimated_duration': '30-60 minutes'
-            }
-        )
-
-    except Exception as e:
-        logger.error(f"Error starting optimization: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+    logger.info(
+        f"Optimization requested by {getattr(g, 'user_id', 'unknown')} | "
+        f"Request ID: {getattr(g, 'request_id', 'unknown')}"
+    )
+    return format_response(
+        False,
+        error='ML optimization is not implemented yet',
+        status_code=501
+    )
 
 
 # =============================================================================
@@ -771,20 +759,8 @@ def get_equity_curve():
     try:
         engine = get_trading_engine()
 
-        # Get performance history
-        performance_history = engine.performance_history
-
-        if not performance_history:
-            # Generate placeholder data
-            equity_data = []
-            base_value = float(os.environ.get('INITIAL_CAPITAL', 100000))
-            for i in range(30):
-                equity_data.append({
-                    'timestamp': (datetime.now(UTC).timestamp() - (30 - i) * 86400),
-                    'value': base_value * (1 + (i * 0.001 + (i % 3) * 0.003))
-                })
-        else:
-            equity_data = performance_history
+        # Only real recorded history — an empty list when nothing has been recorded yet
+        equity_data = list(engine.performance_history)
 
         log_api_call('GET_EQUITY_CURVE', f"Data points: {len(equity_data)}")
 
