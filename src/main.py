@@ -20,6 +20,7 @@ from werkzeug.exceptions import MethodNotAllowed
 
 from src.config import ensure_sqlite_directory, load_settings
 from src.core.safety import assert_paper_only
+from src.db_migrations import upgrade as upgrade_database
 from src.middleware.security import configure_proxy, setup_rate_limiting, setup_security_headers
 from src.models.user import db
 from src.routes.trading import trading_bp
@@ -163,8 +164,9 @@ def create_app(config_override=None):
     # INITIALIZE DATABASE
     # =============================================================================
     db.init_app(app)
-    with app.app_context():
-        db.create_all()
+    if not app.config.get('TESTING'):
+        # The schema is owned by the migrations; tests build theirs per test
+        upgrade_database(app)
 
     # =============================================================================
     # INITIALIZE AUTH TOKEN MANAGER

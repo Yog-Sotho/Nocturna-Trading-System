@@ -7,7 +7,7 @@ Production-grade SQLAlchemy models for user management and audit logging.
 from datetime import UTC, datetime
 
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 from sqlalchemy.types import TypeDecorator
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -240,7 +240,7 @@ class AuditLog(db.Model):
     # Request information
     ip_address = Column(String(45))  # IPv6 compatible
     user_agent = Column(String(500))
-    request_id = Column(String(32), index=True)
+    request_id = Column(String(64), index=True)
     endpoint = Column(String(200))
     method = Column(String(10))
 
@@ -266,90 +266,6 @@ class AuditLog(db.Model):
             'response_status': self.response_status
         }
 
-
-class TradeRecord(db.Model):
-    """Trade record model for tracking executed trades."""
-
-    __tablename__ = 'trade_records'
-
-    id = Column(Integer, primary_key=True)
-    timestamp = Column(UTCDateTime, default=lambda: datetime.now(UTC), index=True)
-
-    # Trade details
-    order_id = Column(String(100), index=True)
-    symbol = Column(String(10), nullable=False, index=True)
-    side = Column(String(10), nullable=False)  # buy or sell
-    order_type = Column(String(20), nullable=False)
-    quantity = Column(Float, nullable=False)
-    filled_quantity = Column(Float, default=0)
-    avg_fill_price = Column(Float, default=0)
-
-    # Execution
-    broker_order_id = Column(String(100))
-    status = Column(String(20), nullable=False)
-
-    # P&L
-    realized_pnl = Column(Float, default=0)
-    commission = Column(Float, default=0)
-
-    # Metadata
-    trade_metadata = Column(JSON, default=dict)
-
-    # User
-    user_id = Column(Integer, ForeignKey('users.id'), index=True)
-
-    # Trading mode used
-    trading_mode = Column(String(20))
-
-    def to_dict(self) -> dict:
-        """Convert trade record to dictionary."""
-        return {
-            'id': self.id,
-            'timestamp': self.timestamp.isoformat() if self.timestamp else None,
-            'order_id': self.order_id,
-            'symbol': self.symbol,
-            'side': self.side,
-            'order_type': self.order_type,
-            'quantity': self.quantity,
-            'filled_quantity': self.filled_quantity,
-            'avg_fill_price': self.avg_fill_price,
-            'status': self.status,
-            'realized_pnl': self.realized_pnl,
-            'commission': self.commission,
-            'trading_mode': self.trading_mode
-        }
-
-
-class SystemConfig(db.Model):
-    """System configuration model for storing runtime configuration."""
-
-    __tablename__ = 'system_config'
-
-    id = Column(Integer, primary_key=True)
-    key = Column(String(100), unique=True, nullable=False, index=True)
-    value = Column(Text)
-    value_json = Column(JSON)
-
-    # Metadata
-    description = Column(Text)
-    category = Column(String(50), index=True)
-
-    # Timestamps
-    created_at = Column(UTCDateTime, default=lambda: datetime.now(UTC))
-    updated_at = Column(UTCDateTime, default=lambda: datetime.now(UTC),
-                        onupdate=lambda: datetime.now(UTC))
-    updated_by = Column(Integer, ForeignKey('users.id'))
-
-    def get_value(self):
-        """Get the configuration value, parsing JSON if needed."""
-        if self.value_json is not None:
-            return self.value_json
-        return self.value
-
-
-# =============================================================================
-# INITIALIZATION HELPERS
-# =============================================================================
 
 def create_admin_user(username: str, email: str, password: str) -> User:
     """

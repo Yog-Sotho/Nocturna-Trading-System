@@ -74,7 +74,12 @@ class Settings(BaseSettings):
 
     @property
     def resolved_database_url(self) -> str:
-        return self.database_url or f"sqlite:///{DEFAULT_SQLITE_PATH}"
+        """The SQLAlchemy URL; plain PostgreSQL URLs are pointed at the psycopg 3 driver."""
+        url = self.database_url or f"sqlite:///{DEFAULT_SQLITE_PATH}"
+        for scheme in ("postgresql://", "postgres://"):
+            if url.startswith(scheme):
+                return "postgresql+psycopg://" + url[len(scheme):]
+        return url
 
     def production_problems(self) -> list[str]:
         """Return every reason this configuration is unsafe for production."""

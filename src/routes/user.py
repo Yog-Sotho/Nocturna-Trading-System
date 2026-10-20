@@ -21,7 +21,7 @@ from src.middleware.auth import (
 )
 from src.middleware.security import ip_manager
 from src.models.user import ASSIGNABLE_ROLES, APIKey, AuditLog, User, db
-from src.utils.logger import get_audit_logger
+from src.utils.audit import record_audit_event
 from src.utils.validators import validate_login, validate_registration
 
 user_bp = Blueprint('user', __name__)
@@ -37,20 +37,8 @@ _DUMMY_PASSWORD_HASH = generate_password_hash('nocturna-dummy-password', method=
 
 def log_audit_event(event_type: str, success: bool, details: dict = None,
                     error: str = None):
-    """Log an audit event."""
-    audit_logger = get_audit_logger()
-
-    user_id = getattr(g, 'user_id', None)
-    request_id = getattr(g, 'request_id', None)
-
-    if audit_logger and audit_logger.audit_logger:
-        audit_logger.log_event(
-            event_type=event_type,
-            user_id=str(user_id) if user_id else 'anonymous',
-            details=details or {},
-            success=success,
-            request_id=request_id
-        )
+    """Record an audit event (database and audit log file)."""
+    record_audit_event(event_type, success, details, error)
 
 
 def format_response(success: bool, data=None, error: str = None,

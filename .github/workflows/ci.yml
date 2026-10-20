@@ -74,6 +74,20 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      postgres:
+        # Same major version as docker-compose.yml
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: nocturna
+          POSTGRES_PASSWORD: nocturna-ci
+          POSTGRES_DB: nocturna_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nocturna -d nocturna_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - uses: actions/checkout@v4
@@ -95,6 +109,8 @@ jobs:
           FLASK_ENV: testing
           FLASK_SECRET_KEY: ci-test-secret-key-not-for-production-use-1234567890
           REDIS_URL: redis://localhost:6379/0
+          # Migration tests also run against PostgreSQL (src/tests/test_migrations.py)
+          TEST_POSTGRES_URL: postgresql+psycopg://nocturna:nocturna-ci@localhost:5432/nocturna_test
           TRADING_MODE: PAPER
         run: |
           pytest src/tests/ -v --tb=short --cov=src --cov-report=term-missing --cov-fail-under=40

@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from src.core.trading_engine import TradingEngine, TradingEngineState
 from src.middleware.auth import require_admin, require_auth, require_trading_permissions
+from src.utils.audit import record_audit_event
 from src.utils.validators import validate_config_input, validate_emergency_stop, validate_trading_signal
 
 # Create blueprint
@@ -87,11 +88,13 @@ def get_trading_engine() -> TradingEngine:
 # HELPER FUNCTIONS
 # =============================================================================
 
-def log_api_call(action: str, details: str = ''):
-    """Log API call with user context."""
+def log_api_call(action: str, details: str = '', success: bool = True):
+    """Log API call with user context; state-changing calls also go to the audit trail."""
     user_id = getattr(g, 'user_id', 'anonymous')
     request_id = getattr(g, 'request_id', 'unknown')
     logger.info(f"API [{action}] | User: {user_id} | Request ID: {request_id} | {details}")
+    if request.method != 'GET':
+        record_audit_event(action, success, {'details': details})
 
 
 def format_response(success: bool, data: Any = None, error: str = None,
@@ -508,6 +511,11 @@ def emergency_stop():
         engine.config['emergency_close_positions'] = validated_data.close_all_positions
 
         engine.emergency_stop(reason)
+        record_audit_event('EMERGENCY_STOP', True, {
+            'reason': reason,
+            'close_all_positions': validated_data.close_all_positions,
+            'state': engine.state.value,
+        })
 
         return format_response(
             True,
@@ -521,6 +529,7 @@ def emergency_stop():
 
     except Exception as e:
         logger.error(f"Error during emergency stop: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
+        record_audit_event('EMERGENCY_STOP', False, error=type(e).__name__)
         return format_response(False, error='Internal server error', status_code=500)
 
 
@@ -571,7 +580,7 @@ def create_order():
         )
 
         if not is_valid:
-            log_api_call('ORDER_REJECTED', f"Symbol: {signal.symbol} | Reason: {reason}")
+            log_api_call('ORDER_REJECTED', f"Symbol: {signal.symbol} | Reason: {reason}", success=False)
             return format_response(
                 False,
                 error=f'Order rejected by risk manager: {reason}',

@@ -55,7 +55,8 @@ cp .env.example .env
 #   python -c "import secrets; print(secrets.token_hex(32))"
 # Keep TRADING_MODE=PAPER and the paper ALPACA_BASE_URL.
 
-# Create the operator account (prompts for a password)
+# Create the operator account (prompts for a password). The database schema is
+# created and upgraded automatically whenever the app starts.
 flask --app src.main create-admin --email you@example.com
 
 # Development server
@@ -105,7 +106,7 @@ are limited to 1 MB.
 | PUT | `/users/<id>/password` | own account, or admin; revokes all of that user's tokens |
 | GET, POST | `/api-keys` | own keys; `POST` body `{"name": "...", "permissions": ["read", "trade"], "expires_in_days": 90}` returns the key once. Keys are stored hashed, never carry admin rights, and `trade` needs an owner with the trader role |
 | DELETE | `/api-keys/<id>` | revokes one of your keys |
-| GET | `/audit-logs` | admin; the audit table is not yet written to |
+| GET | `/audit-logs` | admin; logins, logouts, password, user and API key changes, orders, engine control, config changes and emergency stops. Filters: `event_type`, `user_id`, `page`, `per_page` |
 
 **Trading engine** (`/api/trading`)
 
@@ -138,7 +139,7 @@ to start and lists every problem if the configuration is unsafe. The ones that m
 | `API_KEY_PEPPER` | Required in production (32+ characters); secret mixed into API key hashes. Changing it invalidates every API key |
 | `TRADING_MODE` | Must be `PAPER` |
 | `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_BASE_URL` | Alpaca paper account; without keys the engine runs in simulation |
-| `DATABASE_URL` | Defaults to SQLite at `src/database/nocturna.db`; PostgreSQL is required in production |
+| `DATABASE_URL` | Defaults to SQLite at `src/database/nocturna.db`; PostgreSQL is required in production (`postgresql://...` URLs use the psycopg 3 driver) |
 | `ALLOWED_ORIGINS` | Required in production (CORS allowlist) |
 | `TRUSTED_PROXY_COUNT` | Number of reverse proxies in front of the app (default 0). Set it behind nginx or a load balancer, or every client shares the proxy's IP for rate limits and login lockout |
 | `REDIS_URL` | Rate-limit storage; in-process memory when unset |
@@ -152,6 +153,27 @@ pytest src/tests                                        # test suite
 ruff check src/                                         # lint
 ```
 
+### Database migrations
+
+The schema is owned by the Alembic revisions in `src/migrations/versions/`, and the app
+upgrades the database to the latest revision at startup. The same operations are available
+as commands:
+
+```bash
+flask --app src.main db current                    # database revision vs latest
+flask --app src.main db upgrade                    # upgrade explicitly
+flask --app src.main db revision -m "add x"        # after changing src/models: autogenerate, then review
+flask --app src.main db check                      # fails if models changed without a revision
+flask --app src.main db downgrade <revision>       # asks for confirmation; back up first
+```
+
+The test suite fails if the models and the revisions disagree, on SQLite and, when
+`TEST_POSTGRES_URL` is set (as in CI), on PostgreSQL.
+
+A database created before migrations existed (by an older version of this app) is refused at
+startup. It holds only the operator account, so back it up, delete `src/database/nocturna.db`
+(or drop the tables on PostgreSQL), restart, and run `flask create-admin` again.
+
 Dependencies are declared in `requirements.in` / `requirements-dev.in` and compiled into
 hashed lockfiles with `uv pip compile ... --generate-hashes` (commands are in the `.in`
 headers). CI (`.github/workflows/ci.yml`) runs ruff, bandit (report only), a dependency
@@ -160,7 +182,8 @@ audit with pip-audit, and pytest.
 ```
 src/
 ├── main.py          # Flask app factory
-├── cli.py           # operator commands (create-admin)
+├── cli.py           # operator commands (create-admin, db)
+├── db_migrations.py # Alembic helpers; revisions live in migrations/
 ├── core/            # engine, strategies, risk, orders, market data, paper trading, safety guard
 ├── advanced/        # backtester, ML tuner, sentiment
 ├── routes/          # REST endpoints
@@ -176,7 +199,7 @@ src/
 | Phase | Scope |
 |---|---|
 | 0 | Safety freeze: paper-only guard, closed registration, no fabricated data, truthful docs |
-| 1 | Platform foundations: auth fixes, enforced rate limits, PostgreSQL + migrations, dependency clean-up, migration to `alpaca-py` |
+| 1 | Platform foundations: auth fixes, scoped API keys, token revocation, enforced rate limits, PostgreSQL + migrations, persisted audit log, dependency clean-up |
 | 2 | Event-driven core with identical backtest / paper / live code paths and broker reconciliation |
 | 3 | Risk engine: pre-trade controls, equity-based loss limits, kill switch, volatility-targeted sizing |
 | 4 | Validation pipeline: walk-forward, purged cross-validation, deflated Sharpe ratio, overfitting tests |

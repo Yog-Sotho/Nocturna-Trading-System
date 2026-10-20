@@ -53,6 +53,18 @@ class TestDevelopmentDefaults:
         assert load_settings().allowed_origin_list == ["https://a.example", "https://b.example"]
 
 
+class TestDatabaseUrl:
+    @pytest.mark.parametrize("url,expected", [
+        ("postgresql://u:p@db:5432/n", "postgresql+psycopg://u:p@db:5432/n"),
+        ("postgres://u:p@db/n", "postgresql+psycopg://u:p@db/n"),
+        ("postgresql+psycopg://u@db/n", "postgresql+psycopg://u@db/n"),
+        ("sqlite:////tmp/x.db", "sqlite:////tmp/x.db"),
+    ])
+    def test_postgres_urls_use_psycopg3(self, env, url, expected):
+        env({"DATABASE_URL": url})
+        assert load_settings().resolved_database_url == expected
+
+
 class TestMalformedValues:
     @pytest.mark.parametrize("name,value", [
         ("JWT_EXPIRATION_HOURS", "0"),

@@ -81,8 +81,8 @@ services:
       - POSTGRES_PASSWORD=${DB_PASSWORD}
       - POSTGRES_DB=nocturna
     volumes:
+      # The schema is created by the app's migrations at startup
       - postgres-data:/var/lib/postgresql/data
-      - ./config/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     networks:
       - nocturna-network
     healthcheck:
