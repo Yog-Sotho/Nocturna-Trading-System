@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 
+from .safety import assert_paper_only
+
 
 class OrderStatus(Enum):
     """Order status enumeration."""
@@ -77,6 +79,9 @@ class OrderExecutionManager:
     MAX_DAILY_ORDERS = 500
 
     def __init__(self, config: dict):
+        # Fail fast before any broker client exists: live trading is disabled
+        assert_paper_only()
+
         self.config = config
         self.logger = logging.getLogger(__name__)
 

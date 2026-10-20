@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from flask import Flask, g, jsonify, request, send_from_directory
 from flask_cors import CORS
 
+from src.core.safety import assert_paper_only
 from src.middleware.security import setup_rate_limiting, setup_security_headers
 from src.models.user import db
 from src.routes.trading import trading_bp
@@ -33,6 +34,9 @@ def create_app(config_override=None):
     Returns:
         Configured Flask application instance
     """
+    # Live trading is hard-disabled: refuse to boot with a live configuration
+    assert_paper_only()
+
     app = Flask(__name__)
 
     # =============================================================================
