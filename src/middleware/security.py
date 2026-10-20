@@ -79,9 +79,9 @@ def setup_rate_limiting(app: Flask) -> Limiter:
         any(request.endpoint in [p] for p in ['start_engine', 'stop_engine', 'emergency_stop'])
     )
 
-    # Registration endpoint - very strict to prevent account flooding
+    # User creation endpoint (admin only) - strict limit
     limiter.limit("5 per minute")(
-        lambda: request.endpoint and request.endpoint == 'user.register'
+        lambda: request.endpoint and request.endpoint == 'user.create_user'
     )
 
     # =============================================================================

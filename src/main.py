@@ -189,6 +189,12 @@ def create_app(config_override=None):
     token_manager.init_app(app)
 
     # =============================================================================
+    # OPERATOR CLI (admin bootstrap — public registration is disabled)
+    # =============================================================================
+    from src.cli import register_cli
+    register_cli(app)
+
+    # =============================================================================
     # REGISTER BLUEPRINTS
     # =============================================================================
     app.register_blueprint(user_bp, url_prefix='/api')

@@ -4,7 +4,6 @@ NOCTURNA Trading System - Database Models
 Production-grade SQLAlchemy models for user management and audit logging.
 """
 
-import os
 from datetime import UTC, datetime
 
 from flask_sqlalchemy import SQLAlchemy
@@ -280,44 +279,35 @@ class SystemConfig(db.Model):
 # INITIALIZATION HELPERS
 # =============================================================================
 
-def create_default_admin(app=None):
-    """Create default admin user if none exists."""
-    admin_username = os.environ.get('ADMIN_USERNAME', 'admin')
-    admin_email = os.environ.get('ADMIN_EMAIL', 'admin@nocturna.local')
-    admin_password = os.environ.get('ADMIN_PASSWORD', None)
+def create_admin_user(username: str, email: str, password: str) -> User:
+    """
+    Create the operator's admin account.
 
-    # Check if admin exists
-    admin = User.query.filter_by(username=admin_username).first()
-    if admin:
-        return admin
+    Single-operator deployment: public registration is disabled, so this is
+    the bootstrap path (exposed as the ``flask create-admin`` command).
 
-    # Create admin user
+    Args:
+        username: Admin username (already validated and normalised).
+        email: Admin email (already validated and normalised).
+        password: Plain-text password; stored only as a salted hash.
+
+    Returns:
+        The persisted admin user.
+
+    Raises:
+        ValueError: If the username or email is already registered.
+    """
+    if User.query.filter((User.username == username) | (User.email == email)).first():
+        raise ValueError(f"A user with username {username!r} or email {email!r} already exists")
+
     admin = User(
-        username=admin_username,
-        email=admin_email,
+        username=username,
+        email=email,
         is_active=True,
         is_admin=True,
         roles=['admin', 'trader']
     )
-
-    if admin_password:
-        admin.set_password(admin_password)
-    else:
-        # Generate a random password — print to stderr ONCE, never persist in logs
-        import secrets
-        import sys as _sys
-        temp_password = secrets.token_urlsafe(16)
-        admin.set_password(temp_password)
-        print(
-            f"\n{'='*60}\n"
-            f"DEFAULT ADMIN CREATED\n"
-            f"Username: {admin_username}\n"
-            f"Password: {temp_password}\n"
-            f"CHANGE THIS IMMEDIATELY!\n"
-            f"{'='*60}\n",
-            file=_sys.stderr,
-            flush=True
-        )
+    admin.set_password(password)
 
     db.session.add(admin)
     db.session.commit()

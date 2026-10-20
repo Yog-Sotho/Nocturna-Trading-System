@@ -14,6 +14,7 @@ from src.middleware.auth import (
     TokenManager,
     generate_api_key,
 )
+from src.models.user import User
 
 
 class TestTokenManager:
@@ -147,22 +148,36 @@ class TestAuthEndpoints:
         })
         assert resp.status_code == 401
 
-    def test_register_creates_user(self, client, db):
-        resp = client.post("/api/users", json={
-            "username": "newusertest",
-            "email": "newtest@example.com",
-            "password": "NewP@ssword123!",
-        })
-        # Accept 201 (success) or 400 (validation specifics differ by validator)
-        assert resp.status_code in (201, 400)
+    NEW_USER = {
+        "username": "newusertest",
+        "email": "newtest@example.com",
+        "password": "NewP@ssword123!",
+        "password_confirm": "NewP@ssword123!",
+    }
 
-    def test_register_duplicate_email(self, client, test_user):
-        resp = client.post("/api/users", json={
-            "username": "anotheruser",
-            "email": "test@example.com",
-            "password": "AnotherP@ss123!",
-        })
-        assert resp.status_code in (400, 409)
+    def test_public_registration_is_closed(self, client, db):
+        resp = client.post("/api/users", json=self.NEW_USER)
+        assert resp.status_code == 401
+        with client.application.app_context():
+            assert User.query.filter_by(username="newusertest").first() is None
+
+    def test_non_admin_cannot_create_user(self, client, auth_headers):
+        resp = client.post("/api/users", json=self.NEW_USER, headers=auth_headers)
+        assert resp.status_code == 403
+
+    def test_admin_creates_user_without_issuing_tokens(self, client, admin_headers):
+        resp = client.post("/api/users", json=self.NEW_USER, headers=admin_headers)
+        assert resp.status_code == 201
+        body = resp.get_json()
+        assert "access_token" not in body["data"]
+        assert body["data"]["user"]["username"] == "newusertest"
+        assert body["data"]["user"]["is_admin"] is False
+
+    def test_admin_create_duplicate_email_conflicts(self, client, admin_headers, test_user):
+        payload = {**self.NEW_USER, "username": "anotheruser", "email": "test@example.com"}
+        resp = client.post("/api/users", json=payload, headers=admin_headers)
+        assert resp.status_code == 409
+
 
     def test_api_key_in_require_auth(self, client, app, test_user):
         """SEC-02: Verify API key path in require_auth actually works."""
@@ -187,3 +202,38 @@ class TestAuthEndpoints:
             headers={"X-API-Key": "ntr_invalid_key_12345678901234567890"},
         )
         assert resp.status_code == 401
+
+
+class TestCreateAdminCommand:
+    """`flask create-admin` is the only way to bootstrap the operator account."""
+
+    def test_creates_admin(self, app, db):
+        result = app.test_cli_runner().invoke(args=[
+            "create-admin", "--username", "Operator", "--email", "Ops@Example.com",
+            "--password", "Str0ng!Passw0rd",
+        ])
+        assert result.exit_code == 0, result.output
+        with app.app_context():
+            admin = User.query.filter_by(username="operator").first()
+            assert admin is not None
+            assert admin.is_admin is True
+            assert "admin" in admin.roles
+            assert admin.email == "ops@example.com"
+            assert admin.check_password("Str0ng!Passw0rd")
+
+    def test_rejects_weak_password(self, app, db):
+        result = app.test_cli_runner().invoke(args=[
+            "create-admin", "--email", "ops@example.com", "--password", "weakpassword",
+        ])
+        assert result.exit_code != 0
+        assert "Invalid admin details" in result.output
+        with app.app_context():
+            assert User.query.count() == 0
+
+    def test_refuses_duplicate(self, app, db, admin_user):
+        result = app.test_cli_runner().invoke(args=[
+            "create-admin", "--username", "adminuser", "--email", "other@example.com",
+            "--password", "Str0ng!Passw0rd",
+        ])
+        assert result.exit_code != 0
+        assert "already exists" in result.output

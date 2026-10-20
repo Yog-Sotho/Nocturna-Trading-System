@@ -5,7 +5,6 @@ Production-grade authentication and user management endpoints.
 """
 
 import logging
-import os
 from datetime import UTC, datetime, timedelta
 
 from flask import Blueprint, g, jsonify, request
@@ -289,17 +288,14 @@ def get_user(user_id):
 
 
 @user_bp.route('/users', methods=['POST'])
-@cross_origin()
-def register():
+@require_auth
+@require_admin
+def create_user():
     """
-    User registration endpoint.
-    Public but can be restricted in production.
+    Create a user (admin only).
+    Single-operator deployment: public self-registration is disabled.
     """
     try:
-        # Check if registration is enabled
-        if os.environ.get('DISABLE_REGISTRATION', 'false').lower() == 'true':
-            return format_response(False, error='Registration is disabled', status_code=403)
-
         data = request.get_json()
         if not data:
             return format_response(False, error='Request body required', status_code=400)
@@ -330,28 +326,17 @@ def register():
         db.session.add(user)
         db.session.commit()
 
-        log_audit_event('USER_REGISTERED', True, {'user_id': user.id})
-
-        # Generate tokens for immediate login
-        user_data = {
+        log_audit_event('USER_CREATED', True, {
             'user_id': user.id,
-            'username': user.username,
-            'roles': user.roles,
-            'is_admin': user.is_admin
-        }
+            'created_by': getattr(g, 'user_id', None)
+        })
 
-        access_token = create_token(str(user.id), user_data)
-
-        return format_response(True, data={
-            'access_token': access_token,
-            'token_type': 'Bearer',
-            'user': user.to_dict()
-        }, status_code=201)
+        return format_response(True, data={'user': user.to_dict()}, status_code=201)
 
     except Exception as e:
-        logger.error(f"Registration error: {e}")
+        logger.error(f"User creation error: {e}")
         db.session.rollback()
-        return format_response(False, error='Registration failed', status_code=500)
+        return format_response(False, error='User creation failed', status_code=500)
 
 
 @user_bp.route('/users/<int:user_id>', methods=['PUT'])
