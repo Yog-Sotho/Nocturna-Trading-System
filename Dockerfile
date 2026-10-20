@@ -29,7 +29,7 @@ COPY requirements.txt .
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install dependencies with strict pinning
+# Install dependencies from the hashed lockfile (pip enforces the hashes)
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
@@ -44,17 +44,9 @@ WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# =============================================================================
-# AUDIT FIX F-013: Remove redundant dev-tool installation
-# requirements.txt already pins pytest, black, flake8, mypy, etc.
-# Re-installing them without version pins causes drift and layer bloat.
-# We rely solely on the builder-stage resolution.
-# =============================================================================
-COPY requirements-dev.txt ./requirements-dev.txt || true
-RUN if [ -f requirements-dev.txt ]; then pip install --no-cache-dir -r requirements-dev.txt; fi
-
-# Install development tools with hot-reloading support
-RUN pip install --no-cache-dir watchdog python-dotenv
+# Dev tools come from the hashed lockfile (requirements-dev.txt includes the runtime pins)
+COPY requirements-dev.txt .
+RUN pip install --no-cache-dir -r requirements-dev.txt
 
 # Copy application source
 COPY . .

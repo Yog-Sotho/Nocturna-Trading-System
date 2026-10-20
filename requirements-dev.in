@@ -1,0 +1,10 @@
+# Development and CI tooling. Compile with:
+#   uv pip compile requirements-dev.in --python-version 3.11 --generate-hashes -o requirements-dev.txt
+-r requirements.in
+
+pytest>=9.0.3,<10
+pytest-cov>=6,<8
+pytest-mock>=3.14,<4
+ruff>=0.17,<0.18
+bandit>=1.9,<2
+pip-audit>=2.10,<3

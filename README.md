@@ -131,11 +131,15 @@ The ones that matter most:
 ## Development
 
 ```bash
-pytest src/tests                 # test suite
-ruff check src/                  # lint
+pip install --require-hashes -r requirements-dev.txt   # runtime + dev tools, hashed lockfile
+pytest src/tests                                        # test suite
+ruff check src/                                         # lint
 ```
 
-CI (`.github/workflows/ci.yml`) runs ruff, bandit (report only) and pytest.
+Dependencies are declared in `requirements.in` / `requirements-dev.in` and compiled into
+hashed lockfiles with `uv pip compile ... --generate-hashes` (commands are in the `.in`
+headers). CI (`.github/workflows/ci.yml`) runs ruff, bandit (report only), a dependency
+audit with pip-audit, and pytest.
 
 ```
 src/
