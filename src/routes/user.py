@@ -5,20 +5,29 @@ Production-grade authentication and user management endpoints.
 """
 
 import logging
-import os
 from datetime import UTC, datetime, timedelta
 
+import jwt
 from flask import Blueprint, g, jsonify, request
-from flask_cors import cross_origin
+from werkzeug.security import check_password_hash, generate_password_hash
 
-from src.middleware.auth import create_token, generate_api_key, hash_api_key, require_admin, require_auth, token_manager
+from src.middleware.auth import (
+    API_KEY_SCOPES,
+    issue_api_key,
+    require_admin,
+    require_auth,
+    token_manager,
+)
 from src.middleware.security import ip_manager
-from src.models.user import AuditLog, User, db
-from src.utils.logger import get_audit_logger
+from src.models.user import ASSIGNABLE_ROLES, APIKey, AuditLog, User, db
+from src.utils.audit import record_audit_event
 from src.utils.validators import validate_login, validate_registration
 
 user_bp = Blueprint('user', __name__)
 logger = logging.getLogger(__name__)
+
+# Hash checked when no real hash applies, so failed logins take the same time
+_DUMMY_PASSWORD_HASH = generate_password_hash('nocturna-dummy-password', method='pbkdf2:sha256', salt_length=32)
 
 
 # =============================================================================
@@ -27,20 +36,8 @@ logger = logging.getLogger(__name__)
 
 def log_audit_event(event_type: str, success: bool, details: dict = None,
                     error: str = None):
-    """Log an audit event."""
-    audit_logger = get_audit_logger()
-
-    user_id = getattr(g, 'user_id', None)
-    request_id = getattr(g, 'request_id', None)
-
-    if audit_logger and audit_logger.audit_logger:
-        audit_logger.log_event(
-            event_type=event_type,
-            user_id=str(user_id) if user_id else 'anonymous',
-            details=details or {},
-            success=success,
-            request_id=request_id
-        )
+    """Record an audit event (database and audit log file)."""
+    record_audit_event(event_type, success, details, error)
 
 
 def format_response(success: bool, data=None, error: str = None,
@@ -67,15 +64,14 @@ def format_response(success: bool, data=None, error: str = None,
 # =============================================================================
 
 @user_bp.route('/auth/login', methods=['POST'])
-@cross_origin()
 def login():
     """
     User login endpoint.
     Validates credentials and returns JWT tokens.
     """
     try:
-        data = request.get_json()
-        if not data:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not data:
             return format_response(False, error='Request body required', status_code=400)
 
         # Validate input
@@ -95,20 +91,19 @@ def login():
             (User.email == validated_data.username)
         ).first()
 
+        # Unknown, locked and inactive accounts all get the same response, and a
+        # password hash is always checked, so callers cannot enumerate accounts
         if not user:
+            check_password_hash(_DUMMY_PASSWORD_HASH, validated_data.password)
             ip_manager.record_failed_attempt(client_ip)
             log_audit_event('LOGIN_FAILED', False, {'reason': 'User not found'})
             return format_response(False, error='Invalid credentials', status_code=401)
 
-        # Check if account is locked
-        if user.is_locked():
-            log_audit_event('LOGIN_FAILED', False, {'user_id': user.id, 'reason': 'Account locked'})
-            return format_response(False, error='Account locked. Try again later.', status_code=403)
-
-        # Check if account is active
-        if not user.is_active:
-            log_audit_event('LOGIN_FAILED', False, {'user_id': user.id, 'reason': 'Account inactive'})
-            return format_response(False, error='Account is inactive', status_code=403)
+        if user.is_locked() or not user.is_active:
+            check_password_hash(_DUMMY_PASSWORD_HASH, validated_data.password)
+            reason = 'Account locked' if user.is_locked() else 'Account inactive'
+            log_audit_event('LOGIN_FAILED', False, {'user_id': user.id, 'reason': reason})
+            return format_response(False, error='Invalid credentials', status_code=401)
 
         # Verify password
         if not user.check_password(validated_data.password):
@@ -127,27 +122,11 @@ def login():
         ip_manager.clear_failed_attempts(client_ip)
 
         # Generate tokens
-        user_data = {
-            'user_id': user.id,
-            'username': user.username,
-            'roles': user.roles or [],
-            'is_admin': user.is_admin,
-            'trading_mode': user.trading_mode,
-            'trading_disabled': user.trading_disabled
-        }
-
-        access_token = create_token(str(user.id), user_data)
-        refresh_token = token_manager.create_refresh_token(str(user.id))
+        tokens = token_manager.create_token_pair(user)
 
         log_audit_event('LOGIN_SUCCESS', True, {'user_id': user.id})
 
-        return format_response(True, data={
-            'access_token': access_token,
-            'refresh_token': refresh_token,
-            'token_type': 'Bearer',
-            'expires_in': int(timedelta(hours=24).total_seconds()),
-            'user': user.to_dict()
-        })
+        return format_response(True, data={**tokens, 'user': user.to_dict()})
 
     except Exception as e:
         logger.error(f"Login error: {e}")
@@ -156,52 +135,45 @@ def login():
 
 
 @user_bp.route('/auth/refresh', methods=['POST'])
-@cross_origin()
 def refresh_token():
     """
-    Refresh access token using refresh token.
+    Exchange a refresh token for a new access and refresh token pair.
+
+    Refresh tokens are single use: the presented token is revoked. Presenting
+    an already-used refresh token is treated as theft and revokes every token
+    of the user.
     """
     try:
-        data = request.get_json()
-        if not data or 'refresh_token' not in data:
+        data = request.get_json(silent=True) or {}
+        raw_token = data.get('refresh_token')
+        if not isinstance(raw_token, str) or not raw_token:
             return format_response(False, error='Refresh token required', status_code=400)
 
-        refresh_token = data['refresh_token']
-
-        # Verify refresh token
         try:
-            payload = token_manager.verify_token(refresh_token, token_type='refresh')
-        except Exception as e:
-            log_audit_event('TOKEN_REFRESH_FAILED', False, {'error': str(e)})
+            claims = token_manager.decode(raw_token, token_type='refresh')
+        except jwt.InvalidTokenError:
+            log_audit_event('TOKEN_REFRESH_FAILED', False, {'reason': 'invalid token'})
             return format_response(False, error='Invalid refresh token', status_code=401)
 
-        # Get user
-        user_id = payload.get('sub')
-        user = User.query.get(int(user_id))
+        sub = str(claims['sub'])
+        user = db.session.get(User, int(sub)) if sub.isdigit() else None
+        if user is None or not user.is_active or claims.get('ver', 0) != (user.token_version or 0):
+            log_audit_event('TOKEN_REFRESH_FAILED', False, {'reason': 'stale or inactive'})
+            return format_response(False, error='Invalid refresh token', status_code=401)
 
-        if not user or not user.is_active:
-            return format_response(False, error='User not found or inactive', status_code=401)
+        if token_manager.is_revoked(claims['jti']):
+            user.revoke_all_tokens()
+            db.session.commit()
+            log_audit_event('REFRESH_TOKEN_REUSE', False, {'user_id': user.id})
+            return format_response(False, error='Invalid refresh token', status_code=401)
 
-        # Generate new access token
-        user_data = {
-            'user_id': user.id,
-            'username': user.username,
-            'roles': user.roles or [],
-            'is_admin': user.is_admin,
-            'trading_mode': user.trading_mode,
-            'trading_disabled': user.trading_disabled
-        }
-
-        access_token = create_token(str(user.id), user_data)
-
-        return format_response(True, data={
-            'access_token': access_token,
-            'token_type': 'Bearer',
-            'expires_in': int(timedelta(hours=24).total_seconds())
-        })
+        token_manager.revoke_claims(claims)
+        tokens = token_manager.create_token_pair(user)
+        return format_response(True, data=tokens)
 
     except Exception as e:
         logger.error(f"Token refresh error: {e}")
+        db.session.rollback()
         return format_response(False, error='Token refresh failed', status_code=500)
 
 
@@ -209,11 +181,24 @@ def refresh_token():
 @require_auth
 def logout():
     """
-    Logout endpoint. Invalidates current token.
+    Revoke the bearer token of this request, and the refresh token if one is
+    sent in the body as {"refresh_token": "..."}.
     """
     try:
-        token = request.headers.get('Authorization', '')[7:]  # Remove 'Bearer '
-        token_manager.revoke_token(token)
+        if getattr(g, 'auth_method', None) != 'jwt':
+            return format_response(False, error='Logout requires a bearer token', status_code=400)
+
+        token_manager.revoke_token(request.headers['Authorization'][7:], token_type='access')
+
+        data = request.get_json(silent=True) or {}
+        raw_refresh = data.get('refresh_token')
+        if isinstance(raw_refresh, str) and raw_refresh:
+            try:
+                claims = token_manager.decode(raw_refresh, token_type='refresh', verify_exp=False)
+            except jwt.InvalidTokenError:
+                claims = None
+            if claims is not None and str(claims['sub']) == str(g.user_id):
+                token_manager.revoke_claims(claims)
 
         log_audit_event('LOGOUT', True, {'user_id': getattr(g, 'user_id', None)})
 
@@ -221,6 +206,28 @@ def logout():
 
     except Exception as e:
         logger.error(f"Logout error: {e}")
+        db.session.rollback()
+        return format_response(False, error='Logout failed', status_code=500)
+
+
+@user_bp.route('/auth/logout-all', methods=['POST'])
+@require_auth
+def logout_all():
+    """Revoke every access and refresh token of the caller (API keys are unaffected)."""
+    try:
+        user = db.session.get(User, int(g.user_id))
+        if user is None:
+            return format_response(False, error='User not found', status_code=404)
+        user.revoke_all_tokens()
+        db.session.commit()
+
+        log_audit_event('LOGOUT_ALL', True, {'user_id': user.id})
+
+        return format_response(True, message='All sessions revoked')
+
+    except Exception as e:
+        logger.error(f"Logout-all error: {e}")
+        db.session.rollback()
         return format_response(False, error='Logout failed', status_code=500)
 
 
@@ -289,19 +296,16 @@ def get_user(user_id):
 
 
 @user_bp.route('/users', methods=['POST'])
-@cross_origin()
-def register():
+@require_auth
+@require_admin
+def create_user():
     """
-    User registration endpoint.
-    Public but can be restricted in production.
+    Create a user (admin only).
+    Single-operator deployment: public self-registration is disabled.
     """
     try:
-        # Check if registration is enabled
-        if os.environ.get('DISABLE_REGISTRATION', 'false').lower() == 'true':
-            return format_response(False, error='Registration is disabled', status_code=403)
-
-        data = request.get_json()
-        if not data:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not data:
             return format_response(False, error='Request body required', status_code=400)
 
         # Validate input
@@ -330,28 +334,32 @@ def register():
         db.session.add(user)
         db.session.commit()
 
-        log_audit_event('USER_REGISTERED', True, {'user_id': user.id})
-
-        # Generate tokens for immediate login
-        user_data = {
+        log_audit_event('USER_CREATED', True, {
             'user_id': user.id,
-            'username': user.username,
-            'roles': user.roles,
-            'is_admin': user.is_admin
-        }
+            'created_by': getattr(g, 'user_id', None)
+        })
 
-        access_token = create_token(str(user.id), user_data)
-
-        return format_response(True, data={
-            'access_token': access_token,
-            'token_type': 'Bearer',
-            'user': user.to_dict()
-        }, status_code=201)
+        return format_response(True, data={'user': user.to_dict()}, status_code=201)
 
     except Exception as e:
-        logger.error(f"Registration error: {e}")
+        logger.error(f"User creation error: {e}")
         db.session.rollback()
-        return format_response(False, error='Registration failed', status_code=500)
+        return format_response(False, error='User creation failed', status_code=500)
+
+
+def _user_update_error(data: dict, is_self: bool) -> str | None:
+    """Validate an admin user update before anything is changed."""
+    if is_self and 'is_active' in data and not data['is_active']:
+        return 'You cannot deactivate your own account'
+    if is_self and 'is_admin' in data and not data['is_admin']:
+        return 'You cannot remove your own admin rights'
+    if 'roles' in data:
+        roles = data['roles']
+        if not isinstance(roles, list) or not all(isinstance(r, str) and r in ASSIGNABLE_ROLES for r in roles):
+            return f'roles must be a list drawn from {sorted(ASSIGNABLE_ROLES)}; use is_admin for admin rights'
+    if 'trading_mode' in data and data['trading_mode'] != 'PAPER':
+        return 'Only PAPER trading mode is available'
+    return None
 
 
 @user_bp.route('/users/<int:user_id>', methods=['PUT'])
@@ -364,26 +372,22 @@ def update_user(user_id):
         if not user:
             return format_response(False, error='User not found', status_code=404)
 
-        data = request.get_json()
-        if not data:
-            return format_response(False, error='Request body required', status_code=400)
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not data:
+            return format_response(False, error='JSON object body required', status_code=400)
 
-        # Update allowed fields
+        error = _user_update_error(data, is_self=user.id == int(getattr(g, 'user_id', 0)))
+        if error:
+            return format_response(False, error=error, status_code=400)
+
         if 'is_active' in data:
             user.is_active = bool(data['is_active'])
-
         if 'is_admin' in data:
-            # Only super admin can make admins
-            current_user = User.query.get(int(getattr(g, 'user_id', 0)))
-            if current_user and current_user.is_admin:
-                user.is_admin = bool(data['is_admin'])
-
-        if 'roles' in data and isinstance(data['roles'], list):
-            user.roles = data['roles']
-
-        if 'trading_mode' in data and data['trading_mode'] in ['PAPER', 'LIVE']:
-            user.trading_mode = data['trading_mode']
-
+            user.is_admin = bool(data['is_admin'])
+        if 'roles' in data:
+            user.roles = sorted(set(data['roles']))
+        if 'trading_mode' in data:
+            user.trading_mode = 'PAPER'
         if 'trading_disabled' in data:
             user.trading_disabled = bool(data['trading_disabled'])
 
@@ -418,8 +422,8 @@ def change_password(user_id):
         if not user:
             return format_response(False, error='User not found', status_code=404)
 
-        data = request.get_json()
-        if not data:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not data:
             return format_response(False, error='Request body required', status_code=400)
 
         current_password = data.get('current_password')
@@ -455,11 +459,15 @@ def change_password(user_id):
             )
 
         user.set_password(new_password)
+        user.revoke_all_tokens()
         db.session.commit()
 
         log_audit_event('PASSWORD_CHANGED', True, {'user_id': user.id})
 
-        return format_response(True, message='Password changed successfully')
+        # Every existing session is now invalid; a user changing their own
+        # password gets a fresh pair so the current client keeps working.
+        data = token_manager.create_token_pair(user) if current_user_id == user_id else None
+        return format_response(True, data=data, message='Password changed successfully')
 
     except Exception as e:
         logger.error(f"Change password error: {e}")
@@ -474,29 +482,11 @@ def change_password(user_id):
 @user_bp.route('/api-keys', methods=['GET'])
 @require_auth
 def list_api_keys():
-    """List user's API keys."""
+    """List the caller's API keys (metadata only)."""
     try:
         user_id = int(getattr(g, 'user_id', 0))
-        user = User.query.get(user_id)
-
-        if not user:
-            return format_response(False, error='User not found', status_code=404)
-
-        api_keys = user.api_keys or []
-
-        # Return keys without showing the actual key
-        safe_keys = [{
-            'id': k.get('id'),
-            'name': k.get('name'),
-            'permissions': k.get('permissions', []),
-            'created_at': k.get('created_at'),
-            'expires_at': k.get('expires_at'),
-            'last_used': k.get('last_used'),
-            'use_count': k.get('use_count', 0),
-            'is_active': k.get('is_active', True)
-        } for k in api_keys]
-
-        return format_response(True, data={'api_keys': safe_keys})
+        keys = APIKey.query.filter_by(user_id=user_id).order_by(APIKey.created_at.desc()).all()
+        return format_response(True, data={'api_keys': [k.to_dict() for k in keys]})
 
     except Exception as e:
         logger.error(f"List API keys error: {e}")
@@ -506,49 +496,61 @@ def list_api_keys():
 @user_bp.route('/api-keys', methods=['POST'])
 @require_auth
 def create_api_key():
-    """Create a new API key."""
+    """
+    Create an API key for the caller.
+
+    Body: name (str), description (str), permissions (subset of "read", "trade";
+    default ["read"]), expires_in_days (1-365, optional).
+    API keys can never carry admin rights.
+    """
     try:
         user_id = int(getattr(g, 'user_id', 0))
-        user = User.query.get(user_id)
-
+        user = db.session.get(User, user_id)
         if not user:
             return format_response(False, error='User not found', status_code=404)
 
-        data = request.get_json() or {}
-        name = data.get('name', 'API Key')
-        description = data.get('description', '')
+        data = request.get_json(silent=True) or {}
+        name = str(data.get('name') or 'API Key')[:100]
+        description = str(data.get('description') or '')[:500]
+
         permissions = data.get('permissions', ['read'])
+        if (not isinstance(permissions, list) or not permissions
+                or not all(isinstance(p, str) and p in API_KEY_SCOPES for p in permissions)):
+            return format_response(
+                False, error=f'permissions must be a non-empty subset of {sorted(API_KEY_SCOPES)}',
+                status_code=400
+            )
 
-        # Generate API key
-        raw_key = generate_api_key()
-        key_hash = hash_api_key(raw_key)
+        expires_at = None
+        expires_in_days = data.get('expires_in_days')
+        if expires_in_days is not None:
+            if not isinstance(expires_in_days, int) or isinstance(expires_in_days, bool) \
+                    or not 1 <= expires_in_days <= 365:
+                return format_response(False, error='expires_in_days must be an integer from 1 to 365',
+                                       status_code=400)
+            expires_at = datetime.now(UTC) + timedelta(days=expires_in_days)
 
-        import uuid
-        key_record = {
-            'id': str(uuid.uuid4()),
-            'name': name,
-            'description': description,
-            'permissions': permissions,
-            'key_hash': key_hash,
-            'created_at': datetime.now(UTC).isoformat(),
-            'expires_at': None,
-            'last_used': None,
-            'use_count': 0,
-            'is_active': True
-        }
-
-        # Add to user's API keys
-        api_keys = user.api_keys or []
-        api_keys.append(key_record)
-        user.api_keys = api_keys
+        raw_key, key_id, key_hash = issue_api_key()
+        record = APIKey(
+            user_id=user.id,
+            key_id=key_id,
+            key_hash=key_hash,
+            name=name,
+            description=description,
+            permissions=sorted(set(permissions)),
+            is_active=True,
+            expires_at=expires_at,
+        )
+        db.session.add(record)
         db.session.commit()
 
-        log_audit_event('API_KEY_CREATED', True, {'user_id': user.id, 'name': name})
+        log_audit_event('API_KEY_CREATED', True, {'user_id': user.id, 'key_id': record.id,
+                                                   'permissions': record.permissions})
 
-        # Return the raw key only once
+        # The raw key is returned exactly once and never stored
         return format_response(True, data={
             'api_key': raw_key,
-            'name': name,
+            'key': record.to_dict(),
             'message': 'Store this key securely. It will not be shown again.'
         }, status_code=201)
 
@@ -558,29 +560,20 @@ def create_api_key():
         return format_response(False, error='Failed to create API key', status_code=500)
 
 
-@user_bp.route('/api-keys/<key_id>', methods=['DELETE'])
+@user_bp.route('/api-keys/<int:key_id>', methods=['DELETE'])
 @require_auth
 def revoke_api_key(key_id):
-    """Revoke an API key."""
+    """Revoke one of the caller's API keys."""
     try:
         user_id = int(getattr(g, 'user_id', 0))
-        user = User.query.get(user_id)
-
-        if not user:
-            return format_response(False, error='User not found', status_code=404)
-
-        api_keys = user.api_keys or []
-        original_count = len(api_keys)
-
-        api_keys = [k for k in api_keys if k.get('id') != key_id]
-
-        if len(api_keys) == original_count:
+        record = APIKey.query.filter_by(id=key_id, user_id=user_id).first()
+        if record is None or not record.is_active:
             return format_response(False, error='API key not found', status_code=404)
 
-        user.api_keys = api_keys
+        record.is_active = False
         db.session.commit()
 
-        log_audit_event('API_KEY_REVOKED', True, {'user_id': user.id, 'key_id': key_id})
+        log_audit_event('API_KEY_REVOKED', True, {'user_id': user_id, 'key_id': key_id})
 
         return format_response(True, message='API key revoked')
 

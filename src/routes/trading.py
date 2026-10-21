@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from src.core.trading_engine import TradingEngine, TradingEngineState
 from src.middleware.auth import require_admin, require_auth, require_trading_permissions
+from src.utils.audit import record_audit_event
 from src.utils.validators import validate_config_input, validate_emergency_stop, validate_trading_signal
 
 # Create blueprint
@@ -87,11 +88,13 @@ def get_trading_engine() -> TradingEngine:
 # HELPER FUNCTIONS
 # =============================================================================
 
-def log_api_call(action: str, details: str = ''):
-    """Log API call with user context."""
+def log_api_call(action: str, details: str = '', success: bool = True):
+    """Log API call with user context; state-changing calls also go to the audit trail."""
     user_id = getattr(g, 'user_id', 'anonymous')
     request_id = getattr(g, 'request_id', 'unknown')
     logger.info(f"API [{action}] | User: {user_id} | Request ID: {request_id} | {details}")
+    if request.method != 'GET':
+        record_audit_event(action, success, {'details': details})
 
 
 def format_response(success: bool, data: Any = None, error: str = None,
@@ -147,7 +150,7 @@ def get_status():
 
     except Exception as e:
         logger.error(f"Error getting status: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+        return format_response(False, error='Internal server error', status_code=500)
 
 
 @trading_bp.route('/status/detailed', methods=['GET'])
@@ -167,7 +170,7 @@ def get_detailed_status():
 
     except Exception as e:
         logger.error(f"Error getting detailed status: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+        return format_response(False, error='Internal server error', status_code=500)
 
 
 @trading_bp.route('/positions', methods=['GET'])
@@ -187,7 +190,7 @@ def get_positions():
 
     except Exception as e:
         logger.error(f"Error getting positions: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+        return format_response(False, error='Internal server error', status_code=500)
 
 
 @trading_bp.route('/orders', methods=['GET'])
@@ -207,7 +210,7 @@ def get_orders():
 
     except Exception as e:
         logger.error(f"Error getting orders: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+        return format_response(False, error='Internal server error', status_code=500)
 
 
 @trading_bp.route('/performance', methods=['GET'])
@@ -237,7 +240,7 @@ def get_performance():
 
     except Exception as e:
         logger.error(f"Error getting performance: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+        return format_response(False, error='Internal server error', status_code=500)
 
 
 @trading_bp.route('/strategy', methods=['GET'])
@@ -257,7 +260,7 @@ def get_strategy_status():
 
     except Exception as e:
         logger.error(f"Error getting strategy status: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+        return format_response(False, error='Internal server error', status_code=500)
 
 
 @trading_bp.route('/risk', methods=['GET'])
@@ -277,7 +280,7 @@ def get_risk_status():
 
     except Exception as e:
         logger.error(f"Error getting risk status: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+        return format_response(False, error='Internal server error', status_code=500)
 
 
 @trading_bp.route('/config', methods=['GET'])
@@ -303,7 +306,7 @@ def get_config():
 
     except Exception as e:
         logger.error(f"Error getting config: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+        return format_response(False, error='Internal server error', status_code=500)
 
 
 # =============================================================================
@@ -336,7 +339,7 @@ def start_engine():
             return format_response(
                 True,
                 message='Engine started',
-                data={'state': engine.state}
+                data={'state': engine.state.value}
             )
         else:
             return format_response(
@@ -347,7 +350,7 @@ def start_engine():
 
     except Exception as e:
         logger.error(f"Error starting engine: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+        return format_response(False, error='Internal server error', status_code=500)
 
 
 @trading_bp.route('/control/stop', methods=['POST'])
@@ -375,7 +378,7 @@ def stop_engine():
             return format_response(
                 True,
                 message='Engine stopped',
-                data={'state': engine.state}
+                data={'state': engine.state.value}
             )
         else:
             return format_response(
@@ -386,7 +389,7 @@ def stop_engine():
 
     except Exception as e:
         logger.error(f"Error stopping engine: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+        return format_response(False, error='Internal server error', status_code=500)
 
 
 @trading_bp.route('/control/pause', methods=['POST'])
@@ -414,7 +417,7 @@ def pause_engine():
             return format_response(
                 True,
                 message='Engine paused',
-                data={'state': engine.state}
+                data={'state': engine.state.value}
             )
         else:
             return format_response(
@@ -425,7 +428,7 @@ def pause_engine():
 
     except Exception as e:
         logger.error(f"Error pausing engine: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+        return format_response(False, error='Internal server error', status_code=500)
 
 
 @trading_bp.route('/control/resume', methods=['POST'])
@@ -453,7 +456,7 @@ def resume_engine():
             return format_response(
                 True,
                 message='Engine resumed',
-                data={'state': engine.state}
+                data={'state': engine.state.value}
             )
         else:
             return format_response(
@@ -464,7 +467,7 @@ def resume_engine():
 
     except Exception as e:
         logger.error(f"Error resuming engine: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+        return format_response(False, error='Internal server error', status_code=500)
 
 
 @trading_bp.route('/emergency-stop', methods=['POST'])
@@ -479,7 +482,9 @@ def emergency_stop():
     """
     try:
         # Get and validate request data
-        data = request.get_json() or {}
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            data = {}
         is_valid, validated_data, errors = validate_emergency_stop(data)
 
         if not is_valid:
@@ -501,26 +506,31 @@ def emergency_stop():
             f"Request ID: {getattr(g, 'request_id', 'unknown')}"
         )
 
-        # Trigger emergency stop
-        engine.emergency_stop(reason)
+        # The flag must be set before the stop: emergency_stop() reads it to decide
+        # whether to submit closing orders
+        engine.config['emergency_close_positions'] = validated_data.close_all_positions
 
-        # Update config for position closing
-        if validated_data.close_all_positions:
-            engine.config['emergency_close_positions'] = True
+        engine.emergency_stop(reason)
+        record_audit_event('EMERGENCY_STOP', True, {
+            'reason': reason,
+            'close_all_positions': validated_data.close_all_positions,
+            'state': engine.state.value,
+        })
 
         return format_response(
             True,
             message='Emergency stop executed',
             data={
-                'state': engine.state,
+                'state': engine.state.value,
                 'reason': reason,
-                'positions_closed': validated_data.close_all_positions
+                'close_orders_submitted': validated_data.close_all_positions
             }
         )
 
     except Exception as e:
         logger.error(f"Error during emergency stop: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+        record_audit_event('EMERGENCY_STOP', False, error=type(e).__name__)
+        return format_response(False, error='Internal server error', status_code=500)
 
 
 # =============================================================================
@@ -537,8 +547,8 @@ def create_order():
     """
     try:
         # Parse and validate request data
-        data = request.get_json()
-        if not data:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not data:
             return format_response(False, error='Request body required', status_code=400)
 
         is_valid, signal, errors = validate_trading_signal(data)
@@ -570,7 +580,7 @@ def create_order():
         )
 
         if not is_valid:
-            log_api_call('ORDER_REJECTED', f"Symbol: {signal.symbol} | Reason: {reason}")
+            log_api_call('ORDER_REJECTED', f"Symbol: {signal.symbol} | Reason: {reason}", success=False)
             return format_response(
                 False,
                 error=f'Order rejected by risk manager: {reason}',
@@ -607,7 +617,7 @@ def create_order():
 
     except Exception as e:
         logger.error(f"Error creating order: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+        return format_response(False, error='Internal server error', status_code=500)
 
 
 @trading_bp.route('/orders/<order_id>/cancel', methods=['POST'])
@@ -641,7 +651,7 @@ def cancel_order(order_id: str):
 
     except Exception as e:
         logger.error(f"Error cancelling order {order_id}: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+        return format_response(False, error='Internal server error', status_code=500)
 
 
 # =============================================================================
@@ -657,8 +667,8 @@ def update_config():
     Requires authentication and admin permissions.
     """
     try:
-        data = request.get_json()
-        if not data:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not data:
             return format_response(False, error='Request body required', status_code=400)
 
         # Validate configuration input
@@ -697,7 +707,7 @@ def update_config():
 
     except Exception as e:
         logger.error(f"Error updating config: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+        return format_response(False, error='Internal server error', status_code=500)
 
 
 # =============================================================================
@@ -709,29 +719,18 @@ def update_config():
 @require_admin
 def start_optimization():
     """
-    Start ML optimization process.
+    ML parameter optimization — not implemented yet (returns 501).
     Requires authentication and admin permissions.
     """
-    try:
-        # This would trigger the ML optimizer in a real implementation
-        # For now, return a placeholder response
-        logger.info(
-            f"Optimization requested by {getattr(g, 'user_id', 'unknown')} | "
-            f"Request ID: {getattr(g, 'request_id', 'unknown')}"
-        )
-
-        return format_response(
-            True,
-            message='Optimization started (async process)',
-            data={
-                'status': 'started',
-                'estimated_duration': '30-60 minutes'
-            }
-        )
-
-    except Exception as e:
-        logger.error(f"Error starting optimization: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+    logger.info(
+        f"Optimization requested by {getattr(g, 'user_id', 'unknown')} | "
+        f"Request ID: {getattr(g, 'request_id', 'unknown')}"
+    )
+    return format_response(
+        False,
+        error='ML optimization is not implemented yet',
+        status_code=501
+    )
 
 
 # =============================================================================
@@ -758,7 +757,7 @@ def get_trade_history():
 
     except Exception as e:
         logger.error(f"Error getting trade history: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+        return format_response(False, error='Internal server error', status_code=500)
 
 
 @trading_bp.route('/equity-curve', methods=['GET'])
@@ -771,20 +770,8 @@ def get_equity_curve():
     try:
         engine = get_trading_engine()
 
-        # Get performance history
-        performance_history = engine.performance_history
-
-        if not performance_history:
-            # Generate placeholder data
-            equity_data = []
-            base_value = float(os.environ.get('INITIAL_CAPITAL', 100000))
-            for i in range(30):
-                equity_data.append({
-                    'timestamp': (datetime.now(UTC).timestamp() - (30 - i) * 86400),
-                    'value': base_value * (1 + (i * 0.001 + (i % 3) * 0.003))
-                })
-        else:
-            equity_data = performance_history
+        # Only real recorded history — an empty list when nothing has been recorded yet
+        equity_data = list(engine.performance_history)
 
         log_api_call('GET_EQUITY_CURVE', f"Data points: {len(equity_data)}")
 
@@ -792,7 +779,7 @@ def get_equity_curve():
 
     except Exception as e:
         logger.error(f"Error getting equity curve: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error=str(e), status_code=500)
+        return format_response(False, error='Internal server error', status_code=500)
 
 
 # =============================================================================

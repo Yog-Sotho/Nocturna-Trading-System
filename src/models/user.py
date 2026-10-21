@@ -4,15 +4,47 @@ NOCTURNA Trading System - Database Models
 Production-grade SQLAlchemy models for user management and audit logging.
 """
 
-import os
 from datetime import UTC, datetime
 
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
+from sqlalchemy.types import TypeDecorator
 from werkzeug.security import check_password_hash, generate_password_hash
 
 db = SQLAlchemy()
+
+#: Roles stored in User.roles. Admin rights come only from User.is_admin.
+ASSIGNABLE_ROLES = frozenset({"trader", "reader"})
+ADMIN_ROLE = "admin"
+
+
+class UTCDateTime(TypeDecorator):
+    """
+    Timezone-safe datetime column.
+
+    Values are stored as naive UTC (portable across SQLite and PostgreSQL) and
+    always returned as timezone-aware UTC, so comparisons with
+    ``datetime.now(UTC)`` never mix naive and aware values. Naive inputs are
+    interpreted as UTC.
+    """
+
+    impl = DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value
+        return value.astimezone(UTC).replace(tzinfo=None)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
 
 class User(db.Model):
@@ -32,21 +64,31 @@ class User(db.Model):
     trading_mode = Column(String(10), default='PAPER')  # PAPER or LIVE
     trading_disabled = Column(Boolean, default=False)
 
-    # API keys for programmatic access
-    api_keys = Column(JSON, default=list)
-
     # User settings
     settings = Column(JSON, default=dict)
 
     # Timestamps
-    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
-    updated_at = Column(DateTime, default=lambda: datetime.now(UTC),
+    created_at = Column(UTCDateTime, default=lambda: datetime.now(UTC))
+    updated_at = Column(UTCDateTime, default=lambda: datetime.now(UTC),
                         onupdate=lambda: datetime.now(UTC))
-    last_login = Column(DateTime)
+    last_login = Column(UTCDateTime)
 
     # Security
     failed_login_attempts = Column(Integer, default=0)
-    locked_until = Column(DateTime)
+    locked_until = Column(UTCDateTime)
+    # Embedded in every JWT; bumping it invalidates all of the user's tokens
+    token_version = Column(Integer, nullable=False, default=0)
+
+    def effective_roles(self) -> list[str]:
+        """Roles used for authorization: assignable roles, plus admin if is_admin."""
+        roles = sorted(r for r in (self.roles or []) if r in ASSIGNABLE_ROLES)
+        if self.is_admin:
+            roles.append(ADMIN_ROLE)
+        return roles
+
+    def revoke_all_tokens(self) -> None:
+        """Invalidate every access and refresh token issued to this user."""
+        self.token_version = (self.token_version or 0) + 1
 
     def set_password(self, password: str) -> None:
         """Hash and set the user's password."""
@@ -80,8 +122,11 @@ class User(db.Model):
         self.locked_until = None
 
     def increment_failed_logins(self) -> None:
-        """Increment failed login counter."""
-        self.failed_login_attempts += 1
+        """Increment failed login counter; an expired lock starts a fresh count."""
+        if self.locked_until is not None and not self.is_locked():
+            self.failed_login_attempts = 0
+            self.locked_until = None
+        self.failed_login_attempts = (self.failed_login_attempts or 0) + 1
         if self.failed_login_attempts >= 5:
             self.lock_account()
 
@@ -113,7 +158,10 @@ class APIKey(db.Model):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
-    key_hash = Column(String(256), nullable=False, index=True)
+    # Public half of the key, used to find the record; the secret half is only
+    # stored as a salted scrypt hash
+    key_id = Column(String(16), nullable=False, unique=True, index=True)
+    key_hash = Column(String(255), nullable=False)
     name = Column(String(100), nullable=False)
     description = Column(Text)
 
@@ -127,9 +175,9 @@ class APIKey(db.Model):
     rate_limit = Column(Integer, default=100)  # requests per minute
 
     # Timestamps
-    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
-    expires_at = Column(DateTime)
-    last_used = Column(DateTime)
+    created_at = Column(UTCDateTime, default=lambda: datetime.now(UTC))
+    expires_at = Column(UTCDateTime)
+    last_used = Column(UTCDateTime)
     use_count = Column(Integer, default=0)
 
     # Relationship
@@ -141,12 +189,39 @@ class APIKey(db.Model):
 
     def is_valid(self) -> bool:
         """Check if the API key is valid and active."""
-        return self.is_active and not self.is_expired()
+        return bool(self.is_active) and not self.is_expired()
+
+    def to_dict(self) -> dict:
+        """Public metadata only — the key itself is never stored or returned."""
+        return {
+            'id': self.id,
+            'key_id': self.key_id,
+            'name': self.name,
+            'description': self.description,
+            'permissions': self.permissions or [],
+            'is_active': self.is_active,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'expires_at': self.expires_at.isoformat() if self.expires_at else None,
+            'last_used': self.last_used.isoformat() if self.last_used else None,
+            'use_count': self.use_count or 0,
+        }
 
     def increment_usage(self) -> None:
         """Increment usage counter and update last used timestamp."""
-        self.use_count += 1
+        self.use_count = (self.use_count or 0) + 1
         self.last_used = datetime.now(UTC)
+
+
+class RevokedToken(db.Model):
+    """JWT IDs revoked before their expiry (logout, refresh rotation)."""
+
+    __tablename__ = 'revoked_tokens'
+
+    jti = Column(String(64), primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), index=True)
+    token_type = Column(String(10), nullable=False)
+    expires_at = Column(UTCDateTime, nullable=False, index=True)
+    revoked_at = Column(UTCDateTime, default=lambda: datetime.now(UTC), nullable=False)
 
 
 class AuditLog(db.Model):
@@ -155,7 +230,7 @@ class AuditLog(db.Model):
     __tablename__ = 'audit_logs'
 
     id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, default=lambda: datetime.now(UTC), index=True)
+    timestamp = Column(UTCDateTime, default=lambda: datetime.now(UTC), index=True)
 
     # Event details
     event_type = Column(String(50), nullable=False, index=True)
@@ -169,7 +244,7 @@ class AuditLog(db.Model):
     # Request information
     ip_address = Column(String(45))  # IPv6 compatible
     user_agent = Column(String(500))
-    request_id = Column(String(32), index=True)
+    request_id = Column(String(64), index=True)
     endpoint = Column(String(200))
     method = Column(String(10))
 
@@ -196,128 +271,35 @@ class AuditLog(db.Model):
         }
 
 
-class TradeRecord(db.Model):
-    """Trade record model for tracking executed trades."""
+def create_admin_user(username: str, email: str, password: str) -> User:
+    """
+    Create the operator's admin account.
 
-    __tablename__ = 'trade_records'
+    Single-operator deployment: public registration is disabled, so this is
+    the bootstrap path (exposed as the ``flask create-admin`` command).
 
-    id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, default=lambda: datetime.now(UTC), index=True)
+    Args:
+        username: Admin username (already validated and normalised).
+        email: Admin email (already validated and normalised).
+        password: Plain-text password; stored only as a salted hash.
 
-    # Trade details
-    order_id = Column(String(100), index=True)
-    symbol = Column(String(10), nullable=False, index=True)
-    side = Column(String(10), nullable=False)  # buy or sell
-    order_type = Column(String(20), nullable=False)
-    quantity = Column(Float, nullable=False)
-    filled_quantity = Column(Float, default=0)
-    avg_fill_price = Column(Float, default=0)
+    Returns:
+        The persisted admin user.
 
-    # Execution
-    broker_order_id = Column(String(100))
-    status = Column(String(20), nullable=False)
+    Raises:
+        ValueError: If the username or email is already registered.
+    """
+    if User.query.filter((User.username == username) | (User.email == email)).first():
+        raise ValueError(f"A user with username {username!r} or email {email!r} already exists")
 
-    # P&L
-    realized_pnl = Column(Float, default=0)
-    commission = Column(Float, default=0)
-
-    # Metadata
-    trade_metadata = Column(JSON, default=dict)
-
-    # User
-    user_id = Column(Integer, ForeignKey('users.id'), index=True)
-
-    # Trading mode used
-    trading_mode = Column(String(20))
-
-    def to_dict(self) -> dict:
-        """Convert trade record to dictionary."""
-        return {
-            'id': self.id,
-            'timestamp': self.timestamp.isoformat() if self.timestamp else None,
-            'order_id': self.order_id,
-            'symbol': self.symbol,
-            'side': self.side,
-            'order_type': self.order_type,
-            'quantity': self.quantity,
-            'filled_quantity': self.filled_quantity,
-            'avg_fill_price': self.avg_fill_price,
-            'status': self.status,
-            'realized_pnl': self.realized_pnl,
-            'commission': self.commission,
-            'trading_mode': self.trading_mode
-        }
-
-
-class SystemConfig(db.Model):
-    """System configuration model for storing runtime configuration."""
-
-    __tablename__ = 'system_config'
-
-    id = Column(Integer, primary_key=True)
-    key = Column(String(100), unique=True, nullable=False, index=True)
-    value = Column(Text)
-    value_json = Column(JSON)
-
-    # Metadata
-    description = Column(Text)
-    category = Column(String(50), index=True)
-
-    # Timestamps
-    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
-    updated_at = Column(DateTime, default=lambda: datetime.now(UTC),
-                        onupdate=lambda: datetime.now(UTC))
-    updated_by = Column(Integer, ForeignKey('users.id'))
-
-    def get_value(self):
-        """Get the configuration value, parsing JSON if needed."""
-        if self.value_json is not None:
-            return self.value_json
-        return self.value
-
-
-# =============================================================================
-# INITIALIZATION HELPERS
-# =============================================================================
-
-def create_default_admin(app=None):
-    """Create default admin user if none exists."""
-    admin_username = os.environ.get('ADMIN_USERNAME', 'admin')
-    admin_email = os.environ.get('ADMIN_EMAIL', 'admin@nocturna.local')
-    admin_password = os.environ.get('ADMIN_PASSWORD', None)
-
-    # Check if admin exists
-    admin = User.query.filter_by(username=admin_username).first()
-    if admin:
-        return admin
-
-    # Create admin user
     admin = User(
-        username=admin_username,
-        email=admin_email,
+        username=username,
+        email=email,
         is_active=True,
         is_admin=True,
-        roles=['admin', 'trader']
+        roles=['trader']
     )
-
-    if admin_password:
-        admin.set_password(admin_password)
-    else:
-        # Generate a random password — print to stderr ONCE, never persist in logs
-        import secrets
-        import sys as _sys
-        temp_password = secrets.token_urlsafe(16)
-        admin.set_password(temp_password)
-        print(
-            f"\n{'='*60}\n"
-            f"DEFAULT ADMIN CREATED\n"
-            f"Username: {admin_username}\n"
-            f"Password: {temp_password}\n"
-            f"CHANGE THIS IMMEDIATELY!\n"
-            f"{'='*60}\n",
-            file=_sys.stderr,
-            flush=True
-        )
+    admin.set_password(password)
 
     db.session.add(admin)
     db.session.commit()

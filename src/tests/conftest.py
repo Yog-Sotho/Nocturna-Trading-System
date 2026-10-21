@@ -40,6 +40,24 @@ def db(app):
         _db.drop_all()
 
 
+@pytest.fixture(autouse=True)
+def reset_ip_manager():
+    """The IP lockout list is process-global; isolate it between tests."""
+    from src.middleware.security import ip_manager
+    ip_manager.blacklist.clear()
+    ip_manager.failed_attempts.clear()
+    yield
+    ip_manager.blacklist.clear()
+    ip_manager.failed_attempts.clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limits(app):
+    """Rate-limit counters are shared by the session-wide app; start every test at zero."""
+    app.extensions["rate_limiter"].reset()
+    yield
+
+
 @pytest.fixture()
 def client(app, db):
     """Flask test client."""

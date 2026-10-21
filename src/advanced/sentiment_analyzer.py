@@ -215,7 +215,7 @@ class SentimentAnalyzer:
         text = text.lower()
 
         # Remove URLs
-        text = re.sub(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', '', text)
+        text = re.sub(r'https?://\S+', '', text)
 
         # Remove mentions and hashtags (but keep the content)
         text = re.sub(r'[@#]', '', text)

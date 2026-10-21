@@ -5,6 +5,7 @@ Production-grade configuration with security hardening.
 
 import logging
 import os
+import re
 import secrets
 import sys
 import time as time_module
@@ -13,14 +14,21 @@ from datetime import UTC, datetime, timedelta
 # DON'T CHANGE THIS !!!
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from flask import Flask, g, jsonify, request, send_from_directory
+from flask import Flask, abort, g, jsonify, request, send_from_directory
 from flask_cors import CORS
+from werkzeug.exceptions import MethodNotAllowed
+from werkzeug.security import safe_join
 
-from src.middleware.security import setup_rate_limiting, setup_security_headers
+from src.config import ensure_sqlite_directory, load_settings
+from src.core.safety import assert_paper_only
+from src.db_migrations import upgrade as upgrade_database
+from src.middleware.security import configure_proxy, setup_rate_limiting, setup_security_headers
 from src.models.user import db
 from src.routes.trading import trading_bp
 from src.routes.user import user_bp
 from src.utils.logger import setup_secure_logging
+
+_REQUEST_ID_PATTERN = re.compile(r'[A-Za-z0-9._-]{1,64}')
 
 
 def create_app(config_override=None):
@@ -33,79 +41,74 @@ def create_app(config_override=None):
     Returns:
         Configured Flask application instance
     """
+    # Live trading is hard-disabled: refuse to boot with a live configuration
+    assert_paper_only()
+
+    # Validate the whole environment up front (fails fast in production)
+    settings = load_settings()
+
     app = Flask(__name__)
+    app.extensions['settings'] = settings
+    configure_proxy(app, settings.trusted_proxy_count)
 
     # =============================================================================
-    # SECURITY: Load configuration from environment variables (not hardcoded)
+    # SECRETS
     # =============================================================================
-
-    # Flask secret key - MUST be set via environment variable
-    secret_key = os.environ.get('FLASK_SECRET_KEY', None)
-    if secret_key is None:
-        if os.environ.get('FLASK_ENV') == 'production':
-            raise ValueError(
-                "FLASK_SECRET_KEY environment variable MUST be set in production. "
-                "Generate one using: python -c \"import secrets; print(secrets.token_hex(32))\""
-            )
-        else:
-            # Development mode: generate a warning but allow to continue
-            logging.warning(
-                "FLASK_SECRET_KEY not set. Using insecure generated key. "
-                "Set FLASK_SECRET_KEY environment variable for production."
-            )
-            secret_key = secrets.token_hex(32)
+    if settings.flask_secret_key is None:
+        # Development/testing only — load_settings() rejects this in production
+        logging.warning(
+            "FLASK_SECRET_KEY not set. Using an ephemeral generated key; "
+            "tokens will not survive a restart."
+        )
+        secret_key = secrets.token_hex(32)
+    else:
+        secret_key = settings.flask_secret_key.get_secret_value()
 
     app.config['SECRET_KEY'] = secret_key
-    app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', secret_key)
-    app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(
-        hours=int(os.environ.get('JWT_EXPIRATION_HOURS', 24))
+    app.config['JWT_SECRET_KEY'] = (
+        settings.jwt_secret_key.get_secret_value() if settings.jwt_secret_key else secret_key
     )
+    app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=settings.jwt_expiration_hours)
 
     # =============================================================================
     # DATABASE CONFIGURATION
     # =============================================================================
-    database_url = os.environ.get(
-        'DATABASE_URL',
-        f"sqlite:///{os.path.join(os.path.dirname(__file__), 'database', 'nocturna.db')}"
-    )
+    database_url = settings.resolved_database_url
+    ensure_sqlite_directory(database_url)
     app.config['SQLALCHEMY_DATABASE_URI'] = database_url
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
     # Engine options — only apply pool settings for non-SQLite databases
     if database_url.startswith('sqlite'):
-        app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-            'echo': os.environ.get('SQLALCHEMY_ECHO', 'false').lower() == 'true'
-        }
+        app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'echo': settings.sqlalchemy_echo}
     else:
         app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
             'pool_size': 10,
             'pool_recycle': 3600,
             'pool_pre_ping': True,
             'max_overflow': 20,
-            'echo': os.environ.get('SQLALCHEMY_ECHO', 'false').lower() == 'true'
+            'echo': settings.sqlalchemy_echo
         }
 
     # =============================================================================
     # SESSION CONFIGURATION
     # =============================================================================
-    app.config['SESSION_COOKIE_SECURE'] = os.environ.get('SECURE_COOKIES', 'true').lower() == 'true'
+    app.config['SESSION_COOKIE_SECURE'] = settings.secure_cookies
     app.config['SESSION_COOKIE_HTTPONLY'] = True
-    app.config['SESSION_COOKIE_SAMESITE'] = os.environ.get('SESSION_COOKIE_SAMESITE', 'Lax')
-    app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(
-        hours=int(os.environ.get('SESSION_LIFETIME_HOURS', 24))
-    )
+    app.config['SESSION_COOKIE_SAMESITE'] = settings.session_cookie_samesite
+    app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=settings.session_lifetime_hours)
 
     # =============================================================================
     # APPLICATION SETTINGS
     # =============================================================================
     app.config['JSON_SORT_KEYS'] = False
     app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False
-    app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max request size
+    app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024  # 1 MB; no endpoint takes more
 
     # =============================================================================
     # PRODUCTION MODE SETTINGS
     # =============================================================================
-    app.config['DEBUG'] = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
+    app.config['DEBUG'] = settings.flask_debug
     app.config['TESTING'] = False
 
     # =============================================================================
@@ -122,10 +125,9 @@ def create_app(config_override=None):
     # =============================================================================
     # CORS CONFIGURATION - STRICT ORIGIN CHECKING
     # =============================================================================
-    allowed_origins = os.environ.get('ALLOWED_ORIGINS', '')
-    if allowed_origins:
-        # Production: only allow specific origins
-        allowed_list = [origin.strip() for origin in allowed_origins.split(',') if origin.strip()]
+    allowed_list = settings.allowed_origin_list
+    if allowed_list:
+        # Only allow the configured origins
         cors_config = {
             'resources': {
                 r'/*': {
@@ -142,29 +144,17 @@ def create_app(config_override=None):
         CORS(app, **cors_config)
         app.logger.info(f"CORS enabled for allowed origins: {allowed_list}")
     else:
-        # No origins configured - restrict to same origin in production
-        if os.environ.get('FLASK_ENV') == 'production':
-            raise ValueError(
-                "ALLOWED_ORIGINS environment variable MUST be set in production. "
-                "Example: ALLOWED_ORIGINS=https://yourdomain.com,https://app.yourdomain.com"
-            )
-        else:
-            # Development mode: allow local development
-            CORS(app, resources={
-                r'/*': {
-                    'origins': ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5000'],
-                    'methods': ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-                    'allow_headers': ['Content-Type', 'Authorization', 'X-API-Key', 'X-Request-ID'],
-                    'supports_credentials': True,
-                    'max_age': 600
-                }
-            })
-            app.logger.warning("CORS enabled for local development only. Configure ALLOWED_ORIGINS for production.")
-
-    # =============================================================================
-    # RATE LIMITING SETUP
-    # =============================================================================
-    setup_rate_limiting(app)
+        # Development only — load_settings() requires ALLOWED_ORIGINS in production
+        CORS(app, resources={
+            r'/*': {
+                'origins': ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5000'],
+                'methods': ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+                'allow_headers': ['Content-Type', 'Authorization', 'X-API-Key', 'X-Request-ID'],
+                'supports_credentials': True,
+                'max_age': 600
+            }
+        })
+        app.logger.warning("CORS enabled for local development only. Configure ALLOWED_ORIGINS for production.")
 
     # =============================================================================
     # SECURITY HEADERS
@@ -175,14 +165,24 @@ def create_app(config_override=None):
     # INITIALIZE DATABASE
     # =============================================================================
     db.init_app(app)
-    with app.app_context():
-        db.create_all()
+    if not app.config.get('TESTING'):
+        # The schema is owned by the migrations; tests build theirs per test
+        upgrade_database(app)
+        with app.app_context():
+            # gunicorn preloads the app and forks: no pooled connection may be inherited
+            db.engine.dispose()
 
     # =============================================================================
     # INITIALIZE AUTH TOKEN MANAGER
     # =============================================================================
     from src.middleware.auth import token_manager
     token_manager.init_app(app)
+
+    # =============================================================================
+    # OPERATOR CLI (admin bootstrap — public registration is disabled)
+    # =============================================================================
+    from src.cli import register_cli
+    register_cli(app)
 
     # =============================================================================
     # REGISTER BLUEPRINTS
@@ -195,9 +195,9 @@ def create_app(config_override=None):
     app.register_blueprint(paper_bp, url_prefix='/api/paper')
     with app.app_context():
         paper_config = {
-            'initial_capital': float(os.environ.get('PAPER_INITIAL_CAPITAL', 100000)),
-            'commission_rate': float(os.environ.get('PAPER_COMMISSION_RATE', 0.001)),
-            'slippage_rate': float(os.environ.get('PAPER_SLIPPAGE_RATE', 0.0005)),
+            'initial_capital': settings.paper_initial_capital,
+            'commission_rate': settings.paper_commission_rate,
+            'slippage_rate': settings.paper_slippage_rate,
         }
         init_paper_engine(paper_config)
 
@@ -207,8 +207,17 @@ def create_app(config_override=None):
     @app.before_request
     def add_request_id():
         """Add unique request ID for tracing."""
-        g.request_id = request.headers.get('X-Request-ID', secrets.token_hex(16))
+        supplied = request.headers.get('X-Request-ID', '')
+        # Accept a caller's ID only if it is safe to log and store
+        g.request_id = supplied if _REQUEST_ID_PATTERN.fullmatch(supplied) else secrets.token_hex(16)
         g.start_time = time_module.time()
+
+    @app.before_request
+    def reject_oversized_body():
+        """Refuse bodies over MAX_CONTENT_LENGTH before any route reads them."""
+        limit = app.config.get('MAX_CONTENT_LENGTH')
+        if limit and request.content_length and request.content_length > limit:
+            abort(413)
 
     @app.after_request
     def add_response_headers(response):
@@ -258,6 +267,24 @@ def create_app(config_override=None):
             'timestamp': datetime.now(UTC).isoformat()
         }), 404
 
+    @app.errorhandler(405)
+    def method_not_allowed(error):
+        return jsonify({
+            'success': False,
+            'error': 'Method not allowed',
+            'request_id': g.get('request_id'),
+            'timestamp': datetime.now(UTC).isoformat()
+        }), 405
+
+    @app.errorhandler(413)
+    def payload_too_large(error):
+        return jsonify({
+            'success': False,
+            'error': 'Request body too large',
+            'request_id': g.get('request_id'),
+            'timestamp': datetime.now(UTC).isoformat()
+        }), 413
+
     @app.errorhandler(429)
     def rate_limit_exceeded(error):
         app.logger.warning(f"Rate limit exceeded: {request.path} from {request.remote_addr} | Request ID: {g.get('request_id')}")
@@ -292,14 +319,25 @@ def create_app(config_override=None):
     # =============================================================================
     # STATIC FILE SERVING
     # =============================================================================
-    static_folder = os.environ.get('STATIC_FOLDER', os.path.join(os.path.dirname(__file__), 'static'))
+    static_folder = str(settings.static_folder or os.path.join(os.path.dirname(__file__), 'static'))
     app.config['STATIC_FOLDER'] = static_folder
 
     @app.route('/', defaults={'path': ''})
     @app.route('/<path:path>')
     def serve(path):
         """Serve static files or return index.html for SPA."""
-        if path != "" and os.path.exists(os.path.join(static_folder, path)):
+        if path == 'api' or path.startswith('api/'):
+            # API paths never fall through to the SPA: a known path called with
+            # the wrong method is a 405, anything else a 404 (both JSON)
+            adapter = app.url_map.bind_to_environ(request.environ)
+            api_methods = set(adapter.allowed_methods(request.path)) - {'GET', 'HEAD', 'OPTIONS'}
+            if api_methods:
+                raise MethodNotAllowed(valid_methods=sorted(api_methods))
+            abort(404)
+        # safe_join refuses paths that leave the static folder, so the existence
+        # check cannot be used to probe for files elsewhere on the server
+        static_file = safe_join(static_folder, path) if path else None
+        if static_file is not None and os.path.isfile(static_file):
             return send_from_directory(static_folder, path)
         else:
             index_path = os.path.join(static_folder, 'index.html')
@@ -320,21 +358,24 @@ def create_app(config_override=None):
         return jsonify({
             'version': '2.0.0',
             'api_version': 'v1',
-            'environment': os.environ.get('FLASK_ENV', 'development'),
+            'environment': settings.flask_env,
             'timestamp': datetime.now(UTC).isoformat()
         })
 
+    # =============================================================================
+    # RATE LIMITING (after every route is registered)
+    # =============================================================================
+    setup_rate_limiting(app, storage_uri=settings.redis_url)
+
     app.logger.info("NOCTURNA Trading System initialized successfully")
-    app.logger.info(f"Environment: {os.environ.get('FLASK_ENV', 'development')}")
+    app.logger.info(f"Environment: {settings.flask_env}")
 
     return app
 
 
-# Create the default application instance
-app = create_app()
-
-
 if __name__ == '__main__':
+    app = create_app()
+
     # =============================================================================
     # PRODUCTION WARNING
     # =============================================================================
@@ -343,7 +384,7 @@ if __name__ == '__main__':
             "=" * 80 + "\n"
             "WARNING: Running Flask development server in PRODUCTION mode!\n"
             "Use a production WSGI server (gunicorn, uwsgi) instead:\n"
-            "gunicorn -w 4 -b 0.0.0.0:5000 'src.main:create_app()' --timeout 120\n"
+            "gunicorn -c gunicorn.conf.py 'src.main:create_app()'\n"
             "=" * 80
         )
 

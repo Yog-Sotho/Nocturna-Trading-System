@@ -2,7 +2,6 @@
 # NOCTURNA Trading System - Gunicorn Configuration
 # =============================================================================
 
-import multiprocessing
 import os
 
 # =============================================================================
@@ -21,13 +20,9 @@ bind = os.environ.get('GUNICORN_BIND', '0.0.0.0:5000')
 
 # Number of worker processes
 # Number of worker processes
-# IMPORTANT: Trading engine uses in-memory singleton state (positions, orders, risk).
-# Multiple workers would create divergent copies. Force workers=1 when trading is active.
-trading_mode = os.environ.get('TRADING_MODE', 'PAPER')
-if trading_mode in ('PAPER', 'LIVE'):
-    workers = 1  # Trading engine requires single worker for state consistency
-else:
-    workers = int(os.environ.get('GUNICORN_WORKERS', multiprocessing.cpu_count() * 2 + 1))
+# IMPORTANT: the trading engine keeps its state (positions, orders, risk) in memory
+# inside the worker. A second worker would hold a divergent copy, so there is exactly one.
+workers = 1
 
 # Number of threads per worker
 threads = int(os.environ.get('GUNICORN_THREADS', 4))
@@ -44,9 +39,10 @@ graceful_timeout = 30
 # Keep-alive timeout
 keepalive = 5
 
-# Maximum number of requests a worker will handle before respawning
-max_requests = 1000
-max_requests_jitter = 50
+# Never recycle the worker: a respawned worker starts from the master's boot-time
+# state, which would silently discard the engine's in-memory positions and orders
+max_requests = 0
+max_requests_jitter = 0
 
 # =============================================================================
 # PROCESS NAMING

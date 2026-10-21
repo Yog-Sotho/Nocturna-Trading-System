@@ -119,8 +119,8 @@ def paper_submit_order():
         stop_price: float (required for stop / stop_limit)
     """
     try:
-        data = request.get_json()
-        if not data:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not data:
             return _response(False, error="Request body required", status_code=400)
 
         required = ["symbol", "side", "order_type", "quantity"]
@@ -147,7 +147,12 @@ def paper_submit_order():
         return _response(False, error=result.get("error", "Order rejected"), status_code=400)
 
     except (ValueError, TypeError) as e:
-        return _response(False, error=f"Invalid input: {e}", status_code=400)
+        logger.warning(f"Invalid paper order: {e}")
+        return _response(
+            False,
+            error="Invalid input: side, order_type, quantity and prices must be valid values",
+            status_code=400,
+        )
     except Exception as e:
         logger.error(f"Paper order error: {e}")
         return _response(False, error="Failed to submit order", status_code=500)
@@ -265,8 +270,8 @@ def paper_update_prices():
         prices: {"AAPL": 185.50, "MSFT": 420.10, ...}
     """
     try:
-        data = request.get_json()
-        if not data or "prices" not in data:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or "prices" not in data:
             return _response(False, error="prices dict required", status_code=400)
 
         engine = get_engine()

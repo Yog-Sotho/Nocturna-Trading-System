@@ -150,24 +150,29 @@ class AuditLogger:
 
     def _sanitize_details(self, details: dict) -> dict:
         """Remove sensitive fields from details."""
-        sensitive_fields = [
-            'password', 'secret', 'token', 'api_key', 'secret_key',
-            'credential', 'authorization', 'ssn', 'card_number'
-        ]
+        return sanitize_details(details)
 
-        sanitized = {}
-        for key, value in details.items():
-            key_lower = key.lower()
-            if any(field in key_lower for field in sensitive_fields):
-                sanitized[key] = '[REDACTED]'
-            elif isinstance(value, dict):
-                sanitized[key] = self._sanitize_details(value)
-            elif isinstance(value, str) and len(value) > 100:
-                sanitized[key] = value[:50] + '...'
-            else:
-                sanitized[key] = value
 
-        return sanitized
+_SENSITIVE_FIELDS = (
+    'password', 'secret', 'token', 'api_key', 'secret_key',
+    'credential', 'authorization', 'ssn', 'card_number'
+)
+
+
+def sanitize_details(details: dict) -> dict:
+    """Redact sensitive keys and shorten long strings, recursively."""
+    sanitized = {}
+    for key, value in details.items():
+        key_lower = str(key).lower()
+        if any(field in key_lower for field in _SENSITIVE_FIELDS):
+            sanitized[key] = '[REDACTED]'
+        elif isinstance(value, dict):
+            sanitized[key] = sanitize_details(value)
+        elif isinstance(value, str) and len(value) > 100:
+            sanitized[key] = value[:50] + '...'
+        else:
+            sanitized[key] = value
+    return sanitized
 
 
 # Global audit logger instance
