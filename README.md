@@ -26,15 +26,16 @@ trading; only the clock, the market-data source and the broker are swapped. See
 | Backtester (simulated clock and broker, cost model, no look-ahead) | `src/trading/backtest.py` | Working |
 | Validation pipeline: walk-forward traded through the engine, deflated Sharpe, probability of backtest overfitting, purged cross-validation, cost stress, parameter stability, regimes, promotion gates | `src/trading/validation/`, `flask validate` | Working; no candidate strategy yet (Phase 5) |
 | Paper trading on Alpaca (`alpaca-py`): broker adapter, trade-update stream, polling data feed, reconciliation | `src/trading/alpaca.py`, `service.py` | Working against fakes and Alpaca's real request models; not yet run against a live paper account |
-| Strategies | `src/trading/strategies/` | Only a 60/40 SPY/IEF benchmark; the validated lineup arrives in Phase 5 |
+| Strategies | `src/trading/strategies/` | 60/40 benchmark (traded), plus month-end rebalancing flows, ETF time-series momentum, a crypto Donchian ensemble and a blend; none has passed the promotion gates yet |
 | Trading history (orders, fills, equity snapshots) and audit log | `src/models/` | Working |
 | REST API with JWT and API-key auth (single operator) | `src/main.py`, `src/routes/` | Working; public registration is disabled |
 | Dashboard | `src/static/` | Compiled bundle only (no source); it targets the old API and does not send auth headers. Rebuilt in Phase 7 |
 
 ### Known limitations
 
-- No strategy has an edge yet: the engine runs a benchmark portfolio until strategies pass
-  the Phase 4 validation gates.
+- No strategy has a validated edge: on Alpaca data from 2017 to 2026 none of the Phase 5
+  candidates, alone or combined, beat the 60/40 benchmark out of sample (see
+  [docs/ROADMAP.md](docs/ROADMAP.md)), so the engine trades the benchmark.
 - The engine runs inside the web worker; Phase 6 moves it into its own service.
 
 ## Quick start (local, paper only)
@@ -141,12 +142,15 @@ when the candidate is rejected. For each candidate (a strategy family and its pa
 | Median neighbouring parameter set's Sharpe / selected Sharpe | ≥ 0.5 |
 | Out-of-sample maximum drawdown | ≤ 12% (the 10% kill switch plus gaps) |
 
+Registered candidates: `benchmark`, `rebalancing`, `tsmom`, `crypto-trend` (use
+`--start 2023-01-01 --train-months 12`: crypto data starts in 2021 and the longest channel needs
+two years) and `lineup`.
+
 Notes: Alpaca's free plan serves equity history from 2016, so the default first trading day is
 2017-01-01 (2016 warms up indicators). Sharpe ratios use a zero risk-free rate, the same as idle
 cash earns in the engine. A backtest has no operator, so a drawdown kill is followed by a
-simulated resume after `--resume-after-kill-days` (30); every kill is counted in the report. Only
-the 60/40 `benchmark` family is registered until Phase 5 adds the candidates
-(`src/trading/validation/candidates.py`).
+simulated resume after `--resume-after-kill-days` (30); every kill is counted in the report.
+Candidates are defined in `src/trading/validation/candidates.py`.
 
 ## API
 

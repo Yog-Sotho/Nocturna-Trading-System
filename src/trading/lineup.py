@@ -1,10 +1,11 @@
 """
 NOCTURNA Trading System - What the live engine runs.
 
-Until a candidate strategy passes the Phase 4 validation gates, the engine
-runs only the 60/40 benchmark: it exercises orders, fills, reconciliation and
-history in paper trading without claiming an edge. Phase 5 replaces it with
-the validated lineup (see docs/ROADMAP.md).
+The engine runs only the 60/40 benchmark: it exercises orders, fills,
+reconciliation and history in paper trading without claiming an edge. A
+strategy replaces it only after passing the promotion gates (`flask
+validate`); none of the Phase 5 candidates has, alone or as the combined
+lineup (see docs/ROADMAP.md).
 """
 
 from __future__ import annotations

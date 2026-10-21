@@ -48,6 +48,14 @@ A strategy moves research → paper → small live → scaled live only if:
 | EVE | Grid trading — expected return ≈ 0 and ruin risk in trends | — | Retired from live; research only |
 | Overlays | Regime model used only to scale exposure; crypto Fear & Greed and x70 signals removed from equity decisions | — | Planned |
 
+**Phase 5 outcome.** The lineup (60/40 core, ETF trend, crypto trend at 15%; two mixes and
+two trend variants fixed before any lineup backtest) was validated as one candidate on Alpaca
+data from 2017 to October 2026 and rejected: walk-forward Sharpe 0.76 (gate 1.0), 4.6% a year,
+maximum drawdown -11.0%, probability of backtest overfitting 0.24 (gate 0.20); deflated Sharpe
+0.999, 3x costs, stability and drawdown passed. Out of sample it did not beat the 60/40
+benchmark (Sharpe 0.81, 5.5% a year, drawdown -14.1%); its best full-period mix (Sharpe 1.01)
+was in-sample selection. No candidate is promoted, so paper trading keeps the benchmark.
+
 The original LUCIFER (opening-range breakout on "stocks in play") was dropped because its
 stock selection needs full-market real-time volume, which requires a $99/month data plan.
 
@@ -69,7 +77,7 @@ stock selection needs full-market real-time volume, which requires a $99/month d
 | 2 | Event-driven core: domain model, event flow, one broker interface (simulated + Alpaca via `alpaca-py`), data layer with explicit ranges and closed bars, removal of the legacy engine and `alpaca-trade-api` | Done |
 | 3 | Risk engine: pre-trade controls (price collar, size/exposure caps, duplicate detection, kill switch), equity-based loss limits, volatility-targeted sizing, PDT logic removed | Done |
 | 4 | Validation pipeline: walk-forward, combinatorial purged cross-validation, deflated Sharpe, overfitting probability, cost stress, regime splits, tear sheets | Done |
-| 5 | Strategy rebuild per the lineup above, each gated by Phase 4 | Planned |
+| 5 | Strategy rebuild per the lineup above, each gated by Phase 4 | Done: four candidates built and validated on Alpaca data; none passed, so the engine keeps the 60/40 benchmark |
 | 6 | Operations: engine as its own service, structured logs, metrics, alerts, health/readiness, Docker/Compose fixes, backups, runbooks | Planned |
 | 7 | Versioned API with OpenAPI docs; dashboard rebuilt with source and auth | Planned |
 | 8 | CI quality gates: strict typing on core, coverage targets, mutation testing on risk, blocking security scans | Planned |
