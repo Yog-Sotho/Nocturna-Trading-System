@@ -30,7 +30,9 @@ pandas>=2.2.3,<3
 scipy>=1.14,<2
 scikit-learn>=1.6,<2
 
-# Market data and broker (legacy engine; replaced by alpaca-py in Phase 2)
+# Market data and broker
+alpaca-py>=0.44,<0.45
+# Legacy engine only; removed with it in Phase 2
 alpaca-trade-api==3.2.0
 yfinance>=0.2.40,<1
 requests>=2.33,<3

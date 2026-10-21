@@ -1,0 +1,563 @@
+"""
+Tests for the trading core: market data, simulated broker, risk gate, engine,
+backtest runner, and parity between the backtest and live (polling) paths.
+"""
+
+from collections.abc import Mapping
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+from types import SimpleNamespace
+
+import pytest
+
+from src.tests.trading_fixtures import BTC, IEF, SPY, bar, daily_bars, ny
+from src.trading.backtest import BacktestConfig, run_backtest
+from src.trading.broker import DEFAULT_COSTS, CostModel, SimulatedBroker
+from src.trading.clock import SimulatedClock
+from src.trading.data import AlpacaBarSource, DataQualityError, InMemoryBarSource, to_bar
+from src.trading.domain import (
+    DAILY,
+    AssetClass,
+    OrderRequest,
+    OrderStatus,
+    OrderType,
+    Side,
+    TimeInForce,
+)
+from src.trading.engine import Allocation, Engine
+from src.trading.feed import PollingFeed
+from src.trading.ledger import Ledger
+from src.trading.risk import RiskGate, RiskLimits
+from src.trading.strategies.benchmark import BuyAndHold
+from src.trading.strategy import Strategy, StrategyContext
+
+D = Decimal
+NO_COSTS = {AssetClass.EQUITY: CostModel(), AssetClass.CRYPTO: CostModel()}
+
+
+# -- market data ---------------------------------------------------------------
+
+class TestInMemoryBarSource:
+    def test_bars_appear_only_after_the_feed_delay(self):
+        b = bar(SPY, ny(2026, 3, 2), 100, 101, 99, 100.5)
+        clock = SimulatedClock(b.end + timedelta(minutes=14))
+        source = InMemoryBarSource({"SPY": [b]}, clock)
+        assert source.bars([SPY], DAILY, b.start, b.end + timedelta(days=1))["SPY"] == []
+        clock.advance_to(b.end + timedelta(minutes=15))
+        assert source.bars([SPY], DAILY, b.start, b.end + timedelta(days=1))["SPY"] == [b]
+
+    def test_range_is_half_open(self):
+        bars = daily_bars(SPY, date(2026, 3, 2), date(2026, 3, 6))
+        source = InMemoryBarSource({"SPY": bars}, SimulatedClock(datetime(2027, 1, 1, tzinfo=UTC)))
+        got = source.bars([SPY], DAILY, bars[1].start, bars[3].start)["SPY"]
+        assert got == bars[1:3]
+
+
+class TestVendorBars:
+    def test_rounding_artefacts_are_repaired(self):
+        b = to_bar("SPY", ny(2026, 3, 2), DAILY, AssetClass.EQUITY, 100.0, 99.999, 99.0, 99.5, 1.0)
+        assert b.high == 100.0
+
+    def test_real_inconsistencies_are_rejected(self):
+        with pytest.raises(DataQualityError):
+            to_bar("SPY", ny(2026, 3, 2), DAILY, AssetClass.EQUITY, 100.0, 98.0, 97.0, 99.5, 1.0)
+
+
+class _FakeBarClient:
+    def __init__(self, bars):
+        self.bars, self.requests = bars, []
+
+    def _answer(self, request):
+        self.requests.append(request)
+        return SimpleNamespace(data={s: self.bars.get(s, []) for s in request.symbol_or_symbols})
+
+    get_stock_bars = get_crypto_bars = _answer
+
+
+def _vendor(start, price=100.0):
+    return SimpleNamespace(timestamp=start, open=price, high=price + 1, low=price - 1, close=price, volume=10.0)
+
+
+class TestAlpacaBarSource:
+    def test_equity_requests_are_sip_adjusted_and_never_too_recent(self):
+        from alpaca.data.enums import Adjustment, DataFeed
+        day1, day2 = ny(2026, 3, 2), ny(2026, 3, 3)
+        now = day2 + timedelta(hours=12)  # day 2's bar is still forming
+        stocks = _FakeBarClient({"SPY": [_vendor(day1), _vendor(day2)]})
+        source = AlpacaBarSource(SimulatedClock(now), stock_client=stocks, crypto_client=_FakeBarClient({}))
+        result = source.bars([SPY], DAILY, day1, now + timedelta(days=5))
+        request = stocks.requests[0]
+        assert request.feed is DataFeed.SIP and request.adjustment is Adjustment.ALL
+        # alpaca-py stores naive UTC and serializes it with the UTC offset
+        assert request.to_request_fields()["end"] == (now - timedelta(minutes=15)).isoformat()
+        assert [b.start for b in result["SPY"]] == [day1]
+        assert result["SPY"][0].end == day2
+
+    def test_crypto_bars_are_utc_days(self):
+        start = datetime(2026, 3, 7, tzinfo=UTC)
+        crypto = _FakeBarClient({"BTC/USD": [_vendor(start, 60000.0)]})
+        source = AlpacaBarSource(SimulatedClock(start + timedelta(days=2)), crypto_client=crypto)
+        [b] = source.bars([BTC], DAILY, start, start + timedelta(days=1))["BTC/USD"]
+        assert b.end == start + timedelta(days=1)
+
+    def test_equities_need_api_keys(self):
+        source = AlpacaBarSource(SimulatedClock(ny(2026, 3, 5)), crypto_client=_FakeBarClient({}))
+        with pytest.raises(RuntimeError, match="ALPACA_API_KEY"):
+            source.bars([SPY], DAILY, ny(2026, 3, 2), ny(2026, 3, 4))
+
+
+# -- simulated broker -------------------------------------------------------------
+
+class _Recorder:
+    def __init__(self):
+        self.updates = []
+
+    def __call__(self, update):
+        self.updates.append(update)
+
+    def statuses(self, cid):
+        return [u.status for u in self.updates if u.client_order_id == cid]
+
+    def fills(self):
+        return [u.fill for u in self.updates if u.fill is not None]
+
+
+def _broker(now, cash="1000000", costs=NO_COSTS, **kw):
+    clock = SimulatedClock(now)
+    broker = SimulatedBroker(clock, {"SPY": SPY, "BTC/USD": BTC, "IEF": IEF}, D(cash), costs=costs, **kw)
+    recorder = _Recorder()
+    broker.set_listener(recorder)
+    return clock, broker, recorder
+
+
+def _req(cid, symbol="SPY", side=Side.BUY, qty="10", **kw):
+    return OrderRequest(cid, symbol, side, D(qty), **kw)
+
+
+class TestSimulatedBrokerTiming:
+    def test_order_before_the_open_fills_at_that_sessions_open(self):
+        clock, broker, rec = _broker(ny(2026, 3, 3, 0, 15))
+        broker.submit(_req("o1", time_in_force=TimeInForce.OPG))
+        b = bar(SPY, ny(2026, 3, 3), 100, 102, 99, 101)
+        clock.advance_to(b.end + timedelta(minutes=15))
+        broker.on_bars({"SPY": b})
+        assert rec.fills()[0].price == D("100")
+
+    def test_order_after_the_open_waits_for_the_next_session(self):
+        # Placed at 10:00, after the 09:30 open: filling at that open would be look-ahead
+        clock, broker, rec = _broker(ny(2026, 3, 3, 10, 0))
+        broker.submit(_req("o1", time_in_force=TimeInForce.GTC))
+        same_day = bar(SPY, ny(2026, 3, 3), 100, 102, 99, 101)
+        next_day = bar(SPY, ny(2026, 3, 4), 105, 106, 104, 105)
+        clock.advance_to(next_day.start)
+        broker.on_bars({"SPY": same_day})
+        assert rec.fills() == []
+        clock.advance_to(next_day.end + timedelta(minutes=15))
+        broker.on_bars({"SPY": next_day})
+        assert rec.fills()[0].price == D("105")
+
+    def test_crypto_order_just_after_midnight_gets_the_open(self):
+        day = datetime(2026, 3, 3, tzinfo=UTC)
+        clock, broker, rec = _broker(day + timedelta(minutes=1))
+        broker.submit(_req("o1", symbol="BTC/USD", qty="0.5", time_in_force=TimeInForce.GTC))
+        b = bar(BTC, day, 60000, 61000, 59000, 60500)
+        clock.advance_to(b.end + timedelta(minutes=1))
+        broker.on_bars({"BTC/USD": b})
+        assert rec.fills()[0].price == D("60000")
+
+
+class TestSimulatedBrokerPrices:
+    START = ny(2026, 3, 3, 0, 15)
+    BAR = bar(SPY, ny(2026, 3, 3), 100, 104, 96, 101)
+
+    def _run(self, request, costs=NO_COSTS, b=None):
+        clock, broker, rec = _broker(self.START, costs=costs)
+        broker.submit(request)
+        b = b or self.BAR
+        clock.advance_to(b.end + timedelta(minutes=15))
+        broker.on_bars({"SPY": b})
+        return rec
+
+    def test_market_slippage_is_adverse(self):
+        costs = {**NO_COSTS, AssetClass.EQUITY: CostModel(D("0"), D("10"))}
+        buy = self._run(_req("b", time_in_force=TimeInForce.OPG), costs).fills()[0]
+        sell = self._run(_req("s", side=Side.SELL, time_in_force=TimeInForce.OPG), costs)
+        assert buy.price == D("100.1")
+        assert sell.updates[-1].status is OrderStatus.REJECTED or sell.fills()[0].price == D("99.9")
+
+    def test_limit_needs_trade_through(self):
+        touched = bar(SPY, ny(2026, 3, 3), 100, 101, 97, 100)
+        rec = self._run(_req("l", order_type=OrderType.LIMIT, limit_price=D("97")), b=touched)
+        assert rec.fills() == [] and rec.statuses("l")[-1] is OrderStatus.EXPIRED
+        rec = self._run(_req("l", order_type=OrderType.LIMIT, limit_price=D("98")), b=touched)
+        assert rec.fills()[0].price == D("98")
+
+    def test_limit_gets_a_better_open(self):
+        rec = self._run(_req("l", order_type=OrderType.LIMIT, limit_price=D("103")))
+        assert rec.fills()[0].price == D("100")
+
+    def test_stop_gap_fills_at_the_open(self):
+        gap = bar(SPY, ny(2026, 3, 3), 110, 112, 109, 111)
+        rec = self._run(_req("s", order_type=OrderType.STOP, stop_price=D("105"), time_in_force=TimeInForce.GTC),
+                        b=gap)
+        assert rec.fills()[0].price == D("110")
+
+    def test_stop_touch_fills_at_the_stop(self):
+        rec = self._run(_req("s", order_type=OrderType.STOP, stop_price=D("103"), time_in_force=TimeInForce.GTC))
+        assert rec.fills()[0].price == D("103")
+
+    def test_cls_fills_at_the_close(self):
+        rec = self._run(_req("c", time_in_force=TimeInForce.CLS))
+        assert rec.fills()[0].price == D("101")
+
+    def test_crypto_fee(self):
+        day = datetime(2026, 3, 3, tzinfo=UTC)
+        clock, broker, rec = _broker(day, costs=DEFAULT_COSTS)
+        broker.submit(_req("c", symbol="BTC/USD", qty="1", time_in_force=TimeInForce.GTC))
+        b = bar(BTC, day, 50000, 50000, 50000, 50000)
+        clock.advance_to(b.end + timedelta(minutes=1))
+        broker.on_bars({"BTC/USD": b})
+        fill = rec.fills()[0]
+        assert fill.price == D("50050")  # 10 bps slippage
+        assert fill.fee == D("125.125")  # 25 bps of notional
+
+
+class TestSimulatedBrokerLifecycle:
+    def test_time_in_force(self):
+        clock, broker, rec = _broker(ny(2026, 3, 3, 0, 15))
+        no_fill = dict(order_type=OrderType.LIMIT, limit_price=D("1"))
+        broker.submit(_req("day", time_in_force=TimeInForce.DAY, **no_fill))
+        broker.submit(_req("ioc", time_in_force=TimeInForce.IOC, **no_fill))
+        broker.submit(_req("gtc", time_in_force=TimeInForce.GTC, **no_fill))
+        b = bar(SPY, ny(2026, 3, 3), 100, 101, 99, 100)
+        clock.advance_to(b.end + timedelta(minutes=15))
+        broker.on_bars({"SPY": b})
+        assert rec.statuses("day")[-1] is OrderStatus.EXPIRED
+        assert rec.statuses("ioc")[-1] is OrderStatus.CANCELED
+        assert [o.client_order_id for o in broker.open_orders()] == ["gtc"]
+
+    def test_participation_cap_fills_over_several_bars(self):
+        clock, broker, rec = _broker(ny(2026, 3, 3, 0, 15), participation=D("0.1"))
+        broker.submit(_req("o", qty="150", time_in_force=TimeInForce.GTC))
+        for day in (3, 4):
+            b = bar(SPY, ny(2026, 3, day), 100, 101, 99, 100, volume=1000)
+            clock.advance_to(b.end + timedelta(minutes=15))
+            broker.on_bars({"SPY": b})
+        assert [f.qty for f in rec.fills()] == [D("100"), D("50")]
+        assert rec.statuses("o")[-1] is OrderStatus.FILLED
+
+    @pytest.mark.parametrize("request_,reason", [
+        (_req("r", symbol="BTC/USD", side=Side.SELL, qty="1", time_in_force=TimeInForce.GTC), "cannot be sold short"),
+        (_req("r", symbol="BTC/USD", qty="1", time_in_force=TimeInForce.DAY), "gtc or ioc"),
+        (_req("r", symbol="BTC/USD", qty="0.00005", time_in_force=TimeInForce.GTC), "not a multiple"),
+        (_req("r", order_type=OrderType.STOP_LIMIT, limit_price=D("1"), stop_price=D("1")), "not simulated"),
+        (_req("r", symbol="XYZ"), "unknown symbol"),
+    ])
+    def test_rejections(self, request_, reason):
+        _, broker, rec = _broker(ny(2026, 3, 3))
+        broker.submit(request_)
+        assert rec.updates[-1].status is OrderStatus.REJECTED
+        assert reason in rec.updates[-1].reason
+
+    def test_duplicate_client_order_id_is_ignored(self):
+        _, broker, rec = _broker(ny(2026, 3, 3))
+        broker.submit(_req("same"))
+        broker.submit(_req("same"))
+        assert rec.statuses("same") == [OrderStatus.NEW]
+
+    def test_insufficient_cash(self):
+        clock, broker, rec = _broker(ny(2026, 3, 3, 0, 15), cash="500")
+        broker.submit(_req("o", qty="10", time_in_force=TimeInForce.OPG))
+        b = bar(SPY, ny(2026, 3, 3), 100, 101, 99, 100)
+        clock.advance_to(b.end + timedelta(minutes=15))
+        broker.on_bars({"SPY": b})
+        assert rec.statuses("o")[-1] is OrderStatus.REJECTED
+        assert broker.cash() == D("500")
+
+
+# -- risk gate -------------------------------------------------------------------
+
+class TestRiskGate:
+    def _check(self, gate, side=Side.BUY, qty="10", positions=None, price="100", equity="10000"):
+        positions = {k: D(v) for k, v in (positions or {}).items()}
+        return gate.check(_req("r", side=side, qty=qty), D(price) if price else None, positions,
+                          {"SPY": D("100"), "IEF": D("100")}, D(equity))
+
+    def test_position_and_gross_caps(self):
+        gate = RiskGate(RiskLimits(max_position_weight=D("0.5"), max_gross_exposure=D("0.8")))
+        assert self._check(gate, qty="50").allowed
+        assert not self._check(gate, qty="51").allowed
+        assert not self._check(gate, qty="40", positions={"IEF": "50"}).allowed
+
+    def test_order_notional_cap(self):
+        gate = RiskGate(RiskLimits(max_order_notional=D("500")))
+        assert not self._check(gate, qty="6").allowed
+
+    def test_halt_allows_only_reducing_orders(self):
+        gate = RiskGate()
+        gate.halt("drill")
+        assert not self._check(gate, qty="1").allowed
+        assert self._check(gate, side=Side.SELL, qty="5", positions={"SPY": "10"}).allowed
+        assert not self._check(gate, side=Side.SELL, qty="15", positions={"SPY": "10"}).allowed
+
+    def test_missing_price_is_rejected(self):
+        assert not self._check(RiskGate(), price=None).allowed
+
+
+# -- engine -------------------------------------------------------------------------
+
+class _Fixed(Strategy):
+    name = "fixed"
+    lookback = 1
+
+    def __init__(self, weights, instruments=(SPY, IEF)):
+        self.instruments = instruments
+        self.weights = weights
+        self.seen = []
+
+    def target_weights(self, ctx: StrategyContext) -> Mapping[str, float] | None:
+        self.seen.append(ctx)
+        return self.weights() if callable(self.weights) else self.weights
+
+
+def _engine(strategy, now=None, cash="100000", costs=NO_COSTS, **kw):
+    clock = SimulatedClock(now or ny(2026, 3, 2))
+    broker = SimulatedBroker(clock, {i.symbol: i for i in strategy.instruments}, D(cash), costs=costs)
+    events = []
+    engine = Engine(clock=clock, broker=broker, ledger=Ledger(D(cash)),
+                    allocations=[Allocation(strategy, D("1"))], listeners=[events.append], **kw)
+    return clock, broker, engine, events
+
+
+def _feed_day(clock, engine, day, spy=100.0, ief=50.0):
+    bars = {"SPY": bar(SPY, ny(2026, 3, day), spy, spy, spy, spy),
+            "IEF": bar(IEF, ny(2026, 3, day), ief, ief, ief, ief)}
+    clock.advance_to(bars["SPY"].end + timedelta(minutes=15))
+    return engine.on_bars(bars)
+
+
+class TestEngine:
+    def test_sizes_orders_from_weights_with_a_cash_buffer(self):
+        clock, _, engine, _ = _engine(_Fixed({"SPY": 0.6, "IEF": 0.4}))
+        sent = _feed_day(clock, engine, 2)
+        by_symbol = {r.symbol: r for r in sent}
+        # $500 cash buffer scales every buy by 0.995, keeping the 60/40 ratio
+        assert by_symbol["SPY"].qty == D("597") and by_symbol["IEF"].qty == D("796")
+        assert all(r.time_in_force is TimeInForce.OPG for r in sent)
+
+    def test_fills_on_the_next_session_and_does_not_resend(self):
+        clock, broker, engine, _ = _engine(_Fixed({"SPY": 0.5}, instruments=(SPY,)))
+        assert len(_feed_day(clock, engine, 2)) == 1
+        assert _feed_day(clock, engine, 3) == []  # filled at 03-03 open, now on target
+        assert engine.ledger.position("SPY").qty == D("500")
+        assert broker.positions() == {"SPY": D("500")}
+        assert engine.ledger.cash == broker.cash()
+
+    def test_small_drift_does_not_churn_but_closing_always_trades(self):
+        targets = {"SPY": 0.5}
+        strategy = _Fixed(lambda: dict(targets), instruments=(SPY,))
+        clock, _, engine, _ = _engine(strategy)
+        _feed_day(clock, engine, 2)
+        _feed_day(clock, engine, 3)
+        assert _feed_day(clock, engine, 4, spy=100.1) == []
+        targets["SPY"] = 0.0
+        [close] = _feed_day(clock, engine, 5)
+        assert close.side is Side.SELL and close.qty == D("500")
+
+    def test_sells_go_before_buys(self):
+        weights = {"SPY": 1.0, "IEF": 0.0}
+        clock, _, engine, _ = _engine(_Fixed(lambda: dict(weights)))
+        _feed_day(clock, engine, 2)
+        _feed_day(clock, engine, 3)
+        weights.update(SPY=0.0, IEF=0.9)
+        sent = _feed_day(clock, engine, 4)
+        assert [r.side for r in sent] == [Side.SELL, Side.BUY]
+
+    def test_short_target_on_unshortable_instrument_is_ignored(self):
+        clock, _, engine, _ = _engine(_Fixed({"BTC/USD": -0.5}, instruments=(BTC,)), now=datetime(2026, 3, 2, tzinfo=UTC))
+        b = bar(BTC, datetime(2026, 3, 2, tzinfo=UTC), 60000, 60000, 60000, 60000)
+        clock.advance_to(b.end + timedelta(minutes=1))
+        assert engine.on_bars({"BTC/USD": b}) == []
+
+    def test_a_failing_strategy_does_not_stop_the_engine(self):
+        def boom():
+            raise RuntimeError("bug")
+        clock, _, engine, events = _engine(_Fixed(boom))
+        assert _feed_day(clock, engine, 2) == []
+        assert any(e.kind == "strategy_error" and "bug" in e.detail for e in events)
+
+    def test_targets_outside_the_universe_are_an_error(self):
+        clock, _, engine, events = _engine(_Fixed({"QQQ": 0.5}))
+        assert _feed_day(clock, engine, 2) == []
+        assert any(e.kind == "strategy_error" for e in events)
+
+    def test_repeated_bars_are_ignored(self):
+        strategy = _Fixed({"SPY": 0.5}, instruments=(SPY,))
+        clock, _, engine, _ = _engine(strategy)
+        b = bar(SPY, ny(2026, 3, 2), 100, 100, 100, 100)
+        clock.advance_to(b.end + timedelta(minutes=15))
+        engine.on_bars({"SPY": b})
+        engine.on_bars({"SPY": b})
+        assert len(strategy.seen) == 1
+
+    def test_halt_flattens_and_blocks_new_orders(self):
+        clock, broker, engine, events = _engine(_Fixed({"SPY": 0.5}, instruments=(SPY,)))
+        _feed_day(clock, engine, 2)
+        _feed_day(clock, engine, 3)
+        [flatten] = engine.halt("drill", flatten=True)
+        assert flatten.side is Side.SELL and flatten.qty == D("500")
+        assert _feed_day(clock, engine, 4) == []
+        assert engine.ledger.positions == {}
+        assert any(e.kind == "halt" for e in events)
+        engine.resume()
+        assert len(_feed_day(clock, engine, 5)) == 1
+
+    def test_risk_rejections_are_reported(self):
+        clock, _, engine, events = _engine(_Fixed({"SPY": 0.9}, instruments=(SPY,)),
+                                           risk=RiskGate(RiskLimits(max_position_weight=D("0.5"))))
+        assert _feed_day(clock, engine, 2) == []
+        assert any(e.kind == "rejected" for e in events)
+
+    def test_fill_for_an_unknown_order_is_still_booked(self):
+        from src.trading.domain import Fill, OrderUpdate
+        clock, _, engine, _ = _engine(_Fixed({"SPY": 0.5}, instruments=(SPY,)))
+        fill = Fill("ext-1", "manual-1", "SPY", Side.BUY, D("3"), D("100"), D("0"), clock.now())
+        engine.on_order_update(OrderUpdate("manual-1", OrderStatus.FILLED, clock.now(), fill=fill))
+        assert engine.ledger.position("SPY").qty == D("3")
+
+    def test_allocations_are_validated(self):
+        clock = SimulatedClock(ny(2026, 3, 2))
+        broker = SimulatedBroker(clock, {"SPY": SPY}, D("1"))
+        with pytest.raises(ValueError):
+            Engine(clock=clock, broker=broker, ledger=Ledger(D("1")),
+                   allocations=[Allocation(_Fixed({}, (SPY,)), D("0.7")), Allocation(_Fixed({}, (SPY,)), D("0.7"))])
+
+
+class TestPollSchedule:
+    def test_next_poll_is_when_the_next_bar_becomes_final(self):
+        source = InMemoryBarSource({}, SimulatedClock(ny(2026, 3, 3)))
+        feed = PollingFeed(source, [SPY, BTC], DAILY, ny(2026, 3, 1))
+        # 03-03 12:00 ET: next crypto bar is final at 00:01 UTC on 03-04, before
+        # the equity bar (00:15 ET = 05:15 UTC)
+        assert feed.next_poll(ny(2026, 3, 3, 12)) == datetime(2026, 3, 4, 0, 1, tzinfo=UTC)
+        assert PollingFeed(source, [SPY], DAILY, ny(2026, 3, 1)).next_poll(ny(2026, 3, 3, 12)) == \
+            ny(2026, 3, 4, 0, 15)
+
+    def test_next_boundary_intraday(self):
+        t = datetime(2026, 3, 3, 14, 7, 30, tzinfo=UTC)
+        from src.trading.domain import Timeframe
+        assert Timeframe(15, "minute").next_boundary(t, AssetClass.EQUITY) == datetime(2026, 3, 3, 14, 15, tzinfo=UTC)
+
+
+class TestTimeInForce:
+    @pytest.mark.parametrize("when,expected", [
+        (ny(2026, 3, 3, 0, 15), TimeInForce.OPG),    # overnight before the open
+        (ny(2026, 3, 3, 9, 29), TimeInForce.DAY),    # inside Alpaca's OPG cutoff
+        (ny(2026, 3, 3, 11, 0), TimeInForce.DAY),    # during the session
+        (ny(2026, 3, 3, 17, 0), TimeInForce.DAY),    # after the close, before 19:00
+        (ny(2026, 3, 3, 20, 0), TimeInForce.OPG),    # evening before the next session
+    ])
+    def test_equity_market_orders(self, when, expected):
+        _, _, engine, _ = _engine(_Fixed({}, (SPY,)), now=when)
+        assert engine._time_in_force(SPY, when) is expected
+
+    def test_saturday_is_inside_the_opg_window(self):
+        # Friday 19:00 -> Monday 09:28 is one window
+        _, _, engine, _ = _engine(_Fixed({}, (SPY,)), now=ny(2026, 3, 7, 12, 0))
+        assert engine._time_in_force(SPY, ny(2026, 3, 7, 12, 0)) is TimeInForce.OPG
+
+    def test_crypto_is_gtc(self):
+        _, _, engine, _ = _engine(_Fixed({}, (BTC,)))
+        assert engine._time_in_force(BTC, ny(2026, 3, 3)) is TimeInForce.GTC
+
+
+# -- backtest and parity -------------------------------------------------------------
+
+def _history(start=date(2025, 1, 2), end=date(2026, 6, 30)):
+    return {"SPY": daily_bars(SPY, start, end, 500.0, seed=1),
+            "IEF": daily_bars(IEF, start, end, 95.0, seed=2, drift=0.0001, vol=0.004),
+            "BTC/USD": daily_bars(BTC, start, end, 60000.0, seed=3, vol=0.03)}
+
+
+def _sixty_forty():
+    return [Allocation(BuyAndHold({SPY: 0.6, IEF: 0.4}), D("0.9")),
+            Allocation(type("Btc", (BuyAndHold,), {"name": "btc-hold"})({BTC: 1.0}), D("0.1"))]
+
+
+CONFIG = BacktestConfig(start=datetime(2025, 3, 3, tzinfo=UTC), end=datetime(2026, 6, 1, tzinfo=UTC))
+
+
+class TestBacktest:
+    def test_no_strategy_ever_sees_an_unfinished_bar(self):
+        seen = []
+
+        class Spy(_Fixed):
+            def target_weights(self, ctx):
+                for series in ctx.history.values():
+                    seen.append((ctx.now, series[-1]))
+                return {"SPY": 0.5}
+
+        run_backtest([Allocation(Spy({}, (SPY, BTC)), D("1"))], _history(), CONFIG)
+        delays = {"SPY": timedelta(minutes=15), "BTC/USD": timedelta(minutes=1)}
+        assert seen and all(b.end + delays[b.symbol] <= now for now, b in seen)
+
+    def test_deterministic(self):
+        a = run_backtest(_sixty_forty(), _history(), CONFIG)
+        b = run_backtest(_sixty_forty(), _history(), CONFIG)
+        assert a.equity_curve == b.equity_curve and a.fills == b.fills
+
+    def test_ledger_matches_the_broker_and_marks_to_market(self):
+        result = run_backtest(_sixty_forty(), _history(), CONFIG)
+        final = result.final
+        assert {p.symbol for p in final.positions} == {"SPY", "IEF", "BTC/USD"}
+        assert final.equity == final.cash + sum(p.market_value for p in final.positions)
+        assert final.cash >= 0
+        metrics = result.metrics()
+        assert -1 < metrics["max_drawdown"] <= 0 and metrics["fills"] > 3
+
+    def test_higher_costs_lower_returns(self):
+        cheap = run_backtest(_sixty_forty(), _history(), CONFIG)
+        dear = run_backtest(_sixty_forty(), _history(), BacktestConfig(
+            start=CONFIG.start, end=CONFIG.end,
+            costs={k: v.scaled(D("3")) for k, v in DEFAULT_COSTS.items()}))
+        assert dear.final.equity < cheap.final.equity
+        assert dear.final.fees > cheap.final.fees
+
+
+class TestLivePathParity:
+    def test_polling_the_live_feed_reproduces_the_backtest(self):
+        """
+        The live path (wall-clock polling of a bar source) must trade exactly
+        like the backtest: same fills, same prices, same final equity.
+        """
+        history = _history()
+        backtest = run_backtest(_sixty_forty(), history, CONFIG)
+
+        clock = SimulatedClock(CONFIG.start)
+        allocations = _sixty_forty()
+        instruments = {i.symbol: i for a in allocations for i in a.strategy.instruments}
+        broker = SimulatedBroker(clock, instruments, CONFIG.starting_cash)
+        engine = Engine(clock=clock, broker=broker, ledger=Ledger(CONFIG.starting_cash), allocations=allocations)
+        source = InMemoryBarSource(history, clock)
+        engine.warm_up(source.bars(list(instruments.values()), DAILY, datetime(2000, 1, 1, tzinfo=UTC),
+                                   CONFIG.start))
+        feed = PollingFeed(source, list(instruments.values()), DAILY, datetime(2000, 1, 1, tzinfo=UTC),
+                           seen=engine.latest_bar_starts())
+        fills = []
+        engine.add_listener(lambda e: fills.append(e.fill) if e.kind == "fill" else None)
+
+        now = CONFIG.start
+        while True:
+            # Wake when the next bar becomes final, plus a few seconds of real-world latency
+            now = feed.next_poll(now) + timedelta(seconds=7)
+            if now >= CONFIG.end:
+                break
+            clock.advance_to(now)
+            for _, group in feed.poll(now):
+                engine.on_bars(group)
+
+        def key(f):
+            return f.symbol, f.side, f.qty, f.price
+
+        assert [key(f) for f in fills] == [key(f) for f in backtest.fills]
+        assert engine.equity() == backtest.final.equity

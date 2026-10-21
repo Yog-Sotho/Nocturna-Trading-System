@@ -175,6 +175,10 @@ alembic==1.20.0 \
     --hash=sha256:77eb101048d95f982c0353e9233404889dcd7a6fc244c107836c0e2fc9cf7d9d \
     --hash=sha256:db505480647bc60386c5369402f4a57a506b7539c9e9ef5e270d45cbbe4939bf
     # via -r requirements.in
+alpaca-py==0.44.0 \
+    --hash=sha256:5388715b67b51ad30fa07308e89299d48b19bed65b81013b8a1158fa5837337b \
+    --hash=sha256:b54673f967c0c814a5e0223cbb0211a5d9d75a8d107e792872b14e5bae957c03
+    # via -r requirements.in
 alpaca-trade-api==3.2.0 \
     --hash=sha256:ae5c43c4e572ea26d6217dd806e50f12bfff1abed974be9fae2a92ba5ec2a47d \
     --hash=sha256:ddc92c3992fedcf8316c5b8a761b72f485b754fee14d77bb5bab9878e79acc46
@@ -1087,7 +1091,9 @@ msgpack==1.0.3 \
     --hash=sha256:f01b26c2290cbd74316990ba84a14ac3d599af9cebefc543d241a66e785cf17d \
     --hash=sha256:f201d34dc89342fabb2a10ed7c9a9aaaed9b7af0f16a5923f1ae562b31258dea \
     --hash=sha256:f74da1e5fcf20ade12c6bf1baa17a2dc3604958922de8dc83cbe3eff22e8b611
-    # via alpaca-trade-api
+    # via
+    #   alpaca-py
+    #   alpaca-trade-api
 multidict==7.1.0 \
     --hash=sha256:0179698c3c913eb64f32397083747fad20ed0f0a2b7469a08cd1a8a95d14d90e \
     --hash=sha256:034b0dc1b7fb8279599c5d8563f86abb4d2454735b06544ecab23c54572ad2bd \
@@ -1420,6 +1426,7 @@ pandas==2.3.3 \
     --hash=sha256:f8bfc0e12dc78f777f323f55c58649591b2cd0c43534e8355c51d3fede5f4dee
     # via
     #   -r requirements.in
+    #   alpaca-py
     #   alpaca-trade-api
     #   exchange-calendars
     #   yfinance
@@ -1654,6 +1661,7 @@ pydantic==2.14.1 \
     --hash=sha256:94f478203dd03404682a1ada216965651dd74b1d2d5ffd62e00e0837caab5c26
     # via
     #   -r requirements.in
+    #   alpaca-py
     #   pydantic-settings
 pydantic-core==2.50.1 \
     --hash=sha256:0036473f5583e6a60e50b8b21651511564277a3f05cc5dab8cf579f552cd5f6c \
@@ -1824,6 +1832,7 @@ pytz==2026.5 \
     --hash=sha256:e658af3757f9e26a9d25dd2aff38335acd92bc9104f890a894b2c1ba28311b03 \
     --hash=sha256:fa23724b9c486543b9ff54a327ee7569ac83ade54bb9afd0fc18676620401c86
     # via
+    #   alpaca-py
     #   pandas
     #   yfinance
 pyyaml==6.0.1 \
@@ -1888,6 +1897,7 @@ requests==2.34.2 \
     --hash=sha256:f288924cae4e29463698d6d60bc6a4da69c89185ad1e0bcc4104f584e960b9ed
     # via
     #   -r requirements.in
+    #   alpaca-py
     #   alpaca-trade-api
     #   vadersentiment
     #   yfinance
@@ -2076,6 +2086,9 @@ sqlalchemy==2.0.55 \
     #   -r requirements.in
     #   alembic
     #   flask-sqlalchemy
+sseclient-py==1.9.0 \
+    --hash=sha256:340062b1587fc2880892811e2ab5b176d98ef3eee98b3672ff3a3ba1e8ed0f6f
+    # via alpaca-py
 threadpoolctl==3.7.0 \
     --hash=sha256:61348cfb77d53b9242e0017029244b559b810c142ced65b4e21eeca1843959a7 \
     --hash=sha256:cd8b60b5641b45c67bbf73c64c843235fc2d8a480c87389f52f5dbee893b86be
@@ -2195,7 +2208,9 @@ websockets==10.4 \
     --hash=sha256:f5fc088b7a32f244c519a048c170f14cf2251b849ef0e20cbbb0fdf0fdaf556f \
     --hash=sha256:fe10ddc59b304cb19a1bdf5bd0a7719cbbc9fbdd57ac80ed436b709fcf889106 \
     --hash=sha256:ff64a1d38d156d429404aaa84b27305e957fd10c30e5880d1765c9480bea490f
-    # via alpaca-trade-api
+    # via
+    #   alpaca-py
+    #   alpaca-trade-api
 werkzeug==3.1.9 \
     --hash=sha256:55ca7c70a75689be937aa27f8ff4b018f06ff4838fc73045560bf0f5a1291060 \
     --hash=sha256:6392e50c78460ba618e5b21f08a71f59c99ce99cdc6cf6e3dd7e6ccca8754fab

@@ -143,6 +143,19 @@ class Timeframe:
             return (start.astimezone(NEW_YORK) + timedelta(days=self.amount)).astimezone(UTC)
         return start + timedelta(days=self.amount)
 
+    def next_boundary(self, after: datetime, asset_class: AssetClass) -> datetime:
+        """The first bar boundary strictly after ``after``."""
+        if self.unit == "day":
+            if asset_class is AssetClass.EQUITY:
+                local = after.astimezone(NEW_YORK)
+                midnight = datetime(local.year, local.month, local.day, tzinfo=NEW_YORK)
+            else:
+                midnight = datetime(after.year, after.month, after.day, tzinfo=UTC)
+            return (midnight + timedelta(days=1)).astimezone(UTC)
+        step = timedelta(minutes=self.amount) if self.unit == "minute" else timedelta(hours=self.amount)
+        epoch = datetime(1970, 1, 1, tzinfo=UTC)
+        return epoch + ((after - epoch) // step + 1) * step
+
     def __str__(self) -> str:
         return f"{self.amount}{self.unit[0]}"
 
