@@ -136,6 +136,16 @@ def child_exit(server, worker):
     server.log.info(f"Worker {worker.pid} exited")
 
 
+def post_worker_init(worker):
+    """
+    Start the trading engine inside the worker. With preload_app the app is
+    built in the master, and a thread started there would not survive the fork.
+    """
+    runtime = getattr(getattr(worker, "wsgi", None), "extensions", {}).get("trading")
+    if runtime is not None:
+        runtime.autostart()
+
+
 def worker_int(worker):
     """Called when a worker receives SIGINT or SIGQUIT."""
     worker.log.info(f"Worker {worker.pid} received SIGINT/SIGQUIT")

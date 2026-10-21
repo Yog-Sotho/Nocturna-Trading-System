@@ -11,38 +11,34 @@
 > and `ALPACA_BASE_URL` points at the Alpaca paper API. No strategy in this repository has
 > passed out-of-sample validation, and none should be trusted with real money.
 
-NOCTURNA is a Python/Flask service for researching and paper-trading rule-based strategies
-on US equities through [Alpaca](https://alpaca.markets). It is being rebuilt into an
-event-driven framework in which the same strategy code runs in backtest, paper and live
-trading. See [Roadmap](#roadmap).
+NOCTURNA is a Python/Flask service for researching, backtesting and paper-trading
+rule-based strategies on US equities, ETFs and crypto through [Alpaca](https://alpaca.markets).
+Its core is event-driven: the same strategy, ledger and risk code runs in backtests and in paper
+trading; only the clock, the market-data source and the broker are swapped. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the [Roadmap](#roadmap).
 
 ## What exists today
 
 | Component | Location | State |
 |---|---|---|
-| REST API with JWT auth (single operator) | `src/main.py`, `src/routes/` | Working; public registration is disabled |
-| Trading engine prototype with four modes — EVE (grid), LUCIFER (breakout), REAPER (reversal), SENTINEL (trend) | `src/core/` | Experimental, with known defects (below) |
-| Paper trading engine (prices supplied through the API) | `src/core/paper_trading.py` | Working, simplified fill model |
-| Backtester | `src/advanced/backtester.py` | Single-symbol prototype |
-| ML parameter tuner, sentiment analyser | `src/advanced/` | Experimental, not validated |
-| Event bus and order state machine | `src/core/event_bus.py`, `src/core/order_state_machine.py` | Foundation for the rebuild; not yet driving orders |
-| Dashboard | `src/static/` | Compiled bundle only (no source); it does not send auth headers, so its API calls are rejected |
+| Trading core: domain model, ledger, engine, strategy interface | `src/trading/` | Working; property-tested accounting |
+| Risk engine: pre-trade gate, drawdown kill switch, daily loss limit, volatility-targeted sizing with a drawdown ladder | `src/trading/risk.py`, `sizing.py` | Working; limits are configurable, defaults below |
+| Backtester (simulated clock and broker, cost model, no look-ahead) | `src/trading/backtest.py` | Working; validation statistics arrive in Phase 4 |
+| Paper trading on Alpaca (`alpaca-py`): broker adapter, trade-update stream, polling data feed, reconciliation | `src/trading/alpaca.py`, `service.py` | Working against fakes and Alpaca's real request models; not yet run against a live paper account |
+| Strategies | `src/trading/strategies/` | Only a 60/40 SPY/IEF benchmark; the validated lineup arrives in Phase 5 |
+| Trading history (orders, fills, equity snapshots) and audit log | `src/models/` | Working |
+| REST API with JWT and API-key auth (single operator) | `src/main.py`, `src/routes/` | Working; public registration is disabled |
+| Dashboard | `src/static/` | Compiled bundle only (no source); it targets the old API and does not send auth headers. Rebuilt in Phase 7 |
 
 ### Known limitations
 
-These are documented in the codebase audit and are scheduled in the roadmap:
-
-- The engine's drawdown check uses position value instead of account equity, so it
-  triggers an emergency stop on its first risk check.
-- Orders submitted through `POST /api/trading/orders` are rejected (field-name mismatch
-  between the API schema and the order manager).
-- Positions, orders and risk state live in memory and are lost on restart.
-- Market data is fetched without a start date, so Alpaca returns only the current day's bars.
-- Realized P&L is never computed, so win rate and loss-based limits do not work.
+- No strategy has an edge yet: the engine runs a benchmark portfolio until strategies pass
+  the Phase 4 validation gates.
+- The engine runs inside the web worker; Phase 6 moves it into its own service.
 
 ## Quick start (local, paper only)
 
-Requires Python 3.11+.
+Requires Python 3.13+.
 
 ```bash
 git clone https://github.com/Yog-Sotho/Nocturna-Trading-System.git
@@ -53,6 +49,7 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env: set FLASK_SECRET_KEY, JWT_SECRET_KEY and API_KEY_PEPPER
 #   python -c "import secrets; print(secrets.token_hex(32))"
+# For paper trading set ALPACA_API_KEY and ALPACA_SECRET_KEY (paper account keys).
 # Keep TRADING_MODE=PAPER and the paper ALPACA_BASE_URL.
 
 # Create the operator account (prompts for a password). The database schema is
@@ -71,9 +68,42 @@ curl -s -X POST http://localhost:5000/api/auth/login \
   -d '{"username": "admin", "password": "<your password>"}'
 ```
 
+Start the engine with `POST /api/trading/control/start` (admin), or set `ENGINE_AUTOSTART=true`.
+On start it loads the paper account from Alpaca (cash, positions, working orders), warms up
+history, and acts on the latest closed bars; after that it wakes each time a new bar becomes
+final.
+
 In the Docker image the production entry point is
-`gunicorn -c gunicorn.conf.py 'src.main:create_app()'`. It must run a single worker
-because the engine keeps its state in memory.
+`gunicorn -c gunicorn.conf.py 'src.main:create_app()'`. It runs a single, never-recycled
+worker because the engine lives in that process.
+
+## Risk controls
+
+Every order, from a strategy or an operator, passes one risk gate before it reaches the
+broker, and the book is sized by the same rules in backtests and in paper trading
+(details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#risk)). Defaults, all fractions of
+account equity and configurable through `RISK_*` / `SIZING_*` variables:
+
+| Control | Default |
+|---|---|
+| Drawdown kill switch: halt and close every position | 10% below the equity high-water mark |
+| Drawdown ladder: exposure shrinks linearly from the start to 25% at the kill limit | from 5% drawdown |
+| Daily loss limit: no new risk for the rest of the New York day | 3% |
+| Portfolio volatility target (EWMA, lambda 0.94; scales down only, never levers up) | 8% a year |
+| Largest position / crypto in total / gross exposure (no leverage) | 60% / 15% / 100% |
+| Single order (fat finger) | 60% of equity, and `RISK_MAX_ORDER_NOTIONAL` dollars if set |
+| Limit price collar around the last close | 5% |
+| The same symbol, side and quantity again | refused for 5 minutes |
+| Orders / turnover per New York day | 50 / 2x equity |
+| Market data: newest bar older than / one-bar move larger than | equities 5 days / 25%, crypto 2 days / 50% |
+| Rebalance band: positions are adjusted only when this far from target | 2% |
+
+Orders that only reduce a position skip the daily breakers and data checks, so the book can
+always be reduced. The gate's state (high-water mark, halt, daily counters) is stored in the
+database and restored on restart, so a halt survives a redeploy. After a drawdown halt,
+`POST /api/trading/control/resume` restarts the high-water mark at the current equity.
+Strategies with protective stops size positions with `stop_risk_weight` (0.5% of equity at
+risk per trade by default).
 
 ## API
 
@@ -106,26 +136,21 @@ are limited to 1 MB.
 | PUT | `/users/<id>/password` | own account, or admin; revokes all of that user's tokens |
 | GET, POST | `/api-keys` | own keys; `POST` body `{"name": "...", "permissions": ["read", "trade"], "expires_in_days": 90}` returns the key (`ntr_<id>_<secret>`) once. Only the id and a salted, peppered scrypt hash of the secret are stored. Keys never carry admin rights, and `trade` needs an owner with the trader role |
 | DELETE | `/api-keys/<id>` | revokes one of your keys |
-| GET | `/audit-logs` | admin; logins, logouts, password, user and API key changes, orders, engine control, config changes and emergency stops. Filters: `event_type`, `user_id`, `page`, `per_page` |
+| GET | `/audit-logs` | admin; logins, logouts, password, user and API key changes, operator orders, engine start/stop/halt, emergency stops, risk rejections, reconciliations and engine errors. Filters: `event_type`, `user_id`, `page`, `per_page` |
 
-**Trading engine** (`/api/trading`)
+**Trading** (`/api/trading`)
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/health`, `/status`, `/status/detailed`, `/positions`, `/orders`, `/performance`, `/strategy`, `/risk`, `/config`, `/trades`, `/equity-curve` | |
-| POST | `/control/start`, `/control/stop`, `/control/pause`, `/control/resume` | admin |
-| POST | `/emergency-stop` | admin; body `{"reason": "...", "close_all_positions": true}` |
-| POST | `/orders`, `/orders/<id>/cancel` | |
-| PUT | `/config` | admin |
-| POST | `/optimize` | admin; returns 501 (not implemented) |
-
-**Paper trading** (`/api/paper`)
-
-| Method | Path |
-|---|---|
-| POST | `/start`, `/stop`, `/reset`, `/orders`, `/prices` |
-| GET | `/orders`, `/positions`, `/trades`, `/portfolio`, `/equity-curve` |
-| DELETE | `/orders/<id>` |
+| GET | `/health` | public; engine state only |
+| GET | `/status` | engine state, equity, cash, P&L, fees, halt, last reconciliation; `risk`: drawdown, high-water mark, cool-down, today's orders and turnover, predicted volatility and the volatility and drawdown scales |
+| GET | `/positions`, `/targets` | live, from the running engine (409 when it is not running) |
+| GET | `/orders` | working orders and order history (`?limit=`, newest first) |
+| GET | `/fills`, `/equity-curve` | trading history (`?limit=`) |
+| POST | `/orders` | trader; body `{"symbol": "SPY", "side": "buy", "qty": "10", "order_type": "market", "time_in_force": "day", "limit_price": null, "stop_price": null}`; passes the same risk gate as strategy orders (422 with the reason when refused) |
+| POST | `/orders/<client_order_id>/cancel` | trader |
+| POST | `/control/start`, `/control/stop`, `/control/resume` | admin; resume lifts a halt (after a drawdown halt it also restarts the high-water mark) |
+| POST | `/emergency-stop` | admin; body `{"reason": "...", "close_all_positions": true}`. Halts the engine and cancels its orders; with `close_all_positions` also closes every position. Works when the engine is not running by asking Alpaca directly |
 
 ## Configuration
 
@@ -138,7 +163,10 @@ to start and lists every problem if the configuration is unsafe. The ones that m
 | `FLASK_SECRET_KEY`, `JWT_SECRET_KEY` | Required in production: 32+ characters each, and different from each other |
 | `API_KEY_PEPPER` | Required in production (32+ characters); secret mixed into API key hashes. Changing it invalidates every API key |
 | `TRADING_MODE` | Must be `PAPER` |
-| `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_BASE_URL` | Alpaca paper account; without keys the engine runs in simulation |
+| `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` | Alpaca paper account; without them the API works but the engine cannot start |
+| `ALPACA_BASE_URL` | Optional; must be the paper endpoint |
+| `ENGINE_AUTOSTART` | Start the engine with the server (default false) |
+| `RISK_*`, `SIZING_*` | Risk limits and sizing; see [Risk controls](#risk-controls) and `.env.example` |
 | `DATABASE_URL` | Defaults to SQLite at `src/database/nocturna.db`; PostgreSQL is required in production (`postgresql://...` URLs use the psycopg 3 driver) |
 | `ALLOWED_ORIGINS` | Required in production (CORS allowlist) |
 | `TRUSTED_PROXY_COUNT` | Number of reverse proxies in front of the app (default 0). Set it behind nginx or a load balancer, or every client shares the proxy's IP for rate limits and login lockout |
@@ -184,12 +212,24 @@ src/
 ├── main.py          # Flask app factory
 ├── cli.py           # operator commands (create-admin, db)
 ├── db_migrations.py # Alembic helpers; revisions live in migrations/
-├── core/            # engine, strategies, risk, orders, market data, paper trading, safety guard
-├── advanced/        # backtester, ML tuner, sentiment
+├── trading/         # the trading core (see docs/ARCHITECTURE.md)
+│   ├── domain.py    #   instruments, bars, orders and their lifecycle, fills
+│   ├── ledger.py    #   cash, positions, P&L
+│   ├── engine.py    #   targets -> orders -> risk gate -> broker
+│   ├── risk.py      #   pre-trade risk gate, loss limits and the kill switch
+│   ├── sizing.py    #   caps, volatility target, drawdown ladder, stop-risk sizing
+│   ├── strategy.py  #   strategy interface; strategies/ holds the strategies
+│   ├── data.py      #   bar sources (in-memory, Alpaca) and the closed-bar rule
+│   ├── broker.py    #   broker interface and the simulated broker
+│   ├── alpaca.py    #   Alpaca paper broker and trade-update stream
+│   ├── backtest.py  #   backtest runner
+│   ├── service.py   #   live engine thread; runtime.py wires it into the app
+│   └── ...          #   clock, calendar, feed, reconcile, persistence, lineup, safety
 ├── routes/          # REST endpoints
-├── middleware/      # auth, security headers
-├── models/          # SQLAlchemy models
-├── utils/           # validators, logging
+├── middleware/      # auth, security headers, rate limits
+├── models/          # SQLAlchemy models (users, keys, audit, trading history)
+├── migrations/      # Alembic revisions
+├── utils/           # validators, logging, audit
 ├── static/          # compiled dashboard bundle
 └── tests/
 ```
@@ -201,7 +241,7 @@ src/
 | 0 | Safety freeze: paper-only guard, closed registration, no fabricated data, truthful docs |
 | 1 | Platform foundations: auth fixes, scoped API keys, token revocation, enforced rate limits, PostgreSQL + migrations, persisted audit log, dependency clean-up |
 | 2 | Event-driven core with identical backtest / paper / live code paths and broker reconciliation |
-| 3 | Risk engine: pre-trade controls, equity-based loss limits, kill switch, volatility-targeted sizing |
+| 3 | Risk engine: pre-trade controls, equity-based loss limits, kill switch, volatility-targeted sizing (done) |
 | 4 | Validation pipeline: walk-forward, purged cross-validation, deflated Sharpe ratio, overfitting tests |
 | 5 | Strategy rebuild (trend, month-end rebalancing flows, crypto breakout, reversal), each admitted only if it passes the validation gates |
 | 6–8 | Operations, API and dashboard, CI quality gates |

@@ -39,8 +39,9 @@ services:
       - LOG_TO_FILE=true
       - LOG_TO_CONSOLE=true
 
-      # Trading (loaded from env or secrets)
+      # Trading: paper only (ALPACA_API_KEY / ALPACA_SECRET_KEY come from .env)
       - TRADING_MODE=${TRADING_MODE:-PAPER}
+      - ENGINE_AUTOSTART=${ENGINE_AUTOSTART:-false}
 
     env_file:
       - .env

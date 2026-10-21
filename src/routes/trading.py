@@ -1,434 +1,270 @@
-# FILE LOCATION: src/routes/trading.py
 """
-NOCTURNA Trading System - Secure API Routes
-Production-grade endpoints with authentication, validation, and rate limiting.
+NOCTURNA Trading System - Trading API.
+
+Reads come from the engine service's published snapshot (live state) and from
+the trading history tables; writes become commands executed on the engine
+thread. Paper trading only.
 """
 
 import logging
-import os
-import sys
+import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-
-from src.core.trading_engine import TradingEngine, TradingEngineState
 from src.middleware.auth import require_admin, require_auth, require_trading_permissions
+from src.models.trading import EquitySnapshot, TradingFill, TradingOrder
+from src.trading.domain import AssetClass, Order, OrderRequest, OrderType, Side, TimeInForce
+from src.trading.runtime import NOT_CONFIGURED_MESSAGE, TradingNotConfiguredError, TradingRuntime
+from src.trading.service import ServiceNotRunningError
 from src.utils.audit import record_audit_event
-from src.utils.validators import validate_config_input, validate_emergency_stop, validate_trading_signal
+from src.utils.validators import validate_emergency_stop, validate_manual_order
 
-# Create blueprint
 trading_bp = Blueprint('trading', __name__)
-
-# Configure logger for this module
 logger = logging.getLogger(__name__)
 
-# Global trading engine instance
-_trading_engine: TradingEngine | None = None
+MAX_PAGE = 500
 
 
-# =============================================================================
-# ENGINE INSTANCE MANAGEMENT
-# =============================================================================
-
-def get_trading_engine() -> TradingEngine:
-    """
-    Get or create the trading engine instance.
-    Implements singleton pattern with proper initialization.
-
-    Returns:
-        TradingEngine instance
-    """
-    global _trading_engine
-
-    if _trading_engine is None:
-        # Load configuration from environment with defaults
-        config = {
-            'symbols': os.environ.get('DEFAULT_SYMBOLS', 'SPY,QQQ,AAPL,MSFT,GOOGL').split(','),
-            'update_interval': int(os.environ.get('UPDATE_INTERVAL', 60)),
-            'simulation_mode': os.environ.get('TRADING_MODE', 'PAPER') == 'PAPER',
-            'market_data': {
-                'redis_host': os.environ.get('REDIS_URL'),
-            },
-            'trading': {
-                'alpaca_api_key': os.environ.get('ALPACA_API_KEY'),
-                'alpaca_secret_key': os.environ.get('ALPACA_SECRET_KEY'),
-                'alpaca_base_url': os.environ.get('ALPACA_BASE_URL', 'https://paper-api.alpaca.markets'),
-                'simulation_mode': os.environ.get('TRADING_MODE', 'PAPER') == 'PAPER',
-                'max_daily_loss': float(os.environ.get('MAX_DAILY_LOSS', 0.05)),
-            },
-            'strategy': {
-                'max_position_size': float(os.environ.get('MAX_POSITION_SIZE', 0.2)),
-                'grid_spacing': float(os.environ.get('GRID_SPACING', 0.005)),
-                'atr_mult_sl': float(os.environ.get('ATR_MULT_SL', 2.0)),
-                'atr_mult_tp': float(os.environ.get('ATR_MULT_TP', 4.0)),
-                'volatility_threshold': float(os.environ.get('VOLATILITY_THRESHOLD', 2.0)),
-            },
-            'risk': {
-                'max_daily_loss': float(os.environ.get('MAX_DAILY_LOSS', 0.05)),
-                'max_drawdown': float(os.environ.get('DRAWDOWN_STOP', 0.15)),
-                'volatility_threshold': float(os.environ.get('VOLATILITY_THRESHOLD', 2.0)),
-                'risk_parameters': {
-                    'max_position_size': float(os.environ.get('MAX_POSITION_SIZE', 0.2)),
-                    'max_portfolio_exposure': float(os.environ.get('MAX_PORTFOLIO_RISK', 0.8)),
-                    'max_daily_loss': float(os.environ.get('MAX_DAILY_LOSS', 0.05)),
-                    'max_drawdown': float(os.environ.get('DRAWDOWN_STOP', 0.15)),
-                }
-            }
-        }
-
-        _trading_engine = TradingEngine(config)
-
-    return _trading_engine
+def _runtime() -> TradingRuntime:
+    return current_app.extensions['trading']
 
 
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-def log_api_call(action: str, details: str = '', success: bool = True):
-    """Log API call with user context; state-changing calls also go to the audit trail."""
-    user_id = getattr(g, 'user_id', 'anonymous')
-    request_id = getattr(g, 'request_id', 'unknown')
-    logger.info(f"API [{action}] | User: {user_id} | Request ID: {request_id} | {details}")
-    if request.method != 'GET':
-        record_audit_event(action, success, {'details': details})
-
-
-def format_response(success: bool, data: Any = None, error: str = None,
-                    message: str = None, status_code: int = 200) -> tuple:
-    """Format standardized API response."""
-    response = {
+def format_response(success: bool, data: Any = None, error: str | None = None,
+                    message: str | None = None, status_code: int = 200) -> tuple:
+    body: dict[str, Any] = {
         'success': success,
         'timestamp': datetime.now(UTC).isoformat(),
-        'request_id': getattr(g, 'request_id', None)
+        'request_id': getattr(g, 'request_id', None),
+    }
+    if data is not None:
+        body['data'] = data
+    if error is not None:
+        body['error'] = error
+    if message is not None:
+        body['message'] = message
+    return jsonify(body), status_code
+
+
+def _num(value: Decimal | None) -> str | None:
+    return None if value is None else str(value)
+
+
+def _order(order: Order) -> dict:
+    r = order.request
+    return {
+        'client_order_id': order.client_order_id, 'broker_order_id': order.broker_order_id,
+        'symbol': r.symbol, 'side': r.side.value, 'qty': _num(r.qty), 'order_type': r.order_type.value,
+        'time_in_force': r.time_in_force.value, 'limit_price': _num(r.limit_price),
+        'stop_price': _num(r.stop_price), 'status': order.status.value, 'filled_qty': _num(order.filled_qty),
+        'avg_fill_price': _num(order.avg_fill_price), 'tag': r.tag, 'reason': order.reason,
+        'created_at': order.created_at.isoformat(), 'updated_at': order.updated_at.isoformat(),
     }
 
-    if data is not None:
-        response['data'] = data
-    if error is not None:
-        response['error'] = error
-    if message is not None:
-        response['message'] = message
 
-    return jsonify(response), status_code
+def _limit() -> int:
+    return max(1, min(request.args.get('limit', 100, type=int) or 100, MAX_PAGE))
+
+
+def _not_running():
+    return format_response(False, error='The trading engine is not running', status_code=409)
 
 
 # =============================================================================
-# PUBLIC ENDPOINTS (Authentication Optional)
+# READS
 # =============================================================================
 
 @trading_bp.route('/health', methods=['GET'])
 def trading_health():
-    """
-    Public health check for trading service.
-    Used by load balancers to verify service availability.
-    """
-    return format_response(True, data={'status': 'healthy', 'service': 'trading'})
+    """Public: whether the engine is running (no account data)."""
+    status = _runtime().status()
+    return format_response(True, data={'engine': status.state if status else 'stopped'})
 
-
-# =============================================================================
-# AUTHENTICATED ENDPOINTS - READ OPERATIONS
-# =============================================================================
 
 @trading_bp.route('/status', methods=['GET'])
 @require_auth
 def get_status():
-    """
-    Get current trading engine status.
-    Requires authentication.
-    """
-    try:
-        engine = get_trading_engine()
-        status = engine.get_status()
+    runtime = _runtime()
+    status = runtime.status()
+    data: dict[str, Any] = {'configured': runtime.configured, 'state': status.state if status else 'stopped'}
+    if status is not None:
+        data.update(
+            started_at=status.started_at.isoformat() if status.started_at else None,
+            last_poll=status.last_poll.isoformat() if status.last_poll else None,
+            next_poll=status.next_poll.isoformat() if status.next_poll else None,
+            last_error=status.last_error or None,
+        )
+        snapshot = status.snapshot
+        if snapshot is not None:
+            data.update(
+                as_of=snapshot.timestamp.isoformat(), equity=_num(snapshot.equity), cash=_num(snapshot.cash),
+                realized_pnl=_num(snapshot.realized_pnl), fees=_num(snapshot.fees), halted=snapshot.halted,
+                halt_reason=snapshot.halt_reason or None, open_orders=len(snapshot.open_orders),
+                positions=len(snapshot.positions),
+            )
+            risk = snapshot.risk
+            data['risk'] = {
+                'halt_kind': risk.halt_kind or None, 'drawdown': _num(risk.drawdown),
+                'high_water_mark': _num(risk.high_water_mark), 'cooling_down': risk.cooling_down,
+                'orders_today': risk.orders_today, 'turnover_today': _num(risk.turnover_today),
+                'predicted_volatility': risk.predicted_volatility,
+                'volatility_scale': _num(risk.volatility_scale), 'drawdown_scale': _num(risk.drawdown_scale),
+            }
+        report = status.last_reconciliation
+        if report is not None:
+            data['last_reconciliation'] = {
+                'at': report.timestamp.isoformat(), 'in_sync': report.in_sync,
+                'discrepancies': [{'item': d.item, 'engine': _num(d.engine), 'broker': _num(d.broker)}
+                                  for d in report.discrepancies],
+            }
+    return format_response(True, data=data)
 
-        log_api_call('GET_STATUS', f"State: {status.get('engine_state')}")
 
-        return format_response(True, data=status)
-
-    except Exception as e:
-        logger.error(f"Error getting status: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error='Internal server error', status_code=500)
-
-
-@trading_bp.route('/status/detailed', methods=['GET'])
-@require_auth
-def get_detailed_status():
-    """
-    Get detailed trading engine status.
-    Requires authentication.
-    """
-    try:
-        engine = get_trading_engine()
-        detailed_status = engine.get_detailed_status()
-
-        log_api_call('GET_DETAILED_STATUS', f"Positions: {len(detailed_status.get('positions', {}))}")
-
-        return format_response(True, data=detailed_status)
-
-    except Exception as e:
-        logger.error(f"Error getting detailed status: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error='Internal server error', status_code=500)
+def _snapshot_or_none():
+    status = _runtime().status()
+    return status.snapshot if status is not None else None
 
 
 @trading_bp.route('/positions', methods=['GET'])
 @require_auth
 def get_positions():
-    """
-    Get active positions.
-    Requires authentication.
-    """
-    try:
-        engine = get_trading_engine()
-        positions = engine.order_manager.get_positions()
+    snapshot = _snapshot_or_none()
+    if snapshot is None:
+        return _not_running()
+    return format_response(True, data={'as_of': snapshot.timestamp.isoformat(), 'positions': [
+        {'symbol': p.symbol, 'qty': _num(p.qty), 'avg_price': _num(p.avg_price), 'price': _num(p.price),
+         'market_value': _num(p.market_value), 'unrealized_pnl': _num(p.unrealized_pnl)}
+        for p in snapshot.positions]})
 
-        log_api_call('GET_POSITIONS', f"Count: {len(positions)}")
 
-        return format_response(True, data=positions, message=f'{len(positions)} positions retrieved')
-
-    except Exception as e:
-        logger.error(f"Error getting positions: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error='Internal server error', status_code=500)
+@trading_bp.route('/targets', methods=['GET'])
+@require_auth
+def get_targets():
+    snapshot = _snapshot_or_none()
+    if snapshot is None:
+        return _not_running()
+    return format_response(True, data={'targets': {s: _num(w) for s, w in snapshot.target_weights.items()}})
 
 
 @trading_bp.route('/orders', methods=['GET'])
 @require_auth
 def get_orders():
-    """
-    Get active orders.
-    Requires authentication.
-    """
-    try:
-        engine = get_trading_engine()
-        orders = engine.order_manager.active_orders
-
-        log_api_call('GET_ORDERS', f"Count: {len(orders)}")
-
-        return format_response(True, data=orders, message=f'{len(orders)} active orders')
-
-    except Exception as e:
-        logger.error(f"Error getting orders: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error='Internal server error', status_code=500)
+    """Working orders from the engine, and order history (newest first) from the database."""
+    snapshot = _snapshot_or_none()
+    history = TradingOrder.query.order_by(TradingOrder.created_at.desc()).limit(_limit()).all()
+    return format_response(True, data={
+        'working': [_order(o) for o in snapshot.open_orders] if snapshot is not None else [],
+        'history': [o.to_dict() for o in history],
+    })
 
 
-@trading_bp.route('/performance', methods=['GET'])
+@trading_bp.route('/fills', methods=['GET'])
 @require_auth
-def get_performance():
-    """
-    Get performance metrics.
-    Requires authentication.
-    """
-    try:
-        engine = get_trading_engine()
-        stats = engine.stats
-
-        performance_data = {
-            'total_pnl': stats.get('total_pnl', 0.0),
-            'daily_pnl': stats.get('daily_pnl', 0.0),
-            'win_rate': stats.get('win_rate', 0.0),
-            'total_trades': stats.get('total_trades', 0),
-            'winning_trades': stats.get('winning_trades', 0),
-            'losing_trades': stats.get('losing_trades', 0),
-            'max_drawdown': stats.get('max_drawdown', 0.0),
-        }
-
-        log_api_call('GET_PERFORMANCE', f"Win rate: {performance_data['win_rate']:.2%}")
-
-        return format_response(True, data=performance_data)
-
-    except Exception as e:
-        logger.error(f"Error getting performance: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error='Internal server error', status_code=500)
+def get_fills():
+    fills = TradingFill.query.order_by(TradingFill.timestamp.desc()).limit(_limit()).all()
+    return format_response(True, data={'fills': [f.to_dict() for f in fills]})
 
 
-@trading_bp.route('/strategy', methods=['GET'])
+@trading_bp.route('/equity-curve', methods=['GET'])
 @require_auth
-def get_strategy_status():
-    """
-    Get current strategy status.
-    Requires authentication.
-    """
-    try:
-        engine = get_trading_engine()
-        strategy_status = engine.strategy_manager.get_strategy_status()
-
-        log_api_call('GET_STRATEGY', f"Mode: {strategy_status.get('current_mode')}")
-
-        return format_response(True, data=strategy_status)
-
-    except Exception as e:
-        logger.error(f"Error getting strategy status: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error='Internal server error', status_code=500)
-
-
-@trading_bp.route('/risk', methods=['GET'])
-@require_auth
-def get_risk_status():
-    """
-    Get current risk status.
-    Requires authentication.
-    """
-    try:
-        engine = get_trading_engine()
-        risk_report = engine.risk_manager.get_risk_report()
-
-        log_api_call('GET_RISK', f"Level: {risk_report.get('current_risk_level')}")
-
-        return format_response(True, data=risk_report)
-
-    except Exception as e:
-        logger.error(f"Error getting risk status: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error='Internal server error', status_code=500)
-
-
-@trading_bp.route('/config', methods=['GET'])
-@require_auth
-def get_config():
-    """
-    Get current configuration.
-    Requires authentication.
-    """
-    try:
-        engine = get_trading_engine()
-        config_data = {
-            'symbols': engine.symbols,
-            'update_interval': engine.update_interval,
-            'strategy_parameters': engine.strategy_manager.parameters,
-            'risk_parameters': engine.risk_manager.risk_parameters,
-            'simulation_mode': engine.config.get('simulation_mode', False)
-        }
-
-        log_api_call('GET_CONFIG', f"Symbols: {engine.symbols}")
-
-        return format_response(True, data=config_data)
-
-    except Exception as e:
-        logger.error(f"Error getting config: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error='Internal server error', status_code=500)
+def get_equity_curve():
+    """Recorded equity snapshots, oldest first (the most recent ``limit``)."""
+    rows = EquitySnapshot.query.order_by(EquitySnapshot.timestamp.desc()).limit(_limit()).all()
+    return format_response(True, data={'equity_curve': [r.to_dict() for r in reversed(rows)]})
 
 
 # =============================================================================
-# AUTHENTICATED ENDPOINTS - WRITE OPERATIONS
+# ORDERS
+# =============================================================================
+
+@trading_bp.route('/orders', methods=['POST'])
+@require_auth
+@require_trading_permissions
+def submit_order():
+    """An operator's order, checked by the same risk gate as strategy orders."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not data:
+        return format_response(False, error='Request body required', status_code=400)
+    is_valid, order, errors = validate_manual_order(data)
+    if not is_valid:
+        return format_response(False, error='Invalid order', data={'validation_errors': errors},
+                               status_code=400)
+
+    service = _runtime().service
+    engine = service.engine if service is not None and service.running else None
+    if engine is None:
+        return _not_running()
+    instrument = engine.instruments.get(order.symbol)
+    if instrument is None:
+        return format_response(False, error=f'{order.symbol} is not traded by the engine', status_code=400)
+    default_tif = TimeInForce.GTC if instrument.asset_class is AssetClass.CRYPTO else TimeInForce.DAY
+    order_request = OrderRequest(
+        client_order_id=f"op-{uuid.uuid4().hex[:24]}", symbol=order.symbol, side=Side(order.side),
+        qty=order.qty, order_type=OrderType(order.order_type),
+        time_in_force=TimeInForce(order.time_in_force) if order.time_in_force else default_tif,
+        limit_price=order.limit_price, stop_price=order.stop_price, tag=f"operator:{g.user_id}")
+    try:
+        decision = service.submit_order(order_request)
+    except ServiceNotRunningError:
+        return _not_running()
+    record_audit_event('ORDER_SUBMITTED' if decision.allowed else 'ORDER_REJECTED', decision.allowed,
+                       {'client_order_id': order_request.client_order_id, 'symbol': order.symbol,
+                        'side': order.side, 'qty': str(order.qty), 'reason': decision.reason})
+    if not decision.allowed:
+        return format_response(False, error=f'Rejected by the risk gate: {decision.reason}', status_code=422)
+    placed = service.engine.orders.get(order_request.client_order_id)
+    return format_response(True, data={'order': _order(placed) if placed else None}, status_code=201)
+
+
+@trading_bp.route('/orders/<client_order_id>/cancel', methods=['POST'])
+@require_auth
+@require_trading_permissions
+def cancel_order(client_order_id):
+    service = _runtime().service
+    if service is None or not service.running:
+        return _not_running()
+    try:
+        requested = service.cancel_order(client_order_id)
+    except ServiceNotRunningError:
+        return _not_running()
+    if not requested:
+        return format_response(False, error='No working order with that id', status_code=404)
+    record_audit_event('ORDER_CANCEL_REQUESTED', True, {'client_order_id': client_order_id})
+    return format_response(True, message='Cancel requested', status_code=202)
+
+
+# =============================================================================
+# ENGINE CONTROL (admin)
 # =============================================================================
 
 @trading_bp.route('/control/start', methods=['POST'])
 @require_auth
 @require_admin
-@require_trading_permissions
 def start_engine():
-    """
-    Start the trading engine.
-    Requires authentication and admin permissions.
-    """
+    runtime = _runtime()
     try:
-        engine = get_trading_engine()
-
-        if engine.state == TradingEngineState.RUNNING:
-            return format_response(
-                False,
-                error='Engine already running',
-                status_code=400
-            )
-
-        success = engine.start()
-
-        if success:
-            log_api_call('START_ENGINE', 'Engine started successfully')
-            return format_response(
-                True,
-                message='Engine started',
-                data={'state': engine.state.value}
-            )
-        else:
-            return format_response(
-                False,
-                error=f'Failed to start engine. Current state: {engine.state}',
-                status_code=500
-            )
-
-    except Exception as e:
-        logger.error(f"Error starting engine: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error='Internal server error', status_code=500)
+        runtime.start()
+    except TradingNotConfiguredError:
+        return format_response(False, error=NOT_CONFIGURED_MESSAGE, status_code=503)
+    except RuntimeError:
+        return format_response(False, error='The engine is already running', status_code=409)
+    except Exception:
+        logger.exception("Engine start failed")
+        return format_response(False, error='Engine start failed', status_code=502)
+    record_audit_event('ENGINE_START', True)
+    return format_response(True, message='Engine starting', status_code=202)
 
 
 @trading_bp.route('/control/stop', methods=['POST'])
 @require_auth
 @require_admin
 def stop_engine():
-    """
-    Stop the trading engine.
-    Requires authentication and admin permissions.
-    """
-    try:
-        engine = get_trading_engine()
-
-        if engine.state == TradingEngineState.STOPPED:
-            return format_response(
-                False,
-                error='Engine already stopped',
-                status_code=400
-            )
-
-        success = engine.stop()
-
-        if success:
-            log_api_call('STOP_ENGINE', 'Engine stopped')
-            return format_response(
-                True,
-                message='Engine stopped',
-                data={'state': engine.state.value}
-            )
-        else:
-            return format_response(
-                False,
-                error='Failed to stop engine',
-                status_code=500
-            )
-
-    except Exception as e:
-        logger.error(f"Error stopping engine: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error='Internal server error', status_code=500)
-
-
-@trading_bp.route('/control/pause', methods=['POST'])
-@require_auth
-@require_admin
-def pause_engine():
-    """
-    Pause the trading engine.
-    Requires authentication and admin permissions.
-    """
-    try:
-        engine = get_trading_engine()
-
-        if engine.state != TradingEngineState.RUNNING:
-            return format_response(
-                False,
-                error='Engine not running',
-                status_code=400
-            )
-
-        success = engine.pause()
-
-        if success:
-            log_api_call('PAUSE_ENGINE', 'Engine paused')
-            return format_response(
-                True,
-                message='Engine paused',
-                data={'state': engine.state.value}
-            )
-        else:
-            return format_response(
-                False,
-                error='Failed to pause engine',
-                status_code=500
-            )
-
-    except Exception as e:
-        logger.error(f"Error pausing engine: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error='Internal server error', status_code=500)
+    """Stop the engine thread. Working orders stay at the broker; use the emergency stop to cancel them."""
+    _runtime().stop()
+    record_audit_event('ENGINE_STOP', True)
+    return format_response(True, message='Engine stopped')
 
 
 @trading_bp.route('/control/resume', methods=['POST'])
@@ -436,38 +272,18 @@ def pause_engine():
 @require_admin
 def resume_engine():
     """
-    Resume the trading engine from pause.
-    Requires authentication and admin permissions.
+    Lift a halt so strategies trade again. After a drawdown kill the
+    high-water mark restarts at the current equity.
     """
+    service = _runtime().service
     try:
-        engine = get_trading_engine()
-
-        if engine.state != TradingEngineState.PAUSED:
-            return format_response(
-                False,
-                error='Engine not paused',
-                status_code=400
-            )
-
-        success = engine.resume()
-
-        if success:
-            log_api_call('RESUME_ENGINE', 'Engine resumed')
-            return format_response(
-                True,
-                message='Engine resumed',
-                data={'state': engine.state.value}
-            )
-        else:
-            return format_response(
-                False,
-                error='Failed to resume engine',
-                status_code=500
-            )
-
-    except Exception as e:
-        logger.error(f"Error resuming engine: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error='Internal server error', status_code=500)
+        if service is None:
+            raise ServiceNotRunningError
+        service.resume()
+    except ServiceNotRunningError:
+        return _not_running()
+    record_audit_event('ENGINE_RESUME', True)
+    return format_response(True, message='Trading resumed')
 
 
 @trading_bp.route('/emergency-stop', methods=['POST'])
@@ -476,330 +292,30 @@ def resume_engine():
 @require_trading_permissions
 def emergency_stop():
     """
-    Emergency stop of the system.
-    Requires authentication and admin permissions.
-    This will immediately halt all trading activity.
+    Kill switch: halt the engine and cancel its orders; with close_all_positions
+    (the default), also close every position. Works even when the engine is not
+    running, by asking the broker directly.
     """
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        data = {}
+    is_valid, validated, errors = validate_emergency_stop(data)
+    if not is_valid:
+        return format_response(False, error='Invalid request data', data={'validation_errors': errors},
+                               status_code=400)
+    logger.critical("EMERGENCY STOP by user %s: %s (close positions: %s)",
+                    getattr(g, 'user_id', '?'), validated.reason, validated.close_all_positions)
     try:
-        # Get and validate request data
-        data = request.get_json(silent=True)
-        if not isinstance(data, dict):
-            data = {}
-        is_valid, validated_data, errors = validate_emergency_stop(data)
-
-        if not is_valid:
-            return format_response(
-                False,
-                error='Invalid request data',
-                data={'validation_errors': errors},
-                status_code=400
-            )
-
-        engine = get_trading_engine()
-        reason = validated_data.reason
-
-        # Log critical action
-        user_id = getattr(g, 'user_id', 'unknown')
-        logger.critical(
-            f"EMERGENCY STOP triggered | User: {user_id} | Reason: {reason} | "
-            f"Close positions: {validated_data.close_all_positions} | "
-            f"Request ID: {getattr(g, 'request_id', 'unknown')}"
-        )
-
-        # The flag must be set before the stop: emergency_stop() reads it to decide
-        # whether to submit closing orders
-        engine.config['emergency_close_positions'] = validated_data.close_all_positions
-
-        engine.emergency_stop(reason)
-        record_audit_event('EMERGENCY_STOP', True, {
-            'reason': reason,
-            'close_all_positions': validated_data.close_all_positions,
-            'state': engine.state.value,
-        })
-
-        return format_response(
-            True,
-            message='Emergency stop executed',
-            data={
-                'state': engine.state.value,
-                'reason': reason,
-                'close_orders_submitted': validated_data.close_all_positions
-            }
-        )
-
+        result = _runtime().emergency_stop(validated.reason, flatten=validated.close_all_positions)
+    except TradingNotConfiguredError:
+        record_audit_event('EMERGENCY_STOP', False, {'reason': validated.reason}, error='not configured')
+        return format_response(False, error=NOT_CONFIGURED_MESSAGE, status_code=503)
     except Exception as e:
-        logger.error(f"Error during emergency stop: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        record_audit_event('EMERGENCY_STOP', False, error=type(e).__name__)
-        return format_response(False, error='Internal server error', status_code=500)
-
-
-# =============================================================================
-# TRADING OPERATIONS
-# =============================================================================
-
-@trading_bp.route('/orders', methods=['POST'])
-@require_auth
-@require_trading_permissions
-def create_order():
-    """
-    Create a new order.
-    Requires authentication and trading permissions.
-    """
-    try:
-        # Parse and validate request data
-        data = request.get_json(silent=True)
-        if not isinstance(data, dict) or not data:
-            return format_response(False, error='Request body required', status_code=400)
-
-        is_valid, signal, errors = validate_trading_signal(data)
-
-        if not is_valid:
-            logger.warning(
-                f"Invalid order signal from {getattr(g, 'user_id', 'unknown')}: {errors} | "
-                f"Request ID: {getattr(g, 'request_id', 'unknown')}"
-            )
-            return format_response(
-                False,
-                error='Invalid order signal',
-                data={'validation_errors': errors},
-                status_code=400
-            )
-
-        # Additional risk check before submission
-        engine = get_trading_engine()
-
-        # Get current positions
-        positions = engine.order_manager.get_positions()
-        market_data = engine._get_market_data_for_risk(signal.symbol)
-
-        # Validate with risk manager
-        is_valid, reason, adjusted_signal = engine.risk_manager.validate_trade(
-            signal.model_dump(),
-            positions,
-            market_data
-        )
-
-        if not is_valid:
-            log_api_call('ORDER_REJECTED', f"Symbol: {signal.symbol} | Reason: {reason}", success=False)
-            return format_response(
-                False,
-                error=f'Order rejected by risk manager: {reason}',
-                data={'rejected_reason': reason},
-                status_code=400
-            )
-
-        # Submit order
-        order_id = engine.order_manager.submit_order(adjusted_signal)
-
-        if order_id:
-            log_api_call(
-                'ORDER_SUBMITTED',
-                f"Order ID: {order_id} | Symbol: {signal.symbol} | Side: {signal.side} | "
-                f"Qty: {signal.quantity}"
-            )
-            return format_response(
-                True,
-                message='Order submitted',
-                data={
-                    'order_id': order_id,
-                    'symbol': signal.symbol,
-                    'side': signal.side,
-                    'quantity': signal.quantity,
-                    'order_type': signal.order_type
-                }
-            )
-        else:
-            return format_response(
-                False,
-                error='Failed to submit order',
-                status_code=500
-            )
-
-    except Exception as e:
-        logger.error(f"Error creating order: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error='Internal server error', status_code=500)
-
-
-@trading_bp.route('/orders/<order_id>/cancel', methods=['POST'])
-@require_auth
-@require_trading_permissions
-def cancel_order(order_id: str):
-    """
-    Cancel a specific order.
-    Requires authentication and trading permissions.
-    """
-    try:
-        # Validate order_id format
-        if not order_id or not isinstance(order_id, str):
-            return format_response(False, error='Invalid order ID', status_code=400)
-
-        # Sanitize order_id
-        order_id = order_id.strip()
-
-        engine = get_trading_engine()
-        success = engine.order_manager.cancel_order(order_id)
-
-        if success:
-            log_api_call('ORDER_CANCELLED', f"Order ID: {order_id}")
-            return format_response(True, message=f'Order {order_id} cancelled')
-        else:
-            return format_response(
-                False,
-                error=f'Order {order_id} not found or already processed',
-                status_code=404
-            )
-
-    except Exception as e:
-        logger.error(f"Error cancelling order {order_id}: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error='Internal server error', status_code=500)
-
-
-# =============================================================================
-# CONFIGURATION UPDATES
-# =============================================================================
-
-@trading_bp.route('/config', methods=['PUT'])
-@require_auth
-@require_admin
-def update_config():
-    """
-    Update system configuration.
-    Requires authentication and admin permissions.
-    """
-    try:
-        data = request.get_json(silent=True)
-        if not isinstance(data, dict) or not data:
-            return format_response(False, error='Request body required', status_code=400)
-
-        # Validate configuration input
-        is_valid, validated_config, errors = validate_config_input(data)
-
-        if not is_valid:
-            logger.warning(
-                f"Invalid config update from {getattr(g, 'user_id', 'unknown')}: {errors} | "
-                f"Request ID: {getattr(g, 'request_id', 'unknown')}"
-            )
-            return format_response(
-                False,
-                error='Invalid configuration',
-                data={'validation_errors': errors},
-                status_code=400
-            )
-
-        engine = get_trading_engine()
-        config_dict = validated_config.model_dump(exclude_none=True)
-
-        success = engine.update_config(config_dict)
-
-        if success:
-            log_api_call('CONFIG_UPDATED', f"Updated keys: {list(config_dict.keys())}")
-            return format_response(
-                True,
-                message='Configuration updated',
-                data={'updated_keys': list(config_dict.keys())}
-            )
-        else:
-            return format_response(
-                False,
-                error='Failed to update configuration',
-                status_code=500
-            )
-
-    except Exception as e:
-        logger.error(f"Error updating config: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error='Internal server error', status_code=500)
-
-
-# =============================================================================
-# OPTIMIZATION ENDPOINTS
-# =============================================================================
-
-@trading_bp.route('/optimize', methods=['POST'])
-@require_auth
-@require_admin
-def start_optimization():
-    """
-    ML parameter optimization — not implemented yet (returns 501).
-    Requires authentication and admin permissions.
-    """
-    logger.info(
-        f"Optimization requested by {getattr(g, 'user_id', 'unknown')} | "
-        f"Request ID: {getattr(g, 'request_id', 'unknown')}"
-    )
-    return format_response(
-        False,
-        error='ML optimization is not implemented yet',
-        status_code=501
-    )
-
-
-# =============================================================================
-# AUDIT ENDPOINTS
-# =============================================================================
-
-@trading_bp.route('/trades', methods=['GET'])
-@require_auth
-def get_trade_history():
-    """
-    Get trade history.
-    Requires authentication.
-    """
-    try:
-        engine = get_trading_engine()
-        trades = engine.order_manager.order_history
-
-        log_api_call('GET_TRADE_HISTORY', f"Total trades: {len(trades)}")
-
-        return format_response(
-            True,
-            data={'trades': trades, 'count': len(trades)}
-        )
-
-    except Exception as e:
-        logger.error(f"Error getting trade history: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error='Internal server error', status_code=500)
-
-
-@trading_bp.route('/equity-curve', methods=['GET'])
-@require_auth
-def get_equity_curve():
-    """
-    Get equity curve data.
-    Requires authentication.
-    """
-    try:
-        engine = get_trading_engine()
-
-        # Only real recorded history — an empty list when nothing has been recorded yet
-        equity_data = list(engine.performance_history)
-
-        log_api_call('GET_EQUITY_CURVE', f"Data points: {len(equity_data)}")
-
-        return format_response(True, data={'equity_curve': equity_data})
-
-    except Exception as e:
-        logger.error(f"Error getting equity curve: {e} | Request ID: {getattr(g, 'request_id', 'unknown')}")
-        return format_response(False, error='Internal server error', status_code=500)
-
-
-# =============================================================================
-# ERROR HANDLERS
-# =============================================================================
-
-@trading_bp.errorhandler(404)
-def not_found(error):
-    """Handle 404 errors."""
-    return format_response(False, error='Endpoint not found', status_code=404)
-
-
-@trading_bp.errorhandler(405)
-def method_not_allowed(error):
-    """Handle 405 errors."""
-    return format_response(False, error='Method not allowed', status_code=405)
-
-
-@trading_bp.errorhandler(500)
-def internal_error(error):
-    """Handle 500 errors."""
-    logger.error(f"Internal error in trading blueprint: {error}")
-    return format_response(False, error='Internal server error', status_code=500)
+        logger.exception("Emergency stop failed")
+        record_audit_event('EMERGENCY_STOP', False, {'reason': validated.reason}, error=type(e).__name__)
+        return format_response(False, error='Emergency stop failed; check the broker directly',
+                               status_code=502)
+    record_audit_event('EMERGENCY_STOP', True, {'reason': validated.reason,
+                                                'close_all_positions': validated.close_all_positions, **result})
+    return format_response(True, message='Emergency stop executed',
+                           data={'reason': validated.reason, **result})

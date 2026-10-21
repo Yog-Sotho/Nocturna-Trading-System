@@ -36,7 +36,9 @@ class TestAuditTrail:
         [event] = _events(app, "TEST_EVENT")
         assert event.event_data == {"password": "[REDACTED]", "nested": {"api_key": "[REDACTED]"}}
 
-    def test_emergency_stop_is_recorded(self, client, admin_headers, admin_user):
+    def test_emergency_stop_is_recorded(self, client, admin_headers, admin_user, sim_runtime):
+        client.post("/api/trading/control/start", headers=admin_headers)
+        sim_runtime.wait_running()
         resp = client.post("/api/trading/emergency-stop", headers=admin_headers,
                            json={"reason": "audit drill", "close_all_positions": False})
         assert resp.status_code == 200

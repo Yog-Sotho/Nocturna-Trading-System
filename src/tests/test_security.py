@@ -5,7 +5,7 @@ Covers: SEC-05 (CORS), SEC-08 (registration rate limit), security headers.
 
 import pytest
 
-from src.middleware.security import InputSanitizer, IPManager
+from src.middleware.security import IPManager
 
 
 class TestSecurityHeaders:
@@ -37,60 +37,6 @@ class TestSecurityHeaders:
         resp = client.get("/api/version")
         cc = resp.headers.get("Cache-Control", "")
         assert "no-store" in cc
-
-
-class TestInputSanitizer:
-    """Input validation and sanitization."""
-
-    def test_sanitize_valid_symbol(self):
-        assert InputSanitizer.sanitize_symbol("AAPL") == "AAPL"
-
-    def test_sanitize_lowercase_symbol(self):
-        result = InputSanitizer.sanitize_symbol("aapl")
-        # Should uppercase or reject
-        assert result is None or result == "AAPL"
-
-    def test_reject_invalid_symbol(self):
-        assert InputSanitizer.sanitize_symbol("DROP TABLE") is None
-        assert InputSanitizer.sanitize_symbol("") is None
-        assert InputSanitizer.sanitize_symbol("TOOLONGSYMBOL") is None
-
-    def test_sanitize_numeric(self):
-        assert InputSanitizer.sanitize_numeric(42.5) == 42.5
-        assert InputSanitizer.sanitize_numeric(-1.0, min_val=0) is None
-
-    def test_sanitize_string_strips_null_bytes(self):
-        result = InputSanitizer.sanitize_string("hello\x00world")
-        assert "\x00" not in result
-
-    def test_sanitize_string_truncates(self):
-        result = InputSanitizer.sanitize_string("x" * 1000, max_length=50)
-        assert len(result) == 50
-
-    def test_sanitize_order_signal_valid(self):
-        signal = {
-            "symbol": "AAPL",
-            "side": "buy",
-            "type": "market",
-            "quantity": 100,
-        }
-        result = InputSanitizer.sanitize_order_signal(signal)
-        assert result is not None
-        assert result["symbol"] == "AAPL"
-        assert result["side"] == "buy"
-
-    def test_sanitize_order_signal_invalid_side(self):
-        signal = {
-            "symbol": "AAPL",
-            "side": "hold",  # Invalid
-            "type": "market",
-            "quantity": 100,
-        }
-        assert InputSanitizer.sanitize_order_signal(signal) is None
-
-    def test_sanitize_order_signal_missing_symbol(self):
-        signal = {"side": "buy", "type": "market", "quantity": 100}
-        assert InputSanitizer.sanitize_order_signal(signal) is None
 
 
 class TestIPManager:
@@ -261,9 +207,12 @@ class TestRequestHandling:
         def explode():
             raise RuntimeError("db password is hunter2")
 
-        monkeypatch.setattr(trading_routes, "get_trading_engine", explode)
+        # As in production: unhandled errors reach the JSON 500 handler instead of the test client
+        monkeypatch.setitem(client.application.config, "PROPAGATE_EXCEPTIONS", False)
+        monkeypatch.setattr(trading_routes, "_runtime", explode)
         resp = client.get("/api/trading/status", headers=auth_headers)
         assert resp.status_code == 500
+        assert resp.get_json()["error"] == "Internal server error"
         assert "hunter2" not in resp.get_data(as_text=True)
 
     def test_login_does_not_bypass_cors_allowlist(self, client):
@@ -277,10 +226,10 @@ class TestRequestHandling:
 class TestMalformedBodies:
     @pytest.mark.parametrize("path,method", [
         ("/api/auth/login", "post"),
-        ("/api/paper/orders", "post"),
-        ("/api/paper/prices", "post"),
+        ("/api/auth/refresh", "post"),
+        ("/api/api-keys", "post"),
+        ("/api/users", "post"),
         ("/api/trading/orders", "post"),
-        ("/api/trading/config", "put"),
     ])
     @pytest.mark.parametrize("body", [b"{not json", b"[1, 2]", b'"text"'])
     def test_rejected_with_400(self, client, admin_headers, path, method, body):
@@ -290,12 +239,12 @@ class TestMalformedBodies:
 
 
 class TestCodeScanningFixes:
-    def test_invalid_paper_order_does_not_echo_exception_text(self, client, auth_headers):
-        resp = client.post("/api/paper/orders", headers=auth_headers, json={
+    def test_invalid_order_does_not_echo_exception_text(self, client, auth_headers):
+        resp = client.post("/api/trading/orders", headers=auth_headers, json={
             "symbol": "SPY", "side": "buy", "order_type": "market", "quantity": "not-a-number",
         })
         assert resp.status_code == 400
-        assert "could not convert" not in resp.get_data(as_text=True)
+        assert "Traceback" not in resp.get_data(as_text=True)
 
     def test_static_route_cannot_probe_files_outside_the_static_folder(self, client):
         # src/config.py exists one level above the static folder; the response must
@@ -305,8 +254,3 @@ class TestCodeScanningFixes:
         assert outside.status_code == missing.status_code
         assert outside.get_data() == missing.get_data()
 
-    def test_url_stripping_removes_whole_urls(self):
-        from src.advanced.sentiment_analyzer import SentimentAnalyzer
-        cleaned = SentimentAnalyzer({})._preprocess_text("Read https://example.com/a/b?q=1&x=2 now")
-        assert "example" not in cleaned and "q=1" not in cleaned
-        assert "read" in cleaned and "now" in cleaned

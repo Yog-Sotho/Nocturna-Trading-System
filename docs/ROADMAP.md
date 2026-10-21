@@ -17,11 +17,14 @@ limits. No strategy trades live unless it passes the promotion gates below.
 | Risk profile | Conservative / low risk |
 | Users | Single operator (public registration disabled) |
 
-### Proposed conservative risk limits (to confirm in Phase 3)
+### Conservative risk limits (Phase 3 defaults, configurable; awaiting operator confirmation)
 
-- Maximum drawdown kill switch: 10% of account equity
-- Risk per trade: ≤ 0.5% of equity
-- Portfolio volatility target: ~8% annualised
+- Maximum drawdown kill switch: 10% below the equity high-water mark (halt and flatten)
+- Drawdown ladder: exposure shrinks linearly from 5% drawdown to 25% at the limit
+- Daily loss limit: 3% (no new risk for the rest of the day)
+- Risk per trade for stop-based strategies: 0.5% of equity
+- Portfolio volatility target: 8% annualised (scale down only, no leverage)
+- Caps: 60% per position, 15% crypto in total, 100% gross
 
 ## Promotion gates
 
@@ -63,8 +66,8 @@ stock selection needs full-market real-time volume, which requires a $99/month d
 |---|---|---|
 | 0 | Safety freeze: paper-only guard, closed registration, no fabricated data, truthful README | Done |
 | 1 | Platform foundations: dependency clean-up with hashed lockfile, validated settings, auth fixes, DB-backed scoped API keys, token revocation, enforced rate limits, proxy-aware client IPs, Alembic migrations + PostgreSQL, persisted audit log | Done |
-| 2 | Event-driven core: domain model, event flow, one broker interface (simulated + Alpaca via `alpaca-py`), data layer with explicit ranges and closed bars, removal of the legacy engine and `alpaca-trade-api` | Planned |
-| 3 | Risk engine: pre-trade controls (price collar, size/exposure caps, duplicate detection, kill switch), equity-based loss limits, volatility-targeted sizing, PDT logic removed | Planned |
+| 2 | Event-driven core: domain model, event flow, one broker interface (simulated + Alpaca via `alpaca-py`), data layer with explicit ranges and closed bars, removal of the legacy engine and `alpaca-trade-api` | Done |
+| 3 | Risk engine: pre-trade controls (price collar, size/exposure caps, duplicate detection, kill switch), equity-based loss limits, volatility-targeted sizing, PDT logic removed | Done |
 | 4 | Validation pipeline: walk-forward, combinatorial purged cross-validation, deflated Sharpe, overfitting probability, cost stress, regime splits, tear sheets | Planned |
 | 5 | Strategy rebuild per the lineup above, each gated by Phase 4 | Planned |
 | 6 | Operations: engine as its own service, structured logs, metrics, alerts, health/readiness, Docker/Compose fixes, backups, runbooks | Planned |
@@ -74,12 +77,23 @@ stock selection needs full-market real-time volume, which requires a $99/month d
 
 ### Sequencing notes
 
-- `alpaca-trade-api` (archived June 2026) pins `urllib3<2`, `msgpack==1.0.3` and
-  `websockets<11`, which carry known advisories. It is removed in Phase 2 together with the
-  legacy engine, when the `alpaca-py` broker adapter replaces it. Until then the dependency
-  audit in CI ignores only those pinned advisories, each listed explicitly.
-- Tables for orders, fills and positions arrive with the Phase 2 domain model; Phase 1 added
-  the migration framework, API keys and the audit log.
-- Until Phase 2 persists them, positions, orders and risk state live in the single gunicorn
-  worker's memory and are lost when it restarts. Phase 1 stopped the routine recycling
-  (`max_requests`), but a crash or redeploy still clears them.
+- Phase 2 removed `alpaca-trade-api` with the legacy engine, the paper toy engine
+  (`/api/paper`), the ML tuner and the sentiment analyser, and moved to Python 3.13. The
+  dependency audit in CI now ignores nothing.
+- The live engine runs only the 60/40 SPY/IEF benchmark until a strategy passes the Phase 4
+  gates. It exercises orders, fills, reconciliation and history in paper trading meanwhile.
+- Phase 3 widened the rebalance band to 2% of equity and rebalances on every bar, because
+  the volatility and drawdown scales move with the market.
+- The PDT logic went with the legacy engine in Phase 2 and needs no replacement: FINRA
+  eliminated the pattern-day-trader rule and its $25,000 minimum (Rule 4210 amendments, SEC
+  approval 14 April 2026, effective 4 June 2026, Regulatory Notice 26-10), and Alpaca now
+  applies its intraday margin rule instead. The engine uses no leverage (gross exposure is
+  capped at 100% of equity).
+- The risk defaults are conservative and their cost in return has not yet been measured on
+  real equity data (no free equity history is reachable without Alpaca keys); Phase 4 measures
+  it and Phase 5 sets the final values with the lineup.
+- The Alpaca adapter is tested against fakes with alpaca-py's real request models; its first
+  run against a live paper account should be watched (order acknowledgements, fill events,
+  crypto fee postings, position symbol formats).
+- The engine runs inside the single web worker; a crash or redeploy restarts it from the
+  broker's state. Phase 6 moves it into its own service.

@@ -144,8 +144,8 @@ def refresh_token():
     of the user.
     """
     try:
-        data = request.get_json(silent=True) or {}
-        raw_token = data.get('refresh_token')
+        data = request.get_json(silent=True)
+        raw_token = data.get('refresh_token') if isinstance(data, dict) else None
         if not isinstance(raw_token, str) or not raw_token:
             return format_response(False, error='Refresh token required', status_code=400)
 
@@ -190,8 +190,8 @@ def logout():
 
         token_manager.revoke_token(request.headers['Authorization'][7:], token_type='access')
 
-        data = request.get_json(silent=True) or {}
-        raw_refresh = data.get('refresh_token')
+        data = request.get_json(silent=True)
+        raw_refresh = data.get('refresh_token') if isinstance(data, dict) else None
         if isinstance(raw_refresh, str) and raw_refresh:
             try:
                 claims = token_manager.decode(raw_refresh, token_type='refresh', verify_exp=False)
@@ -509,7 +509,11 @@ def create_api_key():
         if not user:
             return format_response(False, error='User not found', status_code=404)
 
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(silent=True)
+        if data is None and not request.get_data(cache=True):
+            data = {}  # no body at all: a default read-only key
+        if not isinstance(data, dict):
+            return format_response(False, error='JSON object body required', status_code=400)
         name = str(data.get('name') or 'API Key')[:100]
         description = str(data.get('description') or '')[:500]
 

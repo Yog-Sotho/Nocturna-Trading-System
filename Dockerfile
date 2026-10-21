@@ -4,11 +4,11 @@
 # =============================================================================
 # Stage 1: Base Builder
 # =============================================================================
-FROM python:3.11-slim AS builder
+FROM python:3.13-slim AS builder
 
 WORKDIR /build
 
-# Install build dependencies required for compiling Python packages (e.g., cryptography, psycopg2)
+# Install build dependencies required for compiling Python packages (only needed if a dependency has no prebuilt wheel)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
@@ -65,7 +65,7 @@ CMD ["flask", "run", "--host=0.0.0.0", "--port=5000"]
 # =============================================================================
 # Stage 3: Production Runtime
 # =============================================================================
-FROM python:3.11-slim AS production
+FROM python:3.13-slim AS production
 
 WORKDIR /app
 
@@ -96,7 +96,7 @@ USER nocturna
 # Fixed: Delegate worker management entirely to gunicorn.conf.py via -c flag.
 # =============================================================================
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:5000/health', timeout=5)" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=5)" || exit 1
 
 EXPOSE 5000
 

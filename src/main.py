@@ -20,12 +20,12 @@ from werkzeug.exceptions import MethodNotAllowed
 from werkzeug.security import safe_join
 
 from src.config import ensure_sqlite_directory, load_settings
-from src.core.safety import assert_paper_only
 from src.db_migrations import upgrade as upgrade_database
 from src.middleware.security import configure_proxy, setup_rate_limiting, setup_security_headers
 from src.models.user import db
 from src.routes.trading import trading_bp
 from src.routes.user import user_bp
+from src.trading.safety import assert_paper_only
 from src.utils.logger import setup_secure_logging
 
 _REQUEST_ID_PATTERN = re.compile(r'[A-Za-z0-9._-]{1,64}')
@@ -190,16 +190,9 @@ def create_app(config_override=None):
     app.register_blueprint(user_bp, url_prefix='/api')
     app.register_blueprint(trading_bp, url_prefix='/api/trading')
 
-    # Paper trading routes
-    from src.routes.paper_trading import init_paper_engine, paper_bp
-    app.register_blueprint(paper_bp, url_prefix='/api/paper')
-    with app.app_context():
-        paper_config = {
-            'initial_capital': settings.paper_initial_capital,
-            'commission_rate': settings.paper_commission_rate,
-            'slippage_rate': settings.paper_slippage_rate,
-        }
-        init_paper_engine(paper_config)
+    # Live (paper) trading engine; built and started on demand, never at import
+    from src.trading.runtime import TradingRuntime
+    app.extensions['trading'] = TradingRuntime(app, settings)
 
     # =============================================================================
     # REQUEST ID TRACKING
@@ -375,6 +368,9 @@ def create_app(config_override=None):
 
 if __name__ == '__main__':
     app = create_app()
+    # Only the reloader's serving child may start the engine (see main.py)
+    if not app.config['DEBUG'] or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+        app.extensions['trading'].autostart()
 
     # =============================================================================
     # PRODUCTION WARNING

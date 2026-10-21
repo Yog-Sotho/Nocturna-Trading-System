@@ -8,10 +8,11 @@ misconfigured deployment fails before serving any traffic.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MIN_SECRET_LENGTH = 32
@@ -50,19 +51,41 @@ class Settings(BaseSettings):
     session_lifetime_hours: int = Field(default=24, ge=1, le=24 * 30)
     static_folder: Path | None = None
 
-    # Paper trading engine
-    paper_initial_capital: float = Field(default=100_000, gt=0)
-    paper_commission_rate: float = Field(default=0.001, ge=0, le=0.05)
-    paper_slippage_rate: float = Field(default=0.0005, ge=0, le=0.05)
+    # Trading engine (Alpaca paper account)
+    alpaca_api_key: SecretStr | None = None
+    alpaca_secret_key: SecretStr | None = None
+    # Start the engine when the server process starts (otherwise via the API)
+    engine_autostart: bool = False
+
+    # Risk limits, as fractions of account equity (src/trading/risk.py, sizing.py).
+    # Conservative defaults; leverage is not configurable (gross exposure <= 100%).
+    risk_max_drawdown: Decimal = Field(default=Decimal("0.10"), gt=0, le=Decimal("0.5"))
+    risk_flatten_on_kill: bool = True
+    risk_daily_loss_limit: Decimal = Field(default=Decimal("0.03"), gt=0, le=Decimal("0.5"))
+    risk_max_position_weight: Decimal = Field(default=Decimal("0.6"), gt=0, le=1)
+    risk_max_crypto_weight: Decimal = Field(default=Decimal("0.15"), gt=0, le=1)
+    risk_max_order_notional: Decimal | None = Field(default=None, gt=0)
+    risk_max_orders_per_day: int = Field(default=50, ge=1, le=1000)
+    # Annualized volatility target; 0 turns volatility targeting off
+    sizing_target_volatility: Decimal = Field(default=Decimal("0.08"), ge=0, le=Decimal("0.5"))
+    # Drawdown where exposure starts shrinking linearly to zero at RISK_MAX_DRAWDOWN
+    sizing_derisk_start: Decimal = Field(default=Decimal("0.05"), ge=0, le=Decimal("0.5"))
+    sizing_rebalance_band: Decimal = Field(default=Decimal("0.02"), ge=0, le=Decimal("0.2"))
 
     @field_validator("flask_secret_key", "jwt_secret_key", "api_key_pepper", "database_url", "redis_url",
-                     mode="before")
+                     "alpaca_api_key", "alpaca_secret_key", "risk_max_order_notional", mode="before")
     @classmethod
     def _blank_is_unset(cls, value: object) -> object:
         """Treat empty env vars (e.g. `FLASK_SECRET_KEY=`) as unset."""
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @model_validator(mode="after")
+    def _derisk_before_kill(self) -> Self:
+        if self.sizing_derisk_start >= self.risk_max_drawdown:
+            raise ValueError("SIZING_DERISK_START must be below RISK_MAX_DRAWDOWN")
+        return self
 
     @property
     def is_production(self) -> bool:
