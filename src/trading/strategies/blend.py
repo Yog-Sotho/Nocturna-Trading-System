@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 
-from ..strategy import Strategy, StrategyContext
+from ..strategy import Strategy, StrategyContext, consult
 
 _NAME = re.compile(r"[a-z0-9-]{1,16}")
 
@@ -40,13 +40,7 @@ class Blend(Strategy):
 
     def target_weights(self, ctx: StrategyContext) -> Mapping[str, float] | None:
         for i, (strategy, _) in enumerate(self._components):
-            symbols = {inst.symbol for inst in strategy.instruments}
-            history = {s: h for s, h in ctx.history.items() if s in symbols}
-            if any(len(history.get(s, ())) < strategy.lookback for s in symbols):
-                continue  # this component is still warming up
-            history = {s: h[-strategy.lookback:] for s, h in history.items()}
-            weights = strategy.target_weights(StrategyContext(
-                ctx.now, history, {s: q for s, q in ctx.positions.items() if s in symbols}, ctx.equity))
+            weights = consult(strategy, ctx)  # None while the component warms up
             if weights is not None:
                 self._last[i] = weights
         combined: dict[str, float] = {}

@@ -69,3 +69,25 @@ class Strategy(ABC):
         Signed target weights for this strategy's instruments, or None to keep the
         previous targets. Instruments left out are targeted at zero.
         """
+
+
+def needed_history(strategy: Strategy) -> int:
+    """Bars per symbol a strategy needs before it is asked for targets."""
+    return strategy.lookback if strategy.min_history is None else strategy.min_history
+
+
+def consult(strategy: Strategy, ctx: StrategyContext) -> Mapping[str, float] | None:
+    """
+    Ask a strategy held inside another one (a blend, a walk-forward switch) for
+    its targets, exactly as the engine would ask it on its own: only once it
+    has the history it needs, and showing it only its instruments and lookback.
+    Returns None while it is still warming up.
+    """
+    symbols = {i.symbol for i in strategy.instruments}
+    needed = needed_history(strategy)
+    history = {s: h for s, h in ctx.history.items() if s in symbols}
+    if any(len(history.get(s, ())) < needed for s in symbols):
+        return None
+    return strategy.target_weights(StrategyContext(
+        ctx.now, {s: h[-strategy.lookback:] for s, h in history.items()},
+        {s: q for s, q in ctx.positions.items() if s in symbols}, ctx.equity))
