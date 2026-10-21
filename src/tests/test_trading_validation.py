@@ -288,17 +288,42 @@ class TestSwitchingStrategy:
         a, b = _Counting({"SPY": 0.2}), _Counting({"SPY": 0.8})
         t0 = datetime(2026, 1, 5, tzinfo=UTC)
         switching = SwitchingStrategy("wf-test", [a, b], [(t0, 0), (t0 + timedelta(days=10), 1)])
-        ctx = StrategyContext(t0 - timedelta(days=1), {"SPY": ()}, {}, D("1"))
+        spy = {"SPY": (bar(SPY, datetime(2026, 1, 2, 5, tzinfo=UTC), 100, 100, 100, 100),)}
+        ctx = StrategyContext(t0 - timedelta(days=1), spy, {}, D("1"))
         assert switching.target_weights(ctx) == {}  # before the first window: flat
-        assert switching.target_weights(StrategyContext(t0, {"SPY": ()}, {}, D("1"))) == {"SPY": 0.2}
+        assert switching.target_weights(StrategyContext(t0, spy, {}, D("1"))) == {"SPY": 0.2}
         # b answered only on its first call (above), yet its targets are known when it is switched in
-        later = StrategyContext(t0 + timedelta(days=10), {"SPY": ()}, {}, D("1"))
+        later = StrategyContext(t0 + timedelta(days=10), spy, {}, D("1"))
         assert switching.target_weights(later) == {"SPY": 0.8}
         assert a.calls == b.calls == 3
 
     def test_name_is_validated(self):
         with pytest.raises(ValueError):
             SwitchingStrategy("Not valid", [_Counting({})], [])
+
+    def test_sets_are_consulted_only_once_their_history_suffices(self):
+        long_memory = _Counting({"SPY": 0.5})
+        long_memory.lookback = 3
+        switching = SwitchingStrategy("wf-test", [long_memory], [(datetime(2026, 1, 1, tzinfo=UTC), 0)])
+        bars = tuple(bar(SPY, datetime(2026, 1, d, 5, tzinfo=UTC), 100, 100, 100, 100) for d in (5, 6))
+        assert switching.target_weights(StrategyContext(datetime(2026, 1, 7, tzinfo=UTC), {"SPY": bars}, {},
+                                                        D("1"))) == {}
+        assert long_memory.calls == 0
+
+
+class TestWalkForwardOfABlend:
+    def test_a_component_without_data_does_not_hold_the_others_back(self):
+        """Regression: the walk-forward once waited for the slowest component's full lookback."""
+        from src.tests.trading_fixtures import BTC
+        from src.trading.strategies.blend import Blend
+        from src.trading.strategies.crypto_trend import DonchianEnsemble
+        blend = Candidate("blend", lambda p: Blend("lineup", [(BuyAndHold({SPY: 0.6, IEF: 0.4}), p["core"]),
+                                                              (DonchianEnsemble([BTC]), 0.15)]),
+                          {"core": [0.8, 0.85]})
+        bars = _bars()  # equities only: the crypto component never has enough history
+        walk = walk_forward(blend, run_trials(blend, bars, CONFIG), bars, CONFIG, WF)
+        first = walk.windows[0].test_start
+        assert walk.result.fills and min(f.timestamp for f in walk.result.fills) < first + timedelta(days=7)
 
 
 class TestWalkForwardThroughTheEngine:

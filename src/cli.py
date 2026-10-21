@@ -94,7 +94,8 @@ def register_cli(app: Flask) -> None:
     @app.cli.command("validate")
     @click.argument("candidate")
     @click.option("--start", type=click.DateTime(["%Y-%m-%d"]), default="2017-01-01", show_default=True,
-                  help="First day traded; the year before it warms up indicators (equity data starts in 2016).")
+                  help="First day traded; earlier bars warm up indicators (Alpaca equity data starts in 2016, "
+                       "crypto in 2021).")
     @click.option("--end", type=click.DateTime(["%Y-%m-%d"]), default=None, help="Last day (default: today).")
     @click.option("--output", type=click.Path(dir_okay=False, path_type=Path), default=None,
                   help="Write the Markdown tear sheet here, and the JSON report next to it.")
@@ -126,7 +127,7 @@ def register_cli(app: Flask) -> None:
         if end <= start:
             raise click.ClickException("--end must be after --start")
         try:
-            instruments, bars = market.load(settings, spec.symbols, start - timedelta(days=400), end)
+            instruments, bars = market.load(settings, spec.symbols, start - timedelta(days=spec.warm_up_days), end)
         except TradingNotConfiguredError as e:
             raise click.ClickException(str(e)) from e
         gates = PromotionGates() if min_sharpe is None else PromotionGates(min_oos_sharpe=min_sharpe)

@@ -51,7 +51,7 @@ from .domain import (
 from .ledger import Ledger
 from .risk import OrderContext, RiskDecision, RiskGate
 from .sizing import PortfolioSizer, SizingPolicy, SizingResult
-from .strategy import Strategy, StrategyContext
+from .strategy import Strategy, StrategyContext, needed_history
 
 logger = logging.getLogger(__name__)
 
@@ -251,7 +251,7 @@ class Engine:
             symbols = [i.symbol for i in strategy.instruments]
             if not any(s in new for s in symbols):
                 continue
-            if any(len(self._history[s]) < strategy.lookback for s in symbols):
+            if any(len(self._history[s]) < needed_history(strategy) for s in symbols):
                 continue  # still warming up
             ctx = StrategyContext(
                 now=self.clock.now(),

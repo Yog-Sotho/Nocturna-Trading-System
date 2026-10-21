@@ -38,7 +38,7 @@ import numpy as np
 from ..backtest import BacktestConfig, BacktestResult, run_backtest
 from ..domain import Bar
 from ..engine import Allocation
-from ..strategy import Strategy, StrategyContext
+from ..strategy import Strategy, StrategyContext, consult, needed_history
 from .stats import Returns, daily_returns, sharpe_ratio, summarize
 
 _NAME = re.compile(r"[a-z0-9-]{1,16}")
@@ -154,7 +154,8 @@ def select(trials: Sequence[Trial], start: datetime, end: datetime) -> tuple[int
 class SwitchingStrategy(Strategy):
     """
     Trades the parameter set chosen for the current walk-forward window. Every
-    set is consulted on every bar so that a set switched in is up to date.
+    set is consulted on every bar, as the engine would consult it on its own
+    (once its history suffices), so that a set switched in is up to date.
     """
 
     def __init__(self, name: str, strategies: Sequence[Strategy], schedule: Sequence[tuple[datetime, int]]) -> None:
@@ -169,6 +170,8 @@ class SwitchingStrategy(Strategy):
                 instruments.setdefault(instrument.symbol, instrument)
         self.instruments = tuple(instruments.values())
         self.lookback = max(s.lookback for s in self._strategies)
+        # Each set waits for its own history (a blend may trade before its slowest component)
+        self.min_history = min(needed_history(s) for s in self._strategies)
         self._last: dict[int, Mapping[str, float]] = {}
 
     def active(self, now: datetime) -> int | None:
@@ -180,10 +183,7 @@ class SwitchingStrategy(Strategy):
 
     def target_weights(self, ctx: StrategyContext) -> Mapping[str, float] | None:
         for i, strategy in enumerate(self._strategies):
-            symbols = {inst.symbol for inst in strategy.instruments}
-            weights = strategy.target_weights(StrategyContext(
-                ctx.now, {s: h for s, h in ctx.history.items() if s in symbols},
-                {s: q for s, q in ctx.positions.items() if s in symbols}, ctx.equity))
+            weights = consult(strategy, ctx)
             if weights is not None:
                 self._last[i] = weights
         active = self.active(ctx.now)
