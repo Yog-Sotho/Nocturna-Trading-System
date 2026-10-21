@@ -100,7 +100,7 @@ def _alpaca(monkeypatch=None, instruments=None):
 
 class TestAlpacaBrokerOrders:
     def test_refuses_to_start_outside_paper_mode(self, monkeypatch):
-        from src.core.safety import LiveTradingDisabledError
+        from src.trading.safety import LiveTradingDisabledError
         monkeypatch.setenv("TRADING_MODE", "LIVE")
         with pytest.raises(LiveTradingDisabledError):
             _alpaca()

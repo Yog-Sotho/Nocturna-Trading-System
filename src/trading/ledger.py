@@ -21,7 +21,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from functools import wraps
-from typing import TypeVar
 
 from .domain import Fill
 
@@ -33,10 +32,7 @@ ZERO = Decimal("0")
 LEDGER_CONTEXT = Context(prec=60, rounding=ROUND_HALF_EVEN)
 COST_SCALE = Decimal("1e-12")
 
-_F = TypeVar("_F", bound=Callable)
-
-
-def _exact(method: _F) -> _F:
+def _exact[F: Callable](method: F) -> F:
     @wraps(method)
     def wrapper(*args, **kwargs):
         with localcontext(LEDGER_CONTEXT):

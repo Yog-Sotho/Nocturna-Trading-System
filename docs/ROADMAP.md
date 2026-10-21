@@ -63,7 +63,7 @@ stock selection needs full-market real-time volume, which requires a $99/month d
 |---|---|---|
 | 0 | Safety freeze: paper-only guard, closed registration, no fabricated data, truthful README | Done |
 | 1 | Platform foundations: dependency clean-up with hashed lockfile, validated settings, auth fixes, DB-backed scoped API keys, token revocation, enforced rate limits, proxy-aware client IPs, Alembic migrations + PostgreSQL, persisted audit log | Done |
-| 2 | Event-driven core: domain model, event flow, one broker interface (simulated + Alpaca via `alpaca-py`), data layer with explicit ranges and closed bars, removal of the legacy engine and `alpaca-trade-api` | Planned |
+| 2 | Event-driven core: domain model, event flow, one broker interface (simulated + Alpaca via `alpaca-py`), data layer with explicit ranges and closed bars, removal of the legacy engine and `alpaca-trade-api` | Done |
 | 3 | Risk engine: pre-trade controls (price collar, size/exposure caps, duplicate detection, kill switch), equity-based loss limits, volatility-targeted sizing, PDT logic removed | Planned |
 | 4 | Validation pipeline: walk-forward, combinatorial purged cross-validation, deflated Sharpe, overfitting probability, cost stress, regime splits, tear sheets | Planned |
 | 5 | Strategy rebuild per the lineup above, each gated by Phase 4 | Planned |
@@ -74,12 +74,15 @@ stock selection needs full-market real-time volume, which requires a $99/month d
 
 ### Sequencing notes
 
-- `alpaca-trade-api` (archived June 2026) pins `urllib3<2`, `msgpack==1.0.3` and
-  `websockets<11`, which carry known advisories. It is removed in Phase 2 together with the
-  legacy engine, when the `alpaca-py` broker adapter replaces it. Until then the dependency
-  audit in CI ignores only those pinned advisories, each listed explicitly.
-- Tables for orders, fills and positions arrive with the Phase 2 domain model; Phase 1 added
-  the migration framework, API keys and the audit log.
-- Until Phase 2 persists them, positions, orders and risk state live in the single gunicorn
-  worker's memory and are lost when it restarts. Phase 1 stopped the routine recycling
-  (`max_requests`), but a crash or redeploy still clears them.
+- Phase 2 removed `alpaca-trade-api` with the legacy engine, the paper toy engine
+  (`/api/paper`), the ML tuner and the sentiment analyser, and moved to Python 3.13. The
+  dependency audit in CI now ignores nothing.
+- The live engine runs only the 60/40 SPY/IEF benchmark until a strategy passes the Phase 4
+  gates. It exercises orders, fills, reconciliation and history in paper trading meanwhile.
+- The benchmark rebalances to fixed weights whenever drift exceeds 0.2% of equity, which
+  trades often on volatile assets; Phase 3 sizing should give it a wider band.
+- The Alpaca adapter is tested against fakes with alpaca-py's real request models; its first
+  run against a live paper account should be watched (order acknowledgements, fill events,
+  crypto fee postings, position symbol formats).
+- The engine runs inside the single web worker; a crash or redeploy restarts it from the
+  broker's state. Phase 6 moves it into its own service.

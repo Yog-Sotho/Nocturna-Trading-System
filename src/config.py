@@ -50,13 +50,14 @@ class Settings(BaseSettings):
     session_lifetime_hours: int = Field(default=24, ge=1, le=24 * 30)
     static_folder: Path | None = None
 
-    # Paper trading engine
-    paper_initial_capital: float = Field(default=100_000, gt=0)
-    paper_commission_rate: float = Field(default=0.001, ge=0, le=0.05)
-    paper_slippage_rate: float = Field(default=0.0005, ge=0, le=0.05)
+    # Trading engine (Alpaca paper account)
+    alpaca_api_key: SecretStr | None = None
+    alpaca_secret_key: SecretStr | None = None
+    # Start the engine when the server process starts (otherwise via the API)
+    engine_autostart: bool = False
 
     @field_validator("flask_secret_key", "jwt_secret_key", "api_key_pepper", "database_url", "redis_url",
-                     mode="before")
+                     "alpaca_api_key", "alpaca_secret_key", mode="before")
     @classmethod
     def _blank_is_unset(cls, value: object) -> object:
         """Treat empty env vars (e.g. `FLASK_SECRET_KEY=`) as unset."""

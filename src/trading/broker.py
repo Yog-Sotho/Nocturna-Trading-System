@@ -82,6 +82,10 @@ class Broker(Protocol):
         """The broker's current view of one order, or None if it does not know it."""
         ...
 
+    def close_all(self) -> list[str]:
+        """Emergency path that bypasses the engine: cancel every order, close every position."""
+        ...
+
 
 @dataclass(frozen=True)
 class CostModel:
@@ -196,6 +200,20 @@ class SimulatedBroker:
 
     def open_orders(self) -> list[Order]:
         return [w.order for w in sorted(self._working.values(), key=lambda w: w.sequence)]
+
+    def close_all(self) -> list[str]:
+        for client_order_id in list(self._working):
+            self.cancel(client_order_id)
+        sent = []
+        for symbol, position in self._book.positions.items():
+            instrument = self.instruments[symbol]
+            tif = TimeInForce.GTC
+            request = OrderRequest(f"close-all-{self._sequence + 1}", symbol,
+                                   Side.SELL if position.qty > 0 else Side.BUY,
+                                   instrument.round_qty(abs(position.qty)), time_in_force=tif, tag="close-all")
+            self.submit(request)
+            sent.append(request.client_order_id)
+        return sent
 
     def order(self, client_order_id: str) -> Order | None:
         working = self._working.get(client_order_id)

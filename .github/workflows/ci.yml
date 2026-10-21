@@ -20,7 +20,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
           cache: pip
           cache-dependency-path: requirements-dev.txt
 
@@ -43,27 +43,17 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: Install pip-audit
         run: |
           python -m pip install --upgrade pip
           pip install "pip-audit>=2.10,<3"
 
-      # The ignored advisories affect urllib3 1.26.x and msgpack 1.0.3, which are pinned by
-      # alpaca-trade-api (archived June 2026). It is removed in Phase 2 together with these
-      # ignores; see docs/ROADMAP.md. Any other advisory fails the build.
+      # Any known advisory in a locked dependency fails the build
       - name: Audit locked dependencies
         run: |
-          pip-audit -r requirements-dev.txt --disable-pip --no-deps --progress-spinner off \
-            --ignore-vuln PYSEC-2026-141 \
-            --ignore-vuln PYSEC-2026-1994 \
-            --ignore-vuln PYSEC-2026-1996 \
-            --ignore-vuln PYSEC-2026-1998 \
-            --ignore-vuln PYSEC-2026-1999 \
-            --ignore-vuln PYSEC-2026-4175 \
-            --ignore-vuln PYSEC-2026-4177 \
-            --ignore-vuln PYSEC-2026-3625
+          pip-audit -r requirements-dev.txt --disable-pip --no-deps --progress-spinner off
 
   test:
     runs-on: ubuntu-latest
@@ -99,7 +89,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
           cache: pip
           cache-dependency-path: requirements-dev.txt
 
@@ -117,4 +107,4 @@ jobs:
           TEST_POSTGRES_URL: postgresql+psycopg://nocturna:nocturna-ci@localhost:5432/nocturna_test
           TRADING_MODE: PAPER
         run: |
-          pytest src/tests/ -v --tb=short --cov=src --cov-report=term-missing --cov-fail-under=40
+          pytest src/tests/ -v --tb=short --cov=src --cov-report=term-missing --cov-fail-under=85

@@ -363,6 +363,14 @@ class Engine:
         """An operator's order: same risk gate and broker path as strategy orders."""
         return self._send(request)
 
+    def cancel_order(self, client_order_id: str) -> bool:
+        """Ask the broker to cancel a working order; False if the engine has no such open order."""
+        order = self.orders.get(client_order_id)
+        if order is None or not order.status.is_open:
+            return False
+        self.broker.cancel(client_order_id)
+        return True
+
     def on_order_update(self, update: OrderUpdate) -> None:
         """
         Book a broker report for one of the engine's orders. Fills are booked even

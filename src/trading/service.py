@@ -146,6 +146,15 @@ class EngineService:
     def submit_order(self, request: OrderRequest) -> RiskDecision:
         return self._call(lambda engine: engine.submit_order(request))
 
+    def cancel_order(self, client_order_id: str) -> bool:
+        return self._call(lambda engine: engine.cancel_order(client_order_id))
+
+    def broker_close_all(self) -> list[str]:
+        """The emergency path when the engine is not running: straight to the broker."""
+        if self.running:
+            raise RuntimeError("use halt(flatten=True) while the engine is running")
+        return self._broker.close_all()
+
     def _call(self, command: Callable[[Engine], Any], timeout: float = 30.0) -> Any:
         if self.engine is None or self._state != "running":
             raise ServiceNotRunningError("the trading engine is not running")

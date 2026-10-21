@@ -18,7 +18,7 @@ from collections.abc import Callable, Iterable, Mapping
 from decimal import ROUND_UP, Decimal
 from typing import Any
 
-from src.core.safety import assert_paper_only
+from src.trading.safety import assert_paper_only
 
 from .broker import BPS, UpdateListener
 from .clock import Clock
@@ -179,6 +179,11 @@ class AlpacaBroker:
             return self._to_domain(self._client.get_order_by_client_id(client_order_id))
         except Exception:
             return None
+
+    def close_all(self) -> list[str]:
+        """Alpaca's own liquidation: cancels every open order and closes every position."""
+        responses = self._client.close_all_positions(cancel_orders=True)
+        return [str(r.order_id) if r.order_id else f"{r.symbol}: failed ({r.status})" for r in responses]
 
     # -- trade updates ------------------------------------------------------
 

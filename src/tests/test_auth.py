@@ -255,12 +255,12 @@ class TestAPIKeyEndpoints:
 
     def test_read_key_cannot_trade(self, client, auth_headers):
         raw = self._key(client, auth_headers, ["read"])["api_key"]
-        resp = client.post("/api/paper/stop", headers={"X-API-Key": raw})
+        resp = client.post("/api/trading/orders/probe/cancel", headers={"X-API-Key": raw})
         assert resp.status_code == 403
 
     def test_trade_key_passes_trading_checks(self, client, auth_headers):
         raw = self._key(client, auth_headers, ["read", "trade"])["api_key"]
-        resp = client.post("/api/paper/stop", headers={"X-API-Key": raw})
+        resp = client.post("/api/trading/orders/probe/cancel", headers={"X-API-Key": raw})
         assert resp.status_code not in (401, 403)
 
     def test_admin_owner_key_never_grants_admin(self, client, admin_headers):
@@ -314,7 +314,7 @@ class TestAPIKeyEndpoints:
             user = User.query.filter_by(username="testuser").first()
             user.trading_disabled = True
             _db_commit()
-        resp = client.post("/api/paper/stop", headers=auth_headers)
+        resp = client.post("/api/trading/orders/probe/cancel", headers=auth_headers)
         assert resp.status_code == 403
 
     def test_user_without_trader_role_cannot_trade(self, client):
@@ -324,7 +324,7 @@ class TestAPIKeyEndpoints:
             user.set_password("ViewerP@ss123")
             _db_add(user)
             token = create_token(str(user.id), {"username": "viewer", "roles": [], "is_admin": False})
-        resp = client.post("/api/paper/stop", headers={"Authorization": f"Bearer {token}"})
+        resp = client.post("/api/trading/orders/probe/cancel", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 403
 
     def test_usage_is_counted(self, client, auth_headers):
@@ -432,10 +432,10 @@ class TestSessionLifecycle:
         user, _ = test_user
         tokens = self._login(client)
         trade = self._bearer(tokens["access_token"])
-        assert client.post("/api/paper/stop", headers=trade).status_code not in (401, 403)
+        assert client.post("/api/trading/orders/probe/cancel", headers=trade).status_code not in (401, 403)
         resp = client.put(f"/api/users/{user.id}", headers=admin_headers, json={"roles": ["reader"]})
         assert resp.status_code == 200
-        assert client.post("/api/paper/stop", headers=trade).status_code == 403
+        assert client.post("/api/trading/orders/probe/cancel", headers=trade).status_code == 403
 
     def test_deactivation_applies_to_existing_token(self, client, test_user, admin_headers):
         user, _ = test_user

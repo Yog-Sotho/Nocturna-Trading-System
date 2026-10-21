@@ -4,9 +4,8 @@ Tests for the paper-only trading guard (Phase 0 safety freeze).
 
 import pytest
 
-from src.core.order_manager import OrderExecutionManager
-from src.core.safety import LiveTradingDisabledError, assert_paper_only
 from src.main import create_app
+from src.trading.safety import LiveTradingDisabledError, assert_paper_only
 
 
 class TestAssertPaperOnly:
@@ -37,14 +36,17 @@ class TestAssertPaperOnly:
 
 
 class TestGuardIsEnforced:
-    """The guard runs at app startup and before any broker client is built."""
+    """The guard runs at app startup and before any broker adapter is built."""
 
     def test_create_app_refuses_live_mode(self, monkeypatch):
         monkeypatch.setenv("TRADING_MODE", "LIVE")
         with pytest.raises(LiveTradingDisabledError):
             create_app()
 
-    def test_order_manager_refuses_live_endpoint(self, monkeypatch):
+    def test_broker_adapter_refuses_live_endpoint(self, monkeypatch):
+        from src.trading.alpaca import AlpacaBroker
+        from src.trading.clock import SystemClock
         monkeypatch.setenv("ALPACA_BASE_URL", "https://api.alpaca.markets")
         with pytest.raises(LiveTradingDisabledError):
-            OrderExecutionManager({})
+            AlpacaBroker(api_key="k", secret_key="s", instruments={}, clock=SystemClock(),
+                         trading_client=object())

@@ -126,3 +126,59 @@ def admin_headers(admin_user):
     """Return Authorization headers for an admin user."""
     _, token = admin_user
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+
+@pytest.fixture()
+def sim_runtime(app):
+    """
+    The app's trading runtime, with an engine that trades a simulated broker on a
+    simulated clock (Monday 2026-03-02, 12:00 New York) and records to the test DB.
+    """
+    import time
+    from datetime import date
+    from decimal import Decimal
+
+    from pydantic import SecretStr
+
+    from src.tests.trading_fixtures import IEF, SPY, daily_bars, ny
+    from src.trading.broker import SimulatedBroker
+    from src.trading.clock import SimulatedClock
+    from src.trading.data import InMemoryBarSource
+    from src.trading.lineup import build_lineup
+    from src.trading.persistence import EngineRecorder
+    from src.trading.runtime import TradingRuntime
+    from src.trading.service import EngineService
+
+    built = {}
+
+    def factory(flask_app, settings):
+        clock = SimulatedClock(ny(2026, 3, 2, 12))
+        history = {"SPY": daily_bars(SPY, date(2025, 1, 2), date(2026, 6, 30), 500.0, seed=1),
+                   "IEF": daily_bars(IEF, date(2025, 1, 2), date(2026, 6, 30), 95.0, seed=2)}
+        broker = SimulatedBroker(clock, {"SPY": SPY, "IEF": IEF}, Decimal("100000"))
+        recorder = EngineRecorder(flask_app)
+        built.update(clock=clock, broker=broker)
+        return EngineService(clock=clock, source=InMemoryBarSource(history, clock), broker=broker,
+                             allocations=build_lineup({"SPY": SPY, "IEF": IEF}), listeners=[recorder],
+                             snapshot_recorder=recorder.record_snapshot)
+
+    settings = app.extensions["settings"].model_copy(
+        update={"alpaca_api_key": SecretStr("key"), "alpaca_secret_key": SecretStr("secret")})
+    runtime = TradingRuntime(app, settings, factory=factory)
+    runtime.built = built
+
+    def wait_running(timeout=10.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            status = runtime.status()
+            if status is not None and status.state in ("running", "failed"):
+                return status
+            time.sleep(0.01)
+        raise AssertionError("engine did not start")
+
+    runtime.wait_running = wait_running
+    previous = app.extensions["trading"]
+    app.extensions["trading"] = runtime
+    yield runtime
+    runtime.stop()
+    app.extensions["trading"] = previous

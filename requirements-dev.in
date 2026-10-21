@@ -1,5 +1,5 @@
 # Development and CI tooling. Compile with:
-#   uv pip compile requirements-dev.in --python-version 3.11 --generate-hashes -o requirements-dev.txt
+#   uv pip compile requirements-dev.in --python-version 3.13 --generate-hashes -o requirements-dev.txt
 -r requirements.in
 
 pytest>=9.0.3,<10
