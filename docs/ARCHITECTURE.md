@@ -165,6 +165,26 @@ The backtester's `resume_after_kill` simulates the operator: a kill halts and fl
 trading resumes that long after, once the book is flat. Without it a long backtest would stop
 measuring the strategy at its first kill.
 
+## Strategies
+
+Strategies (`src/trading/strategies/`) decide from bar history alone and return target weights;
+sizing, risk and execution belong to the engine. Each follows its published rules, and where a
+paper is silent the module says what was assumed.
+
+| Module | Rules | Source |
+|---|---|---|
+| `benchmark.BuyAndHold` | fixed weights, rebalanced by the engine | the yardstick |
+| `rebalancing.RebalancingFlows` | simulate threshold (0-2.5%) and month-end 60/40 rebalancers; trade SPY against IEF ahead of their flows (`spread`), or tilt a 60/40 (`tilt`) | Harvey, Mazzoleni and Melone, NBER w33554 (2025) |
+| `trend.TimeSeriesMomentum` | each month, sign of the 12-month return (or the clipped t-statistic of daily returns) times 40% / EWMA volatility (60-day centre of mass), averaged over the basket | Moskowitz, Ooi and Pedersen, JFE 2012; Baltas and Kosowski 2013 |
+| `crypto_trend.DonchianEnsemble` | nine breakout models (5-360 days) with trailing stops at the channel midpoint, each sized to 25% volatility, averaged; long only | Zarattini, Pagani and Barbon, SFI 25-80 (2025) |
+| `blend.Blend` | fixed-weight sum of strategies, so a lineup validates and trades as one book | - |
+
+A strategy held inside another (a blend, a walk-forward switch) is asked for targets through
+`strategy.consult`, exactly as the engine would ask it on its own: once it has the history it
+needs, seeing only its instruments and lookback. `Strategy.min_history` lets a blend be called
+before its slowest component is ready, so a component whose data starts later (Alpaca's crypto
+history begins in 2021) does not hold back the others.
+
 ## Safety
 
 `src/trading/safety.py` refuses to start the app or build the Alpaca adapter unless
