@@ -219,7 +219,12 @@ class OrderRequest:
 
 @dataclass(frozen=True)
 class Fill:
-    """One execution. ``fill_id`` is unique per execution, so replays can be ignored."""
+    """
+    One execution. ``fill_id`` is unique per execution, so replays can be ignored.
+
+    ``fee`` is charged in cash. ``fee_qty`` is a fee taken from the asset received,
+    as Alpaca charges crypto purchases: buying ``qty`` delivers ``qty - fee_qty``.
+    """
 
     fill_id: str
     client_order_id: str
@@ -229,11 +234,14 @@ class Fill:
     price: Decimal
     fee: Decimal
     timestamp: datetime
+    fee_qty: Decimal = Decimal("0")
 
     def __post_init__(self) -> None:
         _require_utc("timestamp", self.timestamp)
         if self.qty <= 0 or self.price <= 0 or self.fee < 0:
             raise ValueError("fill qty and price must be positive and fee non-negative")
+        if self.fee_qty < 0 or self.fee_qty >= self.qty or (self.fee_qty and self.side is Side.SELL):
+            raise ValueError("fee_qty must be below qty and is only charged on purchases")
 
     @property
     def signed_qty(self) -> Decimal:

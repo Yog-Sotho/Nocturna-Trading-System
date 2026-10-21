@@ -8,7 +8,11 @@ one at the fill price. The identity
 
     equity == starting cash + realized P&L + unrealized P&L - fees
 
-holds exactly for any sequence of fills.
+holds exactly for any sequence of fills. Differences found when reconciling
+with the broker (deposits, withdrawals, fees charged later, trades made outside
+the engine) are booked as adjustments, which extends it to
+
+    equity == starting cash + realized + unrealized - fees + adjustments
 """
 
 from __future__ import annotations
@@ -74,6 +78,7 @@ class LedgerSnapshot:
     positions: dict[str, Position]
     realized_pnl: Decimal
     fees: Decimal
+    adjustments: Decimal
 
 
 class Ledger:
@@ -91,8 +96,61 @@ class Ledger:
         self.cash = starting_cash
         self.realized_pnl = ZERO  # before fees
         self.fees = ZERO
+        self.adjustments = ZERO
         self._positions: dict[str, Position] = {}
         self._fill_ids: set[str] = set()
+
+    @classmethod
+    def from_account(cls, cash: Decimal, positions: Mapping[str, tuple[Decimal, Decimal]]) -> Ledger:
+        """
+        Start from a broker account: cash plus (qty, cost basis) per symbol. The
+        starting capital is cash plus the cost of the positions.
+        """
+        with localcontext(LEDGER_CONTEXT):
+            ledger = cls(cash + sum((cost for _, cost in positions.values()), ZERO))
+        ledger.cash = cash
+        for symbol, (qty, cost) in positions.items():
+            if qty:
+                ledger._positions[symbol] = Position(symbol, qty, cost)
+        return ledger
+
+    def has_fill(self, fill_id: str) -> bool:
+        return fill_id in self._fill_ids
+
+    @_exact
+    def adjust_cash(self, amount: Decimal) -> None:
+        """Book a cash movement that did not come from a fill."""
+        self.cash += amount
+        self.adjustments += amount
+
+    @_exact
+    def adjust_position(self, symbol: str, qty_delta: Decimal, price: Decimal) -> None:
+        """
+        Book a quantity change that did not come from a fill. Removed units leave
+        at their average cost; added units arrive at ``price``.
+        """
+        if not qty_delta:
+            return
+        current = self.position(symbol)
+        if current.qty and (current.qty > 0) != (qty_delta > 0):
+            # Reduce the existing position first, at its average cost
+            reduced = min(abs(qty_delta), abs(current.qty))
+            if reduced == abs(current.qty):
+                removed = current.cost
+            else:
+                removed = (current.cost * reduced / abs(current.qty)).quantize(COST_SCALE)
+            step = reduced if qty_delta > 0 else -reduced
+            current = Position(symbol, current.qty + step, current.cost - removed)
+            self.adjustments -= removed
+            qty_delta -= step
+        if qty_delta:
+            # New units (or the part past zero) arrive at the given price
+            current = Position(symbol, current.qty + qty_delta, current.cost + qty_delta * price)
+            self.adjustments += qty_delta * price
+        if current.qty == 0:
+            self._positions.pop(symbol, None)
+        else:
+            self._positions[symbol] = current
 
     @property
     def positions(self) -> dict[str, Position]:
@@ -114,16 +172,19 @@ class Ledger:
             return False
         self._fill_ids.add(fill.fill_id)
 
-        self.cash -= fill.signed_qty * fill.price + fill.fee
-        self.fees += fill.fee
+        # A fee taken from the asset received is the same as receiving fewer units
+        # and paying their value as a fee: cash still leaves for the full quantity
+        fee = fill.fee + fill.fee_qty * fill.price
+        signed = fill.signed_qty - fill.fee_qty
+        self.cash -= signed * fill.price + fee
+        self.fees += fee
 
         current = self.position(fill.symbol)
-        signed = fill.signed_qty
         if current.qty == 0 or (current.qty > 0) == (signed > 0):
             # Opening or adding
             updated = Position(fill.symbol, current.qty + signed, current.cost + signed * fill.price)
         else:
-            closed = min(abs(current.qty), fill.qty)
+            closed = min(abs(current.qty), abs(signed))
             # Share of the cost basis that leaves with the closed quantity; exact on a full close
             if closed == abs(current.qty):
                 removed = current.cost
@@ -162,4 +223,4 @@ class Ledger:
         return sum((p.unrealized_pnl(prices[s]) for s, p in self._positions.items()), ZERO)
 
     def snapshot(self) -> LedgerSnapshot:
-        return LedgerSnapshot(self.cash, self.positions, self.realized_pnl, self.fees)
+        return LedgerSnapshot(self.cash, self.positions, self.realized_pnl, self.fees, self.adjustments)

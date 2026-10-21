@@ -68,7 +68,10 @@ class Allocation:
 
 @dataclass(frozen=True)
 class EngineEvent:
-    """Something worth recording: kind is order, fill, rejected, strategy_error, halt or resume."""
+    """
+    Something worth recording. ``kind`` is one of: order, fill, rejected,
+    strategy_error, broker_error, unknown_fill, reconciled, halt, resume.
+    """
 
     kind: str
     timestamp: datetime
@@ -306,7 +309,9 @@ class Engine:
                 weight = ZERO
             current = exposure.get(symbol, ZERO)
             target = instrument.round_qty(weight * equity / price)
-            delta = target - current
+            # Positions can sit off the increment grid (crypto fees are taken in the
+            # asset), so the order itself is rounded; dust below one increment stays
+            delta = instrument.round_qty(target - current)
             closing = target == 0 and current != 0
             if abs(delta) < instrument.min_qty:
                 continue
@@ -359,21 +364,32 @@ class Engine:
         return self._send(request)
 
     def on_order_update(self, update: OrderUpdate) -> None:
-        """Book a broker report. Fills are booked even if the report is out of order."""
+        """
+        Book a broker report for one of the engine's orders. Fills are booked even
+        if the status transition is out of order. Reports about orders the engine
+        did not place (e.g. trades made by hand) are not booked here: the next
+        reconciliation adopts their effect from the broker, so nothing is counted twice.
+        """
         order = self.orders.get(update.client_order_id)
         if order is None:
             logger.warning("Update for unknown order %s (%s)", update.client_order_id, update.status)
-        else:
-            try:
-                order = order.apply(update)
-                self.orders[update.client_order_id] = order
-            except InvalidTransitionError as e:
-                logger.error("Inconsistent broker update: %s", e)
-                self._emit("strategy_error", detail=f"broker update: {e}")
+            if update.fill is not None:
+                self._emit("unknown_fill", fill=update.fill)
+            return
+        try:
+            order = order.apply(update)
+            self.orders[update.client_order_id] = order
+        except InvalidTransitionError as e:
+            logger.error("Inconsistent broker update: %s", e)
+            self._emit("broker_error", detail=f"broker update: {e}")
         if update.fill is not None and self.ledger.apply_fill(update.fill):
             self._emit("fill", fill=update.fill, order=order)
-        if order is not None:
-            self._emit("order", order=order)
+        self._emit("order", order=order)
+
+    def sync_order(self, order: Order) -> None:
+        """Take the broker's view of an order (reconciliation and restarts)."""
+        self.orders[order.client_order_id] = order
+        self._emit("order", order=order)
 
     # -- kill switch --------------------------------------------------------
 
@@ -393,9 +409,12 @@ class Engine:
         sent = []
         for symbol, position in self.ledger.positions.items():
             instrument = self.instruments.get(symbol)
+            qty = instrument.round_qty(abs(position.qty)) if instrument else abs(position.qty)
+            if instrument and qty < instrument.min_qty:
+                continue  # dust below the broker's minimum
             side = Side.SELL if position.qty > 0 else Side.BUY
             tif = self._time_in_force(instrument, now) if instrument else TimeInForce.DAY
-            request = OrderRequest(f"nt-{now:%y%m%d%H%M%S}-{_slug(symbol)}-x", symbol, side, abs(position.qty),
+            request = OrderRequest(f"nt-{now:%y%m%d%H%M%S}-{_slug(symbol)}-x", symbol, side, qty,
                                    OrderType.MARKET, tif, tag="flatten")
             if self._send(request).allowed:
                 sent.append(request)

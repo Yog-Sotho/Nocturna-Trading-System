@@ -19,7 +19,8 @@ from src.models.user import db
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 POSTGRES_URL = os.environ.get("TEST_POSTGRES_URL")
-APP_TABLES = {"users", "api_keys", "audit_logs", "revoked_tokens"}
+APP_TABLES = {"users", "api_keys", "audit_logs", "revoked_tokens", "trading_orders", "trading_fills",
+              "equity_snapshots"}
 
 
 def _tables(app):

@@ -13,7 +13,7 @@ import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_UP, Decimal
 from typing import Protocol
 
 from .calendar import TradingCalendar
@@ -32,6 +32,7 @@ from .domain import (
     Side,
     TimeInForce,
 )
+from .ledger import Ledger
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +68,18 @@ class Broker(Protocol):
         """Signed quantity per symbol, as the broker sees it."""
         ...
 
+    def cost_basis(self) -> dict[str, tuple[Decimal, Decimal]]:
+        """(signed qty, signed cost) per symbol, for starting a ledger from the account."""
+        ...
+
     def cash(self) -> Decimal:
         ...
 
     def open_orders(self) -> list[Order]:
+        ...
+
+    def order(self, client_order_id: str) -> Order | None:
+        """The broker's current view of one order, or None if it does not know it."""
         ...
 
 
@@ -134,9 +143,10 @@ class SimulatedBroker:
     def __post_init__(self) -> None:
         self._listener: UpdateListener | None = None
         self._working: dict[str, _Working] = {}
+        self._closed: dict[str, Order] = {}
         self._seen_ids: set[str] = set()
-        self._positions: dict[str, Decimal] = {}
-        self._cash = self.starting_cash
+        # The simulated account keeps its books with the same Ledger as the engine
+        self._book = Ledger(self.starting_cash)
         self._sequence = 0
         self._fill_count = 0
 
@@ -160,15 +170,13 @@ class SimulatedBroker:
             self._emit(OrderUpdate(request.client_order_id, OrderStatus.REJECTED, now, reason=reason))
             return
         self._sequence += 1
-        self._working[request.client_order_id] = _Working(order.apply(
-            OrderUpdate(request.client_order_id, OrderStatus.NEW, now)), self._sequence)
-        self._emit(OrderUpdate(request.client_order_id, OrderStatus.NEW, now,
-                               broker_order_id=f"sim-{self._sequence}"))
+        accepted = OrderUpdate(request.client_order_id, OrderStatus.NEW, now, broker_order_id=f"sim-{self._sequence}")
+        self._working[request.client_order_id] = _Working(order.apply(accepted), self._sequence)
+        self._emit(accepted)
 
     def cancel(self, client_order_id: str) -> None:
-        working = self._working.pop(client_order_id, None)
-        if working is not None:
-            self._emit(OrderUpdate(client_order_id, OrderStatus.CANCELED, self.clock.now(), reason="canceled"))
+        if client_order_id in self._working:
+            self._finish(client_order_id, OrderStatus.CANCELED, self.clock.now(), "canceled")
 
     def on_bars(self, bars: Mapping[str, Bar]) -> None:
         for client_order_id, working in sorted(self._working.items(), key=lambda kv: kv[1].sequence):
@@ -178,13 +186,22 @@ class SimulatedBroker:
             self._execute(client_order_id, working, bar)
 
     def positions(self) -> dict[str, Decimal]:
-        return {s: q for s, q in self._positions.items() if q != 0}
+        return {s: p.qty for s, p in self._book.positions.items()}
+
+    def cost_basis(self) -> dict[str, tuple[Decimal, Decimal]]:
+        return {s: (p.qty, p.cost) for s, p in self._book.positions.items()}
 
     def cash(self) -> Decimal:
-        return self._cash
+        return self._book.cash
 
     def open_orders(self) -> list[Order]:
         return [w.order for w in sorted(self._working.values(), key=lambda w: w.sequence)]
+
+    def order(self, client_order_id: str) -> Order | None:
+        working = self._working.get(client_order_id)
+        if working is not None:
+            return working.order
+        return self._closed.get(client_order_id)
 
     # -- internals ----------------------------------------------------------
 
@@ -218,7 +235,7 @@ class SimulatedBroker:
         if request.qty < instrument.min_qty or instrument.round_qty(request.qty) != request.qty:
             return f"qty {request.qty} is not a multiple of {instrument.qty_increment} >= {instrument.min_qty}"
         if request.side is Side.SELL and not instrument.shortable:
-            held = self._positions.get(request.symbol, Decimal("0")) - self._pending_sells(request.symbol)
+            held = self._book.position(request.symbol).qty - self._pending_sells(request.symbol)
             if request.qty > held:
                 return f"{request.symbol} cannot be sold short"
         return ""
@@ -253,21 +270,29 @@ class SimulatedBroker:
 
         if price is not None and qty > 0:
             price = price.quantize(PRICE_SCALE)
-            fee = (price * qty * model.fee_bps / BPS).quantize(PRICE_SCALE)
-            if request.side is Side.BUY and price * qty + fee > self._cash:
+            fee, fee_qty = (price * qty * model.fee_bps / BPS).quantize(PRICE_SCALE), Decimal("0")
+            if instrument.asset_class is AssetClass.CRYPTO and request.side is Side.BUY:
+                # Alpaca charges crypto purchases in the asset received; rounding the
+                # fee up to the increment never overstates the holding
+                fee_qty = (qty * model.fee_bps / BPS / instrument.qty_increment).to_integral_value(
+                    rounding=ROUND_UP) * instrument.qty_increment
+                fee = Decimal("0")
+                if fee_qty >= qty:
+                    self._finish(client_order_id, OrderStatus.REJECTED, now, "order too small to cover the fee")
+                    return
+            if request.side is Side.BUY and price * qty + fee > self._book.cash:
                 status = OrderStatus.CANCELED if order.filled_qty else OrderStatus.REJECTED
                 self._finish(client_order_id, status, now, "insufficient buying power")
                 return
             self._fill_count += 1
             fill = Fill(f"sim-fill-{self._fill_count}", client_order_id, request.symbol, request.side,
-                        qty, price, fee, now)
-            self._cash -= fill.signed_qty * price + fee
-            self._positions[request.symbol] = self._positions.get(request.symbol, Decimal("0")) + fill.signed_qty
+                        qty, price, fee, now, fee_qty=fee_qty)
+            self._book.apply_fill(fill)
             status = OrderStatus.FILLED if qty == order.remaining_qty else OrderStatus.PARTIALLY_FILLED
             update = OrderUpdate(client_order_id, status, now, fill=fill)
             working.order = order.apply(update)
             if status is OrderStatus.FILLED:
-                del self._working[client_order_id]
+                self._closed[client_order_id] = self._working.pop(client_order_id).order
             self._emit(update)
 
         if client_order_id in self._working and request.time_in_force is not TimeInForce.GTC:
@@ -276,5 +301,8 @@ class SimulatedBroker:
             self._finish(client_order_id, status, now, f"unfilled {request.time_in_force} order")
 
     def _finish(self, client_order_id: str, status: OrderStatus, now: datetime, reason: str) -> None:
-        self._working.pop(client_order_id, None)
-        self._emit(OrderUpdate(client_order_id, status, now, reason=reason))
+        working = self._working.pop(client_order_id, None)
+        update = OrderUpdate(client_order_id, status, now, reason=reason)
+        if working is not None:
+            self._closed[client_order_id] = working.order.apply(update)
+        self._emit(update)

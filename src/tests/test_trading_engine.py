@@ -219,7 +219,21 @@ class TestSimulatedBrokerPrices:
         broker.on_bars({"BTC/USD": b})
         fill = rec.fills()[0]
         assert fill.price == D("50050")  # 10 bps slippage
-        assert fill.fee == D("125.125")  # 25 bps of notional
+        # Purchases pay the 25 bps fee in the asset received, as on Alpaca
+        assert fill.fee == 0 and fill.fee_qty == D("0.0025")
+        assert broker.positions() == {"BTC/USD": D("0.9975")}
+        assert broker.cash() == D("1000000") - D("50050")
+
+    def test_crypto_sale_pays_the_fee_in_cash(self):
+        day = datetime(2026, 3, 3, tzinfo=UTC)
+        clock, broker, rec = _broker(day, costs=DEFAULT_COSTS)
+        broker._book.adjust_position("BTC/USD", D("1"), D("50000"))
+        broker.submit(_req("c", symbol="BTC/USD", side=Side.SELL, qty="1", time_in_force=TimeInForce.GTC))
+        b = bar(BTC, day, 50000, 50000, 50000, 50000)
+        clock.advance_to(b.end + timedelta(minutes=1))
+        broker.on_bars({"BTC/USD": b})
+        fill = rec.fills()[0]
+        assert fill.price == D("49950") and fill.fee == D("124.875") and fill.fee_qty == 0
 
 
 class TestSimulatedBrokerLifecycle:
@@ -418,12 +432,21 @@ class TestEngine:
         assert _feed_day(clock, engine, 2) == []
         assert any(e.kind == "rejected" for e in events)
 
-    def test_fill_for_an_unknown_order_is_still_booked(self):
+    def test_fill_for_an_unknown_order_is_left_to_reconciliation(self):
         from src.trading.domain import Fill, OrderUpdate
-        clock, _, engine, _ = _engine(_Fixed({"SPY": 0.5}, instruments=(SPY,)))
+        from src.trading.reconcile import reconcile
+        clock, broker, engine, events = _engine(_Fixed({"SPY": 0.5}, instruments=(SPY,)))
         fill = Fill("ext-1", "manual-1", "SPY", Side.BUY, D("3"), D("100"), D("0"), clock.now())
         engine.on_order_update(OrderUpdate("manual-1", OrderStatus.FILLED, clock.now(), fill=fill))
+        assert engine.ledger.position("SPY").qty == 0
+        assert any(e.kind == "unknown_fill" for e in events)
+        # The manual trade happened at the broker; reconciliation adopts it once
+        broker._book.adjust_position("SPY", D("3"), D("100"))
+        broker._book.adjust_cash(D("-300"))
+        reconcile(engine, broker)
+        reconcile(engine, broker)
         assert engine.ledger.position("SPY").qty == D("3")
+        assert engine.ledger.cash == broker.cash()
 
     def test_allocations_are_validated(self):
         clock = SimulatedClock(ny(2026, 3, 2))
@@ -561,3 +584,48 @@ class TestLivePathParity:
 
         assert [key(f) for f in fills] == [key(f) for f in backtest.fills]
         assert engine.equity() == backtest.final.equity
+
+
+class TestReconcile:
+    def _desynced(self):
+        from src.trading.reconcile import reconcile
+        clock, broker, engine, events = _engine(_Fixed({"SPY": 0.5}, instruments=(SPY,)))
+        _feed_day(clock, engine, 2)
+        _feed_day(clock, engine, 3)
+        return clock, broker, engine, events, reconcile
+
+    def test_in_sync_engine_reports_nothing(self):
+        _, broker, engine, events, reconcile = self._desynced()
+        assert reconcile(engine, broker).in_sync
+        assert not any(e.kind == "reconciled" for e in events)
+
+    def test_position_and_cash_drift_is_adopted_and_reported(self):
+        _, broker, engine, events, reconcile = self._desynced()
+        broker._book.adjust_position("SPY", D("-2"), D("100"))  # e.g. a fee or a manual sale
+        broker._book.adjust_cash(D("1000"))                     # a deposit
+        report = reconcile(engine, broker)
+        assert {d.item: d.delta for d in report.discrepancies} == {"SPY": D("-2"), "cash": D("1000")}
+        assert engine.ledger.position("SPY").qty == broker.positions()["SPY"]
+        assert engine.ledger.cash == broker.cash()
+        assert any(e.kind == "reconciled" for e in events)
+        assert reconcile(engine, broker).in_sync
+
+    def test_open_orders_are_adopted_and_lost_ones_closed(self):
+        _, broker, engine, _, reconcile = self._desynced()
+        broker.submit(OrderRequest("manual-9", "SPY", Side.BUY, D("1"), time_in_force=TimeInForce.GTC))
+        from src.trading.domain import Order
+        lost = Order.new(OrderRequest("lost-1", "SPY", Side.BUY, D("1")), engine.clock.now())
+        engine.orders["lost-1"] = lost
+        report = reconcile(engine, broker)
+        assert report.adopted_orders == ("manual-9",)
+        assert report.closed_orders == ("lost-1",)
+        assert engine.orders["lost-1"].status is OrderStatus.CANCELED
+        assert engine.exposure()["SPY"] == engine.ledger.position("SPY").qty + 1
+
+
+class TestLedgerFromAccount:
+    def test_start_from_broker_positions(self):
+        ledger = Ledger.from_account(D("1000"), {"SPY": (D("10"), D("5000")), "IEF": (D("0"), D("0"))})
+        assert ledger.starting_cash == D("6000")
+        assert ledger.positions == {"SPY": ledger.position("SPY")}
+        assert ledger.equity({"SPY": D("510")}) == D("6100")

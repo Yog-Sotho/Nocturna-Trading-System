@@ -188,6 +188,24 @@ class TestLedger:
         assert position.qty == D("-5") and position.avg_price == D("90")
         assert ledger.unrealized_pnl({"SPY": D("80")}) == D("50")
 
+    def test_fee_taken_from_the_asset_received(self):
+        ledger = Ledger(D("100000"))
+        ledger.apply_fill(Fill("f1", "o1", "BTC/USD", Side.BUY, D("1"), D("50000"), D("0"), T0,
+                               fee_qty=D("0.0025")))
+        position = ledger.position("BTC/USD")
+        assert position.qty == D("0.9975") and position.avg_price == D("50000")
+        assert ledger.cash == D("50000") and ledger.fees == D("125")
+        assert ledger.equity({"BTC/USD": D("50000")}) == D("99875")
+
+    @pytest.mark.parametrize("kw", [{"fee_qty": D("1")}, {"fee_qty": D("-0.1")},
+                                    {"side": Side.SELL, "fee_qty": D("0.1")}])
+    def test_invalid_asset_fees(self, kw):
+        values = dict(fill_id="f", client_order_id="o", symbol="BTC/USD", side=Side.BUY, qty=D("1"),
+                      price=D("1"), fee=D("0"), timestamp=T0)
+        values.update(kw)
+        with pytest.raises(ValueError):
+            Fill(**values)
+
     def test_duplicate_fill_is_not_booked_twice(self):
         ledger = Ledger(D("1000"))
         fill = _fill(1, Side.BUY, "1", "100")
@@ -231,11 +249,46 @@ class TestLedgerFractional:
     def test_accounting_identity_with_crypto_sized_decimals(self, trades, mark):
         ledger = Ledger(D("100000"))
         for n, (side, qty, price, fee) in enumerate(trades):
-            ledger.apply_fill(_fill(n, side, qty, price, fee=fee, symbol="BTC/USD"))
+            fee_qty = (qty * D("0.0025")).quantize(D("1e-9")) if side is Side.BUY else D("0")
+            ledger.apply_fill(Fill(f"f{n}", "o1", "BTC/USD", side, qty, price, fee, T0 + timedelta(minutes=n),
+                                   fee_qty=fee_qty if fee_qty < qty else D("0")))
         prices = {"BTC/USD": mark}
         with localcontext(LEDGER_CONTEXT):
             expected = ledger.starting_cash + ledger.realized_pnl + ledger.unrealized_pnl(prices) - ledger.fees
         assert ledger.equity(prices) == expected
+
+
+class TestLedgerAdjustments:
+    @given(st.lists(st.one_of(
+        st.tuples(st.just("fill"), st.sampled_from([Side.BUY, Side.SELL]),
+                  st.integers(min_value=1, max_value=50), st.integers(min_value=1, max_value=500)),
+        st.tuples(st.just("qty"), st.integers(min_value=-60, max_value=60), st.integers(min_value=1, max_value=500),
+                  st.just(0)),
+        st.tuples(st.just("cash"), st.integers(min_value=-5000, max_value=5000), st.just(0), st.just(0)),
+    ), min_size=1, max_size=40), st.integers(min_value=1, max_value=500))
+    def test_identity_with_adjustments(self, steps, mark):
+        """equity == start + realized + unrealized - fees + adjustments, for fills mixed with adjustments."""
+        ledger = Ledger(D("100000"))
+        for n, (kind, a, b, _) in enumerate(steps):
+            if kind == "fill":
+                ledger.apply_fill(_fill(n, a, str(b), "100"))
+            elif kind == "qty":
+                ledger.adjust_position("SPY", D(a), D(b))
+            else:
+                ledger.adjust_cash(D(a))
+        prices = {"SPY": D(mark)}
+        with localcontext(LEDGER_CONTEXT):
+            expected = (ledger.starting_cash + ledger.realized_pnl + ledger.unrealized_pnl(prices)
+                        - ledger.fees + ledger.adjustments)
+        assert ledger.equity(prices) == expected
+
+    def test_removed_units_leave_at_average_cost(self):
+        ledger = Ledger(D("10000"))
+        ledger.apply_fill(_fill(1, Side.BUY, "10", "100"))
+        ledger.adjust_position("SPY", D("-4"), D("150"))
+        position = ledger.position("SPY")
+        assert position.qty == D("6") and position.avg_price == D("100")
+        assert ledger.adjustments == D("-400") and ledger.realized_pnl == 0
 
 
 class TestSimulatedClock:
