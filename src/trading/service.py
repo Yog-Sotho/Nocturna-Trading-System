@@ -192,11 +192,12 @@ class EngineService:
         self._feed = PollingFeed(self._source, instruments, self._timeframe, now - self._warm_up,
                                  seen=self.engine.latest_bar_starts())
         self._next_poll = self._feed.next_poll(now) + self._poll_latency
+        self._drain()
+        self._publish()
+        # Only now: "running" promises a published snapshot to readers on other threads
         with self._lock:
             self._started_at = now
             self._state = "running"
-        self._drain()
-        self._publish()
 
     def _run(self) -> None:
         try:

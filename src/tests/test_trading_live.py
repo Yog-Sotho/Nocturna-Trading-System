@@ -297,6 +297,21 @@ class TestEngineService:
         assert {o.request.symbol for o in status.snapshot.open_orders} == {"SPY", "IEF"}
         assert status.next_poll == ny(2026, 3, 3, 0, 15) + timedelta(seconds=5)
 
+    def test_reports_running_only_once_a_snapshot_is_published(self):
+        _, _, service, _ = _service()
+        seen = []
+        drain = service._drain
+
+        def observe():
+            status = service.status()
+            seen.append((status.state, status.snapshot is not None))
+            drain()
+
+        service._drain = observe
+        service.prepare()
+        assert seen and all(published for state, published in seen if state == "running")
+        assert service.status().state == "running" and service.status().snapshot is not None
+
     def test_trades_reconciles_and_records_snapshots(self):
         clock, broker, service, snapshots = _service()
         service.prepare()
