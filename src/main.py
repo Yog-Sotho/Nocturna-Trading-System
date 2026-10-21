@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from flask import Flask, abort, g, jsonify, request, send_from_directory
 from flask_cors import CORS
 from werkzeug.exceptions import MethodNotAllowed
+from werkzeug.security import safe_join
 
 from src.config import ensure_sqlite_directory, load_settings
 from src.core.safety import assert_paper_only
@@ -333,7 +334,10 @@ def create_app(config_override=None):
             if api_methods:
                 raise MethodNotAllowed(valid_methods=sorted(api_methods))
             abort(404)
-        if path != "" and os.path.exists(os.path.join(static_folder, path)):
+        # safe_join refuses paths that leave the static folder, so the existence
+        # check cannot be used to probe for files elsewhere on the server
+        static_file = safe_join(static_folder, path) if path else None
+        if static_file is not None and os.path.isfile(static_file):
             return send_from_directory(static_folder, path)
         else:
             index_path = os.path.join(static_folder, 'index.html')

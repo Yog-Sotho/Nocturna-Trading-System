@@ -71,6 +71,23 @@ class TestRevisions:
         db_migrations.upgrade(migration_app)
         assert _tables(migration_app) >= APP_TABLES
 
+    def test_0002_removes_keys_issued_under_the_old_scheme(self, migration_app):
+        db_migrations.upgrade(migration_app, "0001")
+        with migration_app.app_context(), db.engine.begin() as connection:
+            connection.execute(sa.text(
+                "INSERT INTO users (username, email, password_hash, token_version) "
+                "VALUES ('u', 'u@example.com', 'x', 0)"))
+            connection.execute(sa.text(
+                "INSERT INTO api_keys (user_id, key_hash, name) "
+                "SELECT id, :hash, 'old' FROM users"), {"hash": "a" * 64})
+        db_migrations.upgrade(migration_app)
+        with migration_app.app_context(), db.engine.connect() as connection:
+            assert connection.execute(sa.text("SELECT COUNT(*) FROM api_keys")).scalar() == 0
+            assert connection.execute(sa.text("SELECT COUNT(*) FROM users")).scalar() == 1
+            columns = {c["name"] for c in sa.inspect(connection).get_columns("api_keys")}
+        assert "key_id" in columns
+        assert db_migrations.schema_differences(migration_app) == []
+
     def test_pre_migration_database_is_refused(self, migration_app):
         with migration_app.app_context():
             db.create_all()

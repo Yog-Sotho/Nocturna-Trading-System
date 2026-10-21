@@ -104,7 +104,7 @@ are limited to 1 MB.
 | GET, POST | `/users` | admin; `POST` creates a user |
 | GET, PUT | `/users/<id>` | admin; `roles` may contain `trader` and `reader`, admin rights come only from `is_admin` |
 | PUT | `/users/<id>/password` | own account, or admin; revokes all of that user's tokens |
-| GET, POST | `/api-keys` | own keys; `POST` body `{"name": "...", "permissions": ["read", "trade"], "expires_in_days": 90}` returns the key once. Keys are stored hashed, never carry admin rights, and `trade` needs an owner with the trader role |
+| GET, POST | `/api-keys` | own keys; `POST` body `{"name": "...", "permissions": ["read", "trade"], "expires_in_days": 90}` returns the key (`ntr_<id>_<secret>`) once. Only the id and a salted, peppered scrypt hash of the secret are stored. Keys never carry admin rights, and `trade` needs an owner with the trader role |
 | DELETE | `/api-keys/<id>` | revokes one of your keys |
 | GET | `/audit-logs` | admin; logins, logouts, password, user and API key changes, orders, engine control, config changes and emergency stops. Filters: `event_type`, `user_id`, `page`, `per_page` |
 

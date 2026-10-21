@@ -287,3 +287,26 @@ class TestMalformedBodies:
         headers = {**admin_headers, "Content-Type": "application/json"}
         resp = getattr(client, method)(path, data=body, headers=headers)
         assert resp.status_code == 400, (path, body, resp.get_json())
+
+
+class TestCodeScanningFixes:
+    def test_invalid_paper_order_does_not_echo_exception_text(self, client, auth_headers):
+        resp = client.post("/api/paper/orders", headers=auth_headers, json={
+            "symbol": "SPY", "side": "buy", "order_type": "market", "quantity": "not-a-number",
+        })
+        assert resp.status_code == 400
+        assert "could not convert" not in resp.get_data(as_text=True)
+
+    def test_static_route_cannot_probe_files_outside_the_static_folder(self, client):
+        # src/config.py exists one level above the static folder; the response must
+        # match a path that exists nowhere, or file existence leaks
+        outside = client.get("/../config.py")
+        missing = client.get("/no-such-file-anywhere.js")
+        assert outside.status_code == missing.status_code
+        assert outside.get_data() == missing.get_data()
+
+    def test_url_stripping_removes_whole_urls(self):
+        from src.advanced.sentiment_analyzer import SentimentAnalyzer
+        cleaned = SentimentAnalyzer({})._preprocess_text("Read https://example.com/a/b?q=1&x=2 now")
+        assert "example" not in cleaned and "q=1" not in cleaned
+        assert "read" in cleaned and "now" in cleaned

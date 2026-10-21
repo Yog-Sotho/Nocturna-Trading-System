@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import secrets
 import time
 from collections.abc import Callable
@@ -213,15 +214,39 @@ API_KEY_SCOPES = frozenset({"read", "trade"})
 READER_ROLE = "reader"
 TRADER_ROLE = "trader"
 
+#: ``ntr_<key_id>_<secret>``: a public 64-bit id that finds the record, and a
+#: 256-bit secret that is only ever stored as a salted scrypt hash.
+_API_KEY_PATTERN = re.compile(r"ntr_([0-9a-f]{16})_([A-Za-z0-9_-]{43})")
 
-def generate_api_key() -> str:
-    """Generate a high-entropy API key string."""
-    return f"{API_KEY_PREFIX}{secrets.token_urlsafe(32)}"
+#: scrypt cost: n=2**14, r=8, p=1 needs 16 MiB and tens of milliseconds per check.
+#: Stored with each hash, so it can be raised later without invalidating keys.
+_SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2**14, 8, 1
+_SCRYPT_SALT_BYTES = 16
+_SCRYPT_DKLEN = 32
+
+
+def issue_api_key() -> tuple[str, str, str]:
+    """
+    Create a new API key.
+
+    Returns:
+        (raw_key, key_id, key_hash): raw_key is shown to its owner exactly once;
+        only key_id and key_hash are stored.
+    """
+    key_id = secrets.token_hex(8)
+    secret = secrets.token_urlsafe(32)
+    return f"{API_KEY_PREFIX}{key_id}_{secret}", key_id, _hash_key_secret(secret)
+
+
+def parse_api_key(raw_key: str) -> tuple[str, str] | None:
+    """Split a raw key into (key_id, secret), or None if it is not well formed."""
+    match = _API_KEY_PATTERN.fullmatch(raw_key or "")
+    return (match.group(1), match.group(2)) if match else None
 
 
 def _api_key_pepper() -> bytes:
     """
-    Server-side secret mixed into API key hashes.
+    Server-side secret mixed into every API key hash.
 
     Uses API_KEY_PEPPER when set (required in production). Otherwise it is
     derived from SECRET_KEY, so keys stay valid as long as SECRET_KEY does.
@@ -231,12 +256,30 @@ def _api_key_pepper() -> bytes:
         return settings.api_key_pepper.get_secret_value().encode()
     return hmac.new(
         current_app.config["SECRET_KEY"].encode(), b"nocturna-api-key-pepper", hashlib.sha256
-    ).hexdigest().encode()
+    ).digest()
 
 
-def hash_api_key(raw_key: str) -> str:
-    """Hash an API key for storage and lookup (HMAC-SHA256 with the server pepper)."""
-    return hmac.new(_api_key_pepper(), raw_key.encode(), hashlib.sha256).hexdigest()
+def _scrypt(secret: str, salt: bytes, n: int, r: int, p: int, dklen: int) -> bytes:
+    return hashlib.scrypt(secret.encode(), salt=salt + _api_key_pepper(), n=n, r=r, p=p, dklen=dklen)
+
+
+def _hash_key_secret(secret: str) -> str:
+    """Salted, peppered scrypt hash, encoded as ``scrypt$n$r$p$salt$digest``."""
+    salt = secrets.token_bytes(_SCRYPT_SALT_BYTES)
+    digest = _scrypt(secret, salt, _SCRYPT_N, _SCRYPT_R, _SCRYPT_P, _SCRYPT_DKLEN)
+    return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${salt.hex()}${digest.hex()}"
+
+
+def _verify_key_secret(secret: str, encoded: str) -> bool:
+    """Constant-time check of a secret against its stored hash."""
+    try:
+        scheme, n, r, p, salt_hex, digest_hex = encoded.split("$")
+        if scheme != "scrypt":
+            return False
+        digest = _scrypt(secret, bytes.fromhex(salt_hex), int(n), int(r), int(p), len(digest_hex) // 2)
+    except ValueError:
+        return False
+    return hmac.compare_digest(digest.hex(), digest_hex)
 
 
 def roles_for_api_key(scopes: list[str], owner_roles: list[str], owner_is_admin: bool) -> list[str]:
@@ -263,11 +306,15 @@ def authenticate_api_key(raw_key: str) -> tuple[str, str, list[str]] | None:
     """
     from src.models.user import APIKey, db
 
-    if not raw_key or not raw_key.startswith(API_KEY_PREFIX):
+    parsed = parse_api_key(raw_key)
+    if parsed is None:
         return None
+    key_id, secret = parsed
 
-    record = APIKey.query.filter_by(key_hash=hash_api_key(raw_key)).first()
-    if record is None or not record.is_valid():
+    # The cheap id lookup comes first: scrypt only runs for keys that exist, so
+    # made-up keys cost an attacker more than they cost the server
+    record = APIKey.query.filter_by(key_id=key_id).first()
+    if record is None or not _verify_key_secret(secret, record.key_hash) or not record.is_valid():
         return None
     owner = record.user
     if owner is None or not owner.is_active:

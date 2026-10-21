@@ -13,8 +13,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from src.middleware.auth import (
     API_KEY_SCOPES,
-    generate_api_key,
-    hash_api_key,
+    issue_api_key,
     require_admin,
     require_auth,
     token_manager,
@@ -531,10 +530,11 @@ def create_api_key():
                                        status_code=400)
             expires_at = datetime.now(UTC) + timedelta(days=expires_in_days)
 
-        raw_key = generate_api_key()
+        raw_key, key_id, key_hash = issue_api_key()
         record = APIKey(
             user_id=user.id,
-            key_hash=hash_api_key(raw_key),
+            key_id=key_id,
+            key_hash=key_hash,
             name=name,
             description=description,
             permissions=sorted(set(permissions)),

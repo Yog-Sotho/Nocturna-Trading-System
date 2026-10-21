@@ -12,8 +12,8 @@ import pytest
 from src.middleware.auth import (
     TokenManager,
     authenticate_api_key,
-    generate_api_key,
-    hash_api_key,
+    issue_api_key,
+    parse_api_key,
     roles_for_api_key,
 )
 from src.models.user import APIKey, User
@@ -86,17 +86,46 @@ class TestTokenManager:
 
 
 class TestAPIKeyHelpers:
-    def test_generated_keys_are_prefixed_and_unique(self):
-        a, b = generate_api_key(), generate_api_key()
-        assert a.startswith("ntr_") and b.startswith("ntr_")
-        assert a != b
-
-    def test_hash_is_stable_and_not_the_key(self, app):
-        raw = generate_api_key()
+    def test_issued_keys_are_unique_and_parse_into_id_and_secret(self, app):
         with app.app_context():
-            assert hash_api_key(raw) == hash_api_key(raw)
-            assert raw not in hash_api_key(raw)
-            assert len(hash_api_key(raw)) == 64
+            (raw_a, id_a, _), (raw_b, id_b, _) = issue_api_key(), issue_api_key()
+        assert raw_a != raw_b and id_a != id_b
+        key_id, secret = parse_api_key(raw_a)
+        assert key_id == id_a
+        assert raw_a == f"ntr_{key_id}_{secret}" and len(secret) == 43
+
+    def test_secret_is_stored_only_as_salted_scrypt(self, app):
+        from src.middleware.auth import _hash_key_secret, _verify_key_secret
+        with app.app_context():
+            raw, _, key_hash = issue_api_key()
+            _, secret = parse_api_key(raw)
+            assert key_hash.startswith("scrypt$16384$8$1$")
+            assert secret not in key_hash
+            assert _hash_key_secret(secret) != _hash_key_secret(secret)  # per-key salt
+            assert _verify_key_secret(secret, key_hash) is True
+            assert _verify_key_secret(secret[:-1] + ("A" if secret[-1] != "A" else "B"), key_hash) is False
+
+    @pytest.mark.parametrize("stored", ["", "scrypt$x", "bcrypt$1$2$3$aa$bb", "scrypt$16384$8$1$zz$00"])
+    def test_malformed_stored_hash_never_verifies(self, app, stored):
+        from src.middleware.auth import _verify_key_secret
+        with app.app_context():
+            assert _verify_key_secret("s" * 43, stored) is False
+
+    @pytest.mark.parametrize("raw", [
+        "", "ntr_", "ntr_not-a-real-key", "xyz_0123456789abcdef_" + "a" * 43,
+        "ntr_0123456789ABCDEF_" + "a" * 43, "ntr_0123456789abcdef_" + "a" * 42,
+        "ntr_0123456789abcdef_" + "a" * 43 + "\n",
+    ])
+    def test_malformed_keys_do_not_parse(self, raw):
+        assert parse_api_key(raw) is None
+
+    def test_pepper_is_part_of_the_hash(self, app, monkeypatch):
+        from src.middleware import auth
+        with app.app_context():
+            raw, _, key_hash = issue_api_key()
+            _, secret = parse_api_key(raw)
+            monkeypatch.setattr(auth, "_api_key_pepper", lambda: b"another-pepper")
+            assert auth._verify_key_secret(secret, key_hash) is False
 
     @pytest.mark.parametrize("scopes,owner_roles,owner_is_admin,expected", [
         (["read"], ["trader"], False, ["reader"]),
@@ -113,6 +142,15 @@ class TestAPIKeyHelpers:
     def test_unknown_key_does_not_authenticate(self, app, db):
         with app.app_context():
             assert authenticate_api_key("ntr_not-a-real-key") is None
+
+    def test_unknown_key_id_is_rejected_without_running_scrypt(self, app, db, monkeypatch):
+        import hashlib
+        calls = []
+        real_scrypt = hashlib.scrypt
+        monkeypatch.setattr(hashlib, "scrypt", lambda *a, **k: calls.append(1) or real_scrypt(*a, **k))
+        with app.app_context():
+            assert authenticate_api_key("ntr_0123456789abcdef_" + "a" * 43) is None
+        assert calls == []
 
 
 class TestAuthEndpoints:
@@ -200,11 +238,14 @@ class TestAPIKeyEndpoints:
         raw = data["api_key"]
         with client.application.app_context():
             record = _get_key(data["key"]["id"])
-            assert record.key_hash == hash_api_key(raw)
-            assert raw not in record.key_hash
+            key_id, secret = parse_api_key(raw)
+            assert record.key_id == key_id
+            assert secret not in record.key_hash
         listed = client.get("/api/api-keys", headers=auth_headers).get_json()["data"]["api_keys"]
         assert [k["id"] for k in listed] == [data["key"]["id"]]
+        assert listed[0]["key_id"] == key_id
         assert "api_key" not in listed[0] and "key_hash" not in listed[0]
+        assert secret not in str(listed)
 
     def test_read_key_authenticates(self, client, auth_headers):
         raw = self._key(client, auth_headers, ["read"])["api_key"]

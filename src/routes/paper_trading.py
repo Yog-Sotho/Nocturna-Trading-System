@@ -147,7 +147,12 @@ def paper_submit_order():
         return _response(False, error=result.get("error", "Order rejected"), status_code=400)
 
     except (ValueError, TypeError) as e:
-        return _response(False, error=f"Invalid input: {e}", status_code=400)
+        logger.warning(f"Invalid paper order: {e}")
+        return _response(
+            False,
+            error="Invalid input: side, order_type, quantity and prices must be valid values",
+            status_code=400,
+        )
     except Exception as e:
         logger.error(f"Paper order error: {e}")
         return _response(False, error="Failed to submit order", status_code=500)

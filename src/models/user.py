@@ -158,7 +158,10 @@ class APIKey(db.Model):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
-    key_hash = Column(String(64), nullable=False, unique=True, index=True)
+    # Public half of the key, used to find the record; the secret half is only
+    # stored as a salted scrypt hash
+    key_id = Column(String(16), nullable=False, unique=True, index=True)
+    key_hash = Column(String(255), nullable=False)
     name = Column(String(100), nullable=False)
     description = Column(Text)
 
@@ -192,6 +195,7 @@ class APIKey(db.Model):
         """Public metadata only — the key itself is never stored or returned."""
         return {
             'id': self.id,
+            'key_id': self.key_id,
             'name': self.name,
             'description': self.description,
             'permissions': self.permissions or [],
