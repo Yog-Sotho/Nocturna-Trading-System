@@ -251,7 +251,8 @@ class Engine:
             symbols = [i.symbol for i in strategy.instruments]
             if not any(s in new for s in symbols):
                 continue
-            if any(len(self._history[s]) < strategy.lookback for s in symbols):
+            needed = strategy.lookback if strategy.min_history is None else strategy.min_history
+            if any(len(self._history[s]) < needed for s in symbols):
                 continue  # still warming up
             ctx = StrategyContext(
                 now=self.clock.now(),

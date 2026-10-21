@@ -10,6 +10,10 @@ import pytest
 os.environ["FLASK_ENV"] = "testing"
 os.environ["FLASK_SECRET_KEY"] = "test-secret-key-not-for-production-32chars!"
 os.environ["TRADING_MODE"] = "PAPER"
+# Tests never use a real broker account, even on a machine that has one configured
+os.environ.pop("ALPACA_API_KEY", None)
+os.environ.pop("ALPACA_SECRET_KEY", None)
+os.environ.pop("ENGINE_AUTOSTART", None)
 
 from src.main import create_app
 from src.middleware.auth import create_token

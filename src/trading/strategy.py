@@ -46,13 +46,16 @@ class StrategyContext:
 class Strategy(ABC):
     """
     Subclasses set ``name`` (1-16 of a-z, 0-9, -), ``instruments``, ``lookback``
-    (bars of history needed) and implement ``target_weights``.
+    (bars of history kept and needed) and implement ``target_weights``.
+    ``min_history`` lets a strategy be called with fewer bars than it keeps
+    (a blend whose components warm up at different speeds).
     """
 
     name: str
     instruments: Sequence[Instrument]
     timeframe: Timeframe = DAILY
     lookback: int = 1
+    min_history: int | None = None
 
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
