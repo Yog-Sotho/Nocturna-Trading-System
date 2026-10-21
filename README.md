@@ -23,7 +23,8 @@ trading; only the clock, the market-data source and the broker are swapped. See
 |---|---|---|
 | Trading core: domain model, ledger, engine, strategy interface | `src/trading/` | Working; property-tested accounting |
 | Risk engine: pre-trade gate, drawdown kill switch, daily loss limit, volatility-targeted sizing with a drawdown ladder | `src/trading/risk.py`, `sizing.py` | Working; limits are configurable, defaults below |
-| Backtester (simulated clock and broker, cost model, no look-ahead) | `src/trading/backtest.py` | Working; validation statistics arrive in Phase 4 |
+| Backtester (simulated clock and broker, cost model, no look-ahead) | `src/trading/backtest.py` | Working |
+| Validation pipeline: walk-forward traded through the engine, deflated Sharpe, probability of backtest overfitting, purged cross-validation, cost stress, parameter stability, regimes, promotion gates | `src/trading/validation/`, `flask validate` | Working; no candidate strategy yet (Phase 5) |
 | Paper trading on Alpaca (`alpaca-py`): broker adapter, trade-update stream, polling data feed, reconciliation | `src/trading/alpaca.py`, `service.py` | Working against fakes and Alpaca's real request models; not yet run against a live paper account |
 | Strategies | `src/trading/strategies/` | Only a 60/40 SPY/IEF benchmark; the validated lineup arrives in Phase 5 |
 | Trading history (orders, fills, equity snapshots) and audit log | `src/models/` | Working |
@@ -104,6 +105,48 @@ database and restored on restart, so a halt survives a redeploy. After a drawdow
 `POST /api/trading/control/resume` restarts the high-water mark at the current equity.
 Strategies with protective stops size positions with `stop_risk_weight` (0.5% of equity at
 risk per trade by default).
+
+## Validating a strategy
+
+No strategy trades until it passes the promotion gates in [docs/ROADMAP.md](docs/ROADMAP.md).
+`flask validate` decides the gates a backtest can decide, on Alpaca data, with the engine, costs,
+risk gate and sizing of paper trading:
+
+```bash
+flask --app src.main validate benchmark --start 2017-01-01 --output reports/benchmark.md
+```
+
+It writes a Markdown tear sheet and a JSON report, prints the verdict, and exits with code 1
+when the candidate is rejected. For each candidate (a strategy family and its parameter grid):
+
+1. Every parameter set is backtested over the whole period.
+2. **Walk-forward:** at the start of each test year the parameter set with the best Sharpe ratio
+   over the previous 36 months is chosen, and the chosen sets are traded through the engine, so
+   switching parameters costs what it would live. This is the out-of-sample record.
+3. **Selection bias:** the best set's Sharpe ratio is deflated for the number of effectively
+   independent trials and for skewness and kurtosis (Bailey and López de Prado 2014); the
+   probability of backtest overfitting comes from combinatorially symmetric cross-validation
+   (Bailey, Borwein, López de Prado and Zhu 2017); combinatorial purged cross-validation gives a
+   distribution of out-of-sample Sharpe ratios.
+4. **Robustness:** the walk-forward again at 2x and 3x costs, the Sharpe ratio of neighbouring
+   parameter sets, and returns by year and by market regime (trend and volatility of a reference
+   symbol).
+
+| Gate (backtest) | Threshold |
+|---|---|
+| Walk-forward Sharpe ratio, net of costs | ≥ 1.0 (portfolio level; `--min-sharpe` for a component) |
+| Deflated Sharpe ratio | ≥ 0.95 |
+| Probability of backtest overfitting | ≤ 0.20 |
+| At 3x costs | still a positive return |
+| Median neighbouring parameter set's Sharpe / selected Sharpe | ≥ 0.5 |
+| Out-of-sample maximum drawdown | ≤ 12% (the 10% kill switch plus gaps) |
+
+Notes: Alpaca's free plan serves equity history from 2016, so the default first trading day is
+2017-01-01 (2016 warms up indicators). Sharpe ratios use a zero risk-free rate, the same as idle
+cash earns in the engine. A backtest has no operator, so a drawdown kill is followed by a
+simulated resume after `--resume-after-kill-days` (30); every kill is counted in the report. Only
+the 60/40 `benchmark` family is registered until Phase 5 adds the candidates
+(`src/trading/validation/candidates.py`).
 
 ## API
 
@@ -210,7 +253,7 @@ audit with pip-audit, and pytest.
 ```
 src/
 ├── main.py          # Flask app factory
-├── cli.py           # operator commands (create-admin, db)
+├── cli.py           # operator commands (create-admin, db, validate)
 ├── db_migrations.py # Alembic helpers; revisions live in migrations/
 ├── trading/         # the trading core (see docs/ARCHITECTURE.md)
 │   ├── domain.py    #   instruments, bars, orders and their lifecycle, fills
@@ -223,6 +266,7 @@ src/
 │   ├── broker.py    #   broker interface and the simulated broker
 │   ├── alpaca.py    #   Alpaca paper broker and trade-update stream
 │   ├── backtest.py  #   backtest runner
+│   ├── validation/  #   statistics, overfitting tests, walk-forward, gates, tear sheet
 │   ├── service.py   #   live engine thread; runtime.py wires it into the app
 │   └── ...          #   clock, calendar, feed, reconcile, persistence, lineup, safety
 ├── routes/          # REST endpoints
@@ -242,7 +286,7 @@ src/
 | 1 | Platform foundations: auth fixes, scoped API keys, token revocation, enforced rate limits, PostgreSQL + migrations, persisted audit log, dependency clean-up |
 | 2 | Event-driven core with identical backtest / paper / live code paths and broker reconciliation |
 | 3 | Risk engine: pre-trade controls, equity-based loss limits, kill switch, volatility-targeted sizing (done) |
-| 4 | Validation pipeline: walk-forward, purged cross-validation, deflated Sharpe ratio, overfitting tests |
+| 4 | Validation pipeline: walk-forward, purged cross-validation, deflated Sharpe ratio, overfitting tests (done) |
 | 5 | Strategy rebuild (trend, month-end rebalancing flows, crypto breakout, reversal), each admitted only if it passes the validation gates |
 | 6–8 | Operations, API and dashboard, CI quality gates |
 | 9 | Paper-trading soak, then a staged live ramp |

@@ -60,8 +60,9 @@ def reconcile(engine: Engine, broker: Broker) -> ReconciliationReport:
             adopted.append(client_order_id)
 
     closed = []
-    for client_order_id, order in list(engine.orders.items()):
-        if order.status.is_open and client_order_id not in broker_open:
+    for order in engine.open_orders():
+        client_order_id = order.client_order_id
+        if client_order_id not in broker_open:
             final = broker.order(client_order_id)
             if final is None or final.status.is_open:
                 # Never reached the broker (e.g. lost in a network failure)

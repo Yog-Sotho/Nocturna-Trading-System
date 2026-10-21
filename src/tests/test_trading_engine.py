@@ -590,7 +590,7 @@ class TestReconcile:
         broker.submit(OrderRequest("manual-9", "SPY", Side.BUY, D("1"), time_in_force=TimeInForce.GTC))
         from src.trading.domain import Order
         lost = Order.new(OrderRequest("lost-1", "SPY", Side.BUY, D("1")), engine.clock.now())
-        engine.orders["lost-1"] = lost
+        engine.sync_order(lost)
         report = reconcile(engine, broker)
         assert report.adopted_orders == ("manual-9",)
         assert report.closed_orders == ("lost-1",)

@@ -28,8 +28,9 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date
+from datetime import UTC, date, datetime
 from decimal import Decimal
+from functools import lru_cache
 
 import numpy as np
 
@@ -122,10 +123,15 @@ def stop_risk_weight(price: float, stop: float, risk: float = 0.005) -> float:
     return risk * price / (price - stop)
 
 
-def _session_date(bar: Bar, asset_class: AssetClass) -> date:
+@lru_cache(maxsize=1 << 16)
+def _day(start: datetime, asset_class: AssetClass) -> date:
     # Daily bars start at midnight: New York for equities, UTC for crypto
     zone = NEW_YORK if asset_class is AssetClass.EQUITY else UTC
-    return bar.start.astimezone(zone).date()
+    return start.astimezone(zone).date()
+
+
+def _session_date(bar: Bar, asset_class: AssetClass) -> date:
+    return _day(bar.start, asset_class)
 
 
 def ewma_covariance(history: Mapping[str, Sequence[Bar]], instruments: Mapping[str, Instrument],
@@ -145,8 +151,11 @@ def ewma_covariance(history: Mapping[str, Sequence[Bar]], instruments: Mapping[s
     returns = np.diff(np.log(prices), axis=0)
     seed = min(20, len(returns))
     cov = np.cov(returns[:seed].T, ddof=1).reshape(len(symbols), len(symbols))
-    for r in returns[seed:]:
-        cov = lam * cov + (1 - lam) * np.outer(r, r)
+    # The recursion cov <- lam * cov + (1 - lam) * r r' over the remaining returns, in closed form
+    tail = returns[seed:]
+    if len(tail):
+        weights = (1 - lam) * lam ** np.arange(len(tail) - 1, -1, -1)
+        cov = lam ** len(tail) * cov + (tail * weights[:, None]).T @ tail
     years = (common[-1] - common[0]).days / 365.25
     periods_per_year = len(returns) / years if years > 0 else 252.0
     return cov, periods_per_year

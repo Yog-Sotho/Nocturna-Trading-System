@@ -68,7 +68,7 @@ stock selection needs full-market real-time volume, which requires a $99/month d
 | 1 | Platform foundations: dependency clean-up with hashed lockfile, validated settings, auth fixes, DB-backed scoped API keys, token revocation, enforced rate limits, proxy-aware client IPs, Alembic migrations + PostgreSQL, persisted audit log | Done |
 | 2 | Event-driven core: domain model, event flow, one broker interface (simulated + Alpaca via `alpaca-py`), data layer with explicit ranges and closed bars, removal of the legacy engine and `alpaca-trade-api` | Done |
 | 3 | Risk engine: pre-trade controls (price collar, size/exposure caps, duplicate detection, kill switch), equity-based loss limits, volatility-targeted sizing, PDT logic removed | Done |
-| 4 | Validation pipeline: walk-forward, combinatorial purged cross-validation, deflated Sharpe, overfitting probability, cost stress, regime splits, tear sheets | Planned |
+| 4 | Validation pipeline: walk-forward, combinatorial purged cross-validation, deflated Sharpe, overfitting probability, cost stress, regime splits, tear sheets | Done |
 | 5 | Strategy rebuild per the lineup above, each gated by Phase 4 | Planned |
 | 6 | Operations: engine as its own service, structured logs, metrics, alerts, health/readiness, Docker/Compose fixes, backups, runbooks | Planned |
 | 7 | Versioned API with OpenAPI docs; dashboard rebuilt with source and auth | Planned |
@@ -90,8 +90,16 @@ stock selection needs full-market real-time volume, which requires a $99/month d
   applies its intraday margin rule instead. The engine uses no leverage (gross exposure is
   capped at 100% of equity).
 - The risk defaults are conservative and their cost in return has not yet been measured on
-  real equity data (no free equity history is reachable without Alpaca keys); Phase 4 measures
-  it and Phase 5 sets the final values with the lineup.
+  real equity data: equity history needs Alpaca keys, which the build environment does not
+  have. `flask validate benchmark` measures it on the operator's account. On one synthetic
+  14-year 60/40 path the defaults did not cost return (Sharpe 0.41 against 0.35 without the
+  kill switch and ladder) but the 10% kill switch tripped four times in 14 years, which the
+  12% drawdown gate would reject; Phase 5 sets the final limits with the lineup.
+- Phase 4 validates one candidate at a time. The 1.0 Sharpe gate is for the portfolio; a
+  component can be validated with `--min-sharpe`, and Phase 5 validates the combined lineup as
+  its own candidate.
+- Alpaca's free plan serves equity history from 2016: with 36 months of training, about six
+  years are out of sample.
 - The Alpaca adapter is tested against fakes with alpaca-py's real request models; its first
   run against a live paper account should be watched (order acknowledgements, fill events,
   crypto fee postings, position symbol formats).
