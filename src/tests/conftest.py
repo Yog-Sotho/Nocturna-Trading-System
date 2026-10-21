@@ -146,7 +146,7 @@ def sim_runtime(app):
     from src.trading.data import InMemoryBarSource
     from src.trading.lineup import build_lineup
     from src.trading.persistence import EngineRecorder
-    from src.trading.runtime import TradingRuntime
+    from src.trading.runtime import TradingRuntime, risk_limits, sizing_policy
     from src.trading.service import EngineService
 
     built = {}
@@ -159,7 +159,9 @@ def sim_runtime(app):
         recorder = EngineRecorder(flask_app)
         built.update(clock=clock, broker=broker)
         return EngineService(clock=clock, source=InMemoryBarSource(history, clock), broker=broker,
-                             allocations=build_lineup({"SPY": SPY, "IEF": IEF}), listeners=[recorder],
+                             allocations=build_lineup({"SPY": SPY, "IEF": IEF}),
+                             risk_limits=risk_limits(settings), sizing=sizing_policy(settings),
+                             risk_state=recorder.load_risk_state, listeners=[recorder],
                              snapshot_recorder=recorder.record_snapshot)
 
     settings = app.extensions["settings"].model_copy(

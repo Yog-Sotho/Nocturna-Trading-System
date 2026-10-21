@@ -23,6 +23,7 @@ from .domain import AssetClass, Bar, Fill, Order
 from .engine import Allocation, Engine, EngineEvent, EngineSnapshot
 from .ledger import Ledger
 from .risk import RiskGate, RiskLimits
+from .sizing import SizingPolicy
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ class BacktestConfig:
     starting_cash: Decimal = Decimal("100000")
     costs: Mapping[AssetClass, CostModel] = field(default_factory=lambda: dict(DEFAULT_COSTS))
     risk_limits: RiskLimits = field(default_factory=RiskLimits)
+    sizing: SizingPolicy = field(default_factory=SizingPolicy)
     delays: Mapping[AssetClass, timedelta] = field(default_factory=lambda: dict(DEFAULT_FEED_DELAY))
     participation: Decimal | None = None
 
@@ -105,7 +107,7 @@ def run_backtest(allocations: Sequence[Allocation], bars: Mapping[str, Sequence[
                              participation=config.participation)
     events: list[EngineEvent] = []
     engine = Engine(clock=clock, broker=broker, ledger=Ledger(config.starting_cash), allocations=allocations,
-                    risk=RiskGate(config.risk_limits), listeners=[events.append])
+                    risk=RiskGate(config.risk_limits), sizing=config.sizing, listeners=[events.append])
     engine.warm_up(warm_up)
 
     curve: list[tuple[datetime, Decimal]] = []

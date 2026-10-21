@@ -6,6 +6,11 @@ and whenever no fills are in flight, the engine is made to agree with it:
 unknown open orders are adopted, orders the broker has closed are updated,
 and position and cash differences are booked as ledger adjustments. Every
 difference is reported, so silent drift is impossible.
+
+An adjustment that raises equity (a deposit, a dividend) moves the risk
+gate's high-water mark with it, so it cannot mask a drawdown. One that lowers
+equity counts as a loss: a withdrawal can trip the kill switch, which fails
+safe, and resuming after a drawdown halt restarts the high-water mark.
 """
 
 from __future__ import annotations
@@ -67,6 +72,7 @@ def reconcile(engine: Engine, broker: Broker) -> ReconciliationReport:
 
     discrepancies = []
     ledger = engine.ledger
+    equity_before = engine.equity()
     held = broker.positions()
     for symbol in sorted(set(held) | set(ledger.positions)):
         mine, theirs = ledger.position(symbol).qty, held.get(symbol, Decimal("0"))
@@ -78,6 +84,10 @@ def reconcile(engine: Engine, broker: Broker) -> ReconciliationReport:
     if cash != ledger.cash:
         discrepancies.append(Discrepancy("cash", ledger.cash, cash))
         ledger.adjust_cash(cash - ledger.cash)
+    gain = engine.equity() - equity_before
+    if gain > 0:
+        engine.risk.adjust_for_flow(gain)
+        engine.emit_risk_state()
 
     report = ReconciliationReport(engine.clock.now(), tuple(discrepancies), tuple(adopted), tuple(closed))
     if not report.in_sync:

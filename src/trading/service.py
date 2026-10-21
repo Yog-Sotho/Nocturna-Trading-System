@@ -6,8 +6,9 @@ engine: HTTP handlers and the broker's trade-update stream put commands and
 updates on a queue that the engine thread executes in order, and read state
 only through the snapshot it publishes. The loop:
 
-* on start, builds the ledger from the broker account, adopts open orders,
-  loads warm-up history and acts on the newest bars,
+* on start, builds the ledger from the broker account, restores the risk
+  state (high-water mark, halt, daily counters), adopts open orders, loads
+  warm-up history and acts on the newest bars,
 * wakes when the next bar becomes final, polls the bar source and feeds new
   bars to the engine,
 * applies broker updates as they arrive,
@@ -24,7 +25,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -39,6 +40,7 @@ from .feed import PollingFeed
 from .ledger import Ledger
 from .reconcile import ReconciliationReport, reconcile
 from .risk import RiskDecision, RiskGate, RiskLimits
+from .sizing import SizingPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -60,13 +62,16 @@ class ServiceStatus:
 
 class EngineService:
     def __init__(self, *, clock: Clock, source: BarSource, broker: Broker, allocations: Sequence[Allocation],
-                 risk_limits: RiskLimits | None = None, listeners: Sequence[EngineListener] = (),
+                 risk_limits: RiskLimits | None = None, sizing: SizingPolicy | None = None,
+                 risk_state: Callable[[], Mapping[str, Any] | None] | None = None,
+                 listeners: Sequence[EngineListener] = (),
                  snapshot_recorder: Callable[[EngineSnapshot], None] | None = None,
                  stream: Any = None, timeframe: Timeframe = DAILY, warm_up: timedelta = timedelta(days=550),
                  poll_latency: timedelta = timedelta(seconds=5), retry_delay: timedelta = timedelta(minutes=1),
                  quiet_period: timedelta = timedelta(minutes=2)) -> None:
         """
         Args:
+            risk_state: Loads the risk state saved by the last run (None if there is none).
             stream: Optional object with start()/stop() that delivers broker updates
                 (e.g. TradeUpdateStream); started and stopped with the service.
             warm_up: How much history to load before trading.
@@ -78,6 +83,8 @@ class EngineService:
         self._broker = broker
         self._allocations = tuple(allocations)
         self._risk_limits = risk_limits or RiskLimits()
+        self._sizing = sizing
+        self._load_risk_state = risk_state
         self._listeners = list(listeners)
         self._snapshot_recorder = snapshot_recorder
         self._stream = stream
@@ -137,7 +144,7 @@ class EngineService:
 
     # -- commands (any thread) ----------------------------------------------
 
-    def halt(self, reason: str, flatten: bool = False) -> list[OrderRequest]:
+    def halt(self, reason: str, flatten: bool = False) -> list[str]:
         return self._call(lambda engine: engine.halt(reason, flatten=flatten))
 
     def resume(self) -> None:
@@ -173,8 +180,14 @@ class EngineService:
         """Build the engine from the broker account and load history."""
         now = self.clock.now()
         ledger = Ledger.from_account(self._broker.cash(), self._broker.cost_basis())
+        risk = RiskGate(self._risk_limits)
+        saved = self._load_risk_state() if self._load_risk_state is not None else None
+        if saved:
+            risk.restore(saved)
+            if risk.halted:
+                logger.warning("Trading stays halted after the restart: %s", risk.halt_reason)
         self.engine = Engine(clock=self.clock, broker=self._broker, ledger=ledger, allocations=self._allocations,
-                             risk=RiskGate(self._risk_limits), listeners=self._listeners)
+                             risk=risk, sizing=self._sizing, listeners=self._listeners)
         # Updates (from this thread or the stream's) are queued and applied in order
         self._broker.set_listener(self._enqueue_update)
         if self._stream is not None:

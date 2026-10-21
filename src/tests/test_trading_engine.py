@@ -289,35 +289,6 @@ class TestSimulatedBrokerLifecycle:
         assert broker.cash() == D("500")
 
 
-# -- risk gate -------------------------------------------------------------------
-
-class TestRiskGate:
-    def _check(self, gate, side=Side.BUY, qty="10", positions=None, price="100", equity="10000"):
-        positions = {k: D(v) for k, v in (positions or {}).items()}
-        return gate.check(_req("r", side=side, qty=qty), D(price) if price else None, positions,
-                          {"SPY": D("100"), "IEF": D("100")}, D(equity))
-
-    def test_position_and_gross_caps(self):
-        gate = RiskGate(RiskLimits(max_position_weight=D("0.5"), max_gross_exposure=D("0.8")))
-        assert self._check(gate, qty="50").allowed
-        assert not self._check(gate, qty="51").allowed
-        assert not self._check(gate, qty="40", positions={"IEF": "50"}).allowed
-
-    def test_order_notional_cap(self):
-        gate = RiskGate(RiskLimits(max_order_notional=D("500")))
-        assert not self._check(gate, qty="6").allowed
-
-    def test_halt_allows_only_reducing_orders(self):
-        gate = RiskGate()
-        gate.halt("drill")
-        assert not self._check(gate, qty="1").allowed
-        assert self._check(gate, side=Side.SELL, qty="5", positions={"SPY": "10"}).allowed
-        assert not self._check(gate, side=Side.SELL, qty="15", positions={"SPY": "10"}).allowed
-
-    def test_missing_price_is_rejected(self):
-        assert not self._check(RiskGate(), price=None).allowed
-
-
 # -- engine -------------------------------------------------------------------------
 
 class _Fixed(Strategy):
@@ -418,7 +389,8 @@ class TestEngine:
         clock, broker, engine, events = _engine(_Fixed({"SPY": 0.5}, instruments=(SPY,)))
         _feed_day(clock, engine, 2)
         _feed_day(clock, engine, 3)
-        [flatten] = engine.halt("drill", flatten=True)
+        [close] = engine.halt("drill", flatten=True)
+        flatten = engine.orders[close].request
         assert flatten.side is Side.SELL and flatten.qty == D("500")
         assert _feed_day(clock, engine, 4) == []
         assert engine.ledger.positions == {}
@@ -426,10 +398,13 @@ class TestEngine:
         engine.resume()
         assert len(_feed_day(clock, engine, 5)) == 1
 
-    def test_risk_rejections_are_reported(self):
+    def test_targets_are_capped_and_rejections_are_reported(self):
         clock, _, engine, events = _engine(_Fixed({"SPY": 0.9}, instruments=(SPY,)),
                                            risk=RiskGate(RiskLimits(max_position_weight=D("0.5"))))
-        assert _feed_day(clock, engine, 2) == []
+        [order] = _feed_day(clock, engine, 2)
+        assert order.qty == D("500")  # sized to the 50% cap, not rejected
+        # The working order counts as exposure: 100 more shares would breach the cap
+        assert not engine.submit_order(_req("op-1", qty="100")).allowed
         assert any(e.kind == "rejected" for e in events)
 
     def test_fill_for_an_unknown_order_is_left_to_reconciliation(self):

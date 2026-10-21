@@ -104,6 +104,14 @@ def get_status():
                 halt_reason=snapshot.halt_reason or None, open_orders=len(snapshot.open_orders),
                 positions=len(snapshot.positions),
             )
+            risk = snapshot.risk
+            data['risk'] = {
+                'halt_kind': risk.halt_kind or None, 'drawdown': _num(risk.drawdown),
+                'high_water_mark': _num(risk.high_water_mark), 'cooling_down': risk.cooling_down,
+                'orders_today': risk.orders_today, 'turnover_today': _num(risk.turnover_today),
+                'predicted_volatility': risk.predicted_volatility,
+                'volatility_scale': _num(risk.volatility_scale), 'drawdown_scale': _num(risk.drawdown_scale),
+            }
         report = status.last_reconciliation
         if report is not None:
             data['last_reconciliation'] = {
@@ -263,7 +271,10 @@ def stop_engine():
 @require_auth
 @require_admin
 def resume_engine():
-    """Lift a halt (kill switch) so strategies trade again."""
+    """
+    Lift a halt so strategies trade again. After a drawdown kill the
+    high-water mark restarts at the current equity.
+    """
     service = _runtime().service
     try:
         if service is None:

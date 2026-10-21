@@ -1,18 +1,20 @@
 """
 NOCTURNA Trading System - Recording engine history.
 
-An engine listener that writes orders, fills and notable events to the
-database. It runs on the engine's thread with its own app context; a database
-failure is logged and never stops trading.
+An engine listener that writes orders, fills, the risk state and notable
+events to the database. It runs on the engine's thread with its own app
+context; a database failure is logged and never stops trading.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
+from typing import Any
 
 from flask import Flask
 
-from src.models.trading import EquitySnapshot, TradingFill, TradingOrder
+from src.models.trading import EquitySnapshot, RiskStateRecord, TradingFill, TradingOrder
 from src.models.user import db
 from src.utils.audit import record_audit_event
 
@@ -25,6 +27,7 @@ logger = logging.getLogger(__name__)
 _AUDITED = {
     "halt": True,
     "resume": True,
+    "kill_switch": True,
     "reconciled": True,
     "rejected": False,
     "strategy_error": False,
@@ -44,6 +47,8 @@ class EngineRecorder:
                     self._save_order(event.order)
                 elif event.kind == "fill" and event.fill is not None:
                     self._save_fill(event.fill)
+                elif event.kind == "risk_state" and event.data is not None:
+                    self._save_risk_state(event.data, event)
                 db.session.commit()
             except Exception:
                 db.session.rollback()
@@ -53,6 +58,12 @@ class EngineRecorder:
                 if event.fill is not None:
                     details.update(symbol=event.fill.symbol, qty=str(event.fill.qty), price=str(event.fill.price))
                 record_audit_event(f"ENGINE_{event.kind.upper()}", _AUDITED[event.kind], details)
+
+    def load_risk_state(self) -> dict[str, Any] | None:
+        """The risk state saved by the last run, or None."""
+        with self._app.app_context():
+            row = db.session.get(RiskStateRecord, 1)
+            return dict(row.state) if row is not None else None
 
     def record_snapshot(self, snapshot: EngineSnapshot) -> None:
         with self._app.app_context():
@@ -88,6 +99,15 @@ class EngineRecorder:
         row.avg_fill_price = order.avg_fill_price
         row.reason = order.reason or None
         row.updated_at = order.updated_at
+
+    @staticmethod
+    def _save_risk_state(state: Mapping[str, Any], event: EngineEvent) -> None:
+        row = db.session.get(RiskStateRecord, 1)
+        if row is None:
+            row = RiskStateRecord(id=1)
+            db.session.add(row)
+        row.state = dict(state)
+        row.updated_at = event.timestamp
 
     @staticmethod
     def _save_fill(fill: Fill) -> None:

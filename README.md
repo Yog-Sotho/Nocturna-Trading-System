@@ -21,7 +21,8 @@ trading; only the clock, the market-data source and the broker are swapped. See
 
 | Component | Location | State |
 |---|---|---|
-| Trading core: domain model, ledger, engine, risk gate, strategy interface | `src/trading/` | Working; property-tested accounting |
+| Trading core: domain model, ledger, engine, strategy interface | `src/trading/` | Working; property-tested accounting |
+| Risk engine: pre-trade gate, drawdown kill switch, daily loss limit, volatility-targeted sizing with a drawdown ladder | `src/trading/risk.py`, `sizing.py` | Working; limits are configurable, defaults below |
 | Backtester (simulated clock and broker, cost model, no look-ahead) | `src/trading/backtest.py` | Working; validation statistics arrive in Phase 4 |
 | Paper trading on Alpaca (`alpaca-py`): broker adapter, trade-update stream, polling data feed, reconciliation | `src/trading/alpaca.py`, `service.py` | Working against fakes and Alpaca's real request models; not yet run against a live paper account |
 | Strategies | `src/trading/strategies/` | Only a 60/40 SPY/IEF benchmark; the validated lineup arrives in Phase 5 |
@@ -31,8 +32,6 @@ trading; only the clock, the market-data source and the broker are swapped. See
 
 ### Known limitations
 
-- Risk controls are basic: position, gross-exposure and order-size caps plus a kill switch.
-  Loss limits, drawdown stops and volatility-targeted sizing arrive in Phase 3.
 - No strategy has an edge yet: the engine runs a benchmark portfolio until strategies pass
   the Phase 4 validation gates.
 - The engine runs inside the web worker; Phase 6 moves it into its own service.
@@ -78,6 +77,34 @@ In the Docker image the production entry point is
 `gunicorn -c gunicorn.conf.py 'src.main:create_app()'`. It runs a single, never-recycled
 worker because the engine lives in that process.
 
+## Risk controls
+
+Every order, from a strategy or an operator, passes one risk gate before it reaches the
+broker, and the book is sized by the same rules in backtests and in paper trading
+(details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#risk)). Defaults, all fractions of
+account equity and configurable through `RISK_*` / `SIZING_*` variables:
+
+| Control | Default |
+|---|---|
+| Drawdown kill switch: halt and close every position | 10% below the equity high-water mark |
+| Drawdown ladder: exposure shrinks linearly from the start to 25% at the kill limit | from 5% drawdown |
+| Daily loss limit: no new risk for the rest of the New York day | 3% |
+| Portfolio volatility target (EWMA, lambda 0.94; scales down only, never levers up) | 8% a year |
+| Largest position / crypto in total / gross exposure (no leverage) | 60% / 15% / 100% |
+| Single order (fat finger) | 60% of equity, and `RISK_MAX_ORDER_NOTIONAL` dollars if set |
+| Limit price collar around the last close | 5% |
+| The same symbol, side and quantity again | refused for 5 minutes |
+| Orders / turnover per New York day | 50 / 2x equity |
+| Market data: newest bar older than / one-bar move larger than | equities 5 days / 25%, crypto 2 days / 50% |
+| Rebalance band: positions are adjusted only when this far from target | 2% |
+
+Orders that only reduce a position skip the daily breakers and data checks, so the book can
+always be reduced. The gate's state (high-water mark, halt, daily counters) is stored in the
+database and restored on restart, so a halt survives a redeploy. After a drawdown halt,
+`POST /api/trading/control/resume` restarts the high-water mark at the current equity.
+Strategies with protective stops size positions with `stop_risk_weight` (0.5% of equity at
+risk per trade by default).
+
 ## API
 
 All endpoints except `/health`, `/api/version`, `/api/trading/health` and the login and
@@ -116,13 +143,13 @@ are limited to 1 MB.
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/health` | public; engine state only |
-| GET | `/status` | engine state, equity, cash, P&L, fees, halt, last reconciliation |
+| GET | `/status` | engine state, equity, cash, P&L, fees, halt, last reconciliation; `risk`: drawdown, high-water mark, cool-down, today's orders and turnover, predicted volatility and the volatility and drawdown scales |
 | GET | `/positions`, `/targets` | live, from the running engine (409 when it is not running) |
 | GET | `/orders` | working orders and order history (`?limit=`, newest first) |
 | GET | `/fills`, `/equity-curve` | trading history (`?limit=`) |
 | POST | `/orders` | trader; body `{"symbol": "SPY", "side": "buy", "qty": "10", "order_type": "market", "time_in_force": "day", "limit_price": null, "stop_price": null}`; passes the same risk gate as strategy orders (422 with the reason when refused) |
 | POST | `/orders/<client_order_id>/cancel` | trader |
-| POST | `/control/start`, `/control/stop`, `/control/resume` | admin; resume lifts a halt |
+| POST | `/control/start`, `/control/stop`, `/control/resume` | admin; resume lifts a halt (after a drawdown halt it also restarts the high-water mark) |
 | POST | `/emergency-stop` | admin; body `{"reason": "...", "close_all_positions": true}`. Halts the engine and cancels its orders; with `close_all_positions` also closes every position. Works when the engine is not running by asking Alpaca directly |
 
 ## Configuration
@@ -139,6 +166,7 @@ to start and lists every problem if the configuration is unsafe. The ones that m
 | `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` | Alpaca paper account; without them the API works but the engine cannot start |
 | `ALPACA_BASE_URL` | Optional; must be the paper endpoint |
 | `ENGINE_AUTOSTART` | Start the engine with the server (default false) |
+| `RISK_*`, `SIZING_*` | Risk limits and sizing; see [Risk controls](#risk-controls) and `.env.example` |
 | `DATABASE_URL` | Defaults to SQLite at `src/database/nocturna.db`; PostgreSQL is required in production (`postgresql://...` URLs use the psycopg 3 driver) |
 | `ALLOWED_ORIGINS` | Required in production (CORS allowlist) |
 | `TRUSTED_PROXY_COUNT` | Number of reverse proxies in front of the app (default 0). Set it behind nginx or a load balancer, or every client shares the proxy's IP for rate limits and login lockout |
@@ -188,7 +216,8 @@ src/
 │   ├── domain.py    #   instruments, bars, orders and their lifecycle, fills
 │   ├── ledger.py    #   cash, positions, P&L
 │   ├── engine.py    #   targets -> orders -> risk gate -> broker
-│   ├── risk.py      #   pre-trade risk gate and kill switch
+│   ├── risk.py      #   pre-trade risk gate, loss limits and the kill switch
+│   ├── sizing.py    #   caps, volatility target, drawdown ladder, stop-risk sizing
 │   ├── strategy.py  #   strategy interface; strategies/ holds the strategies
 │   ├── data.py      #   bar sources (in-memory, Alpaca) and the closed-bar rule
 │   ├── broker.py    #   broker interface and the simulated broker
@@ -212,7 +241,7 @@ src/
 | 0 | Safety freeze: paper-only guard, closed registration, no fabricated data, truthful docs |
 | 1 | Platform foundations: auth fixes, scoped API keys, token revocation, enforced rate limits, PostgreSQL + migrations, persisted audit log, dependency clean-up |
 | 2 | Event-driven core with identical backtest / paper / live code paths and broker reconciliation |
-| 3 | Risk engine: pre-trade controls, equity-based loss limits, kill switch, volatility-targeted sizing |
+| 3 | Risk engine: pre-trade controls, equity-based loss limits, kill switch, volatility-targeted sizing (done) |
 | 4 | Validation pipeline: walk-forward, purged cross-validation, deflated Sharpe ratio, overfitting tests |
 | 5 | Strategy rebuild (trend, month-end rebalancing flows, crypto breakout, reversal), each admitted only if it passes the validation gates |
 | 6–8 | Operations, API and dashboard, CI quality gates |

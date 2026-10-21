@@ -207,10 +207,12 @@ class SimulatedBroker:
         sent = []
         for symbol, position in self._book.positions.items():
             instrument = self.instruments[symbol]
-            tif = TimeInForce.GTC
+            qty = instrument.round_qty(abs(position.qty))
+            if qty < instrument.min_qty:
+                continue  # dust below the smallest order (crypto fees are taken in the asset)
             request = OrderRequest(f"close-all-{self._sequence + 1}", symbol,
-                                   Side.SELL if position.qty > 0 else Side.BUY,
-                                   instrument.round_qty(abs(position.qty)), time_in_force=tif, tag="close-all")
+                                   Side.SELL if position.qty > 0 else Side.BUY, qty,
+                                   time_in_force=TimeInForce.GTC, tag="close-all")
             self.submit(request)
             sent.append(request.client_order_id)
         return sent

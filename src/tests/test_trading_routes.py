@@ -44,6 +44,10 @@ class TestEngineLifecycle:
         assert data["state"] == "running" and data["configured"] is True
         assert data["equity"] == "100000" and data["open_orders"] == 2  # the 60/40 opening orders
         assert data["last_reconciliation"]["in_sync"] is True
+        risk = data["risk"]
+        assert risk["drawdown"] == "0" and risk["halt_kind"] is None and risk["cooling_down"] is False
+        assert risk["orders_today"] == 2 and risk["drawdown_scale"] == "1"
+        assert risk["predicted_volatility"] > 0 and 0 < float(risk["volatility_scale"]) <= 1
         assert client.post("/api/trading/control/start", headers=admin_headers).status_code == 409
 
     def test_targets_and_working_orders(self, client, admin_headers, auth_headers, sim_runtime):

@@ -12,6 +12,10 @@ new closed bars arrive it:
    sized to equity and cash, sells first,
 5. sends every order through the risk gate to the broker.
 
+Between 3 and 4 the sizer caps the targets, scales them to the volatility
+target and shrinks them as the drawdown grows; after the mark-to-market in 2
+the risk gate may trip the drawdown kill switch or start a cool-down.
+
 Broker reports come back through ``on_order_update`` and are booked in the
 ledger. Nothing here reads the wall clock: time comes from the injected Clock.
 """
@@ -25,6 +29,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from decimal import Decimal
+from typing import Any
 
 from .broker import Broker
 from .calendar import TradingCalendar
@@ -44,7 +49,8 @@ from .domain import (
     TimeInForce,
 )
 from .ledger import Ledger
-from .risk import RiskDecision, RiskGate
+from .risk import OrderContext, RiskDecision, RiskGate
+from .sizing import PortfolioSizer, SizingPolicy, SizingResult
 from .strategy import Strategy, StrategyContext
 
 logger = logging.getLogger(__name__)
@@ -70,7 +76,8 @@ class Allocation:
 class EngineEvent:
     """
     Something worth recording. ``kind`` is one of: order, fill, rejected,
-    strategy_error, broker_error, unknown_fill, reconciled, halt, resume.
+    strategy_error, broker_error, unknown_fill, reconciled, halt, resume,
+    kill_switch, risk_state (``data`` holds the risk state to persist).
     """
 
     kind: str
@@ -78,6 +85,7 @@ class EngineEvent:
     order: Order | None = None
     fill: Fill | None = None
     detail: str = ""
+    data: Mapping[str, Any] | None = None
 
 
 EngineListener = Callable[[EngineEvent], None]
@@ -94,6 +102,19 @@ class PositionView:
 
 
 @dataclass(frozen=True)
+class RiskView:
+    drawdown: Decimal
+    high_water_mark: Decimal | None
+    cooling_down: bool
+    orders_today: int
+    turnover_today: Decimal
+    predicted_volatility: float | None
+    volatility_scale: Decimal
+    drawdown_scale: Decimal
+    halt_kind: str
+
+
+@dataclass(frozen=True)
 class EngineSnapshot:
     timestamp: datetime
     equity: Decimal
@@ -106,6 +127,7 @@ class EngineSnapshot:
     halted: bool
     halt_reason: str
     last_bar_end: dict[str, datetime]
+    risk: RiskView
 
 
 def _decimal(value: float) -> Decimal:
@@ -118,12 +140,13 @@ def _slug(symbol: str) -> str:
 
 class Engine:
     def __init__(self, *, clock: Clock, broker: Broker, ledger: Ledger, allocations: Sequence[Allocation],
-                 risk: RiskGate | None = None, min_trade_fraction: Decimal = Decimal("0.002"),
+                 risk: RiskGate | None = None, sizing: SizingPolicy | None = None,
                  cash_buffer: Decimal = Decimal("0.005"), listeners: Sequence[EngineListener] = ()) -> None:
         """
         Args:
-            min_trade_fraction: Skip adjustments smaller than this fraction of equity
-                (avoids churning on rounding), except when closing a position.
+            risk: Risk gate; default limits when omitted.
+            sizing: Sizing policy (volatility target, drawdown ladder, rebalance band);
+                the conservative defaults when omitted.
             cash_buffer: Fraction of equity kept unspent to absorb slippage and fees.
 
         Raises:
@@ -142,8 +165,9 @@ class Engine:
         self.ledger = ledger
         self.allocations = tuple(allocations)
         self.risk = risk or RiskGate()
-        self.min_trade_fraction = min_trade_fraction
+        self.sizer = PortfolioSizer(sizing or SizingPolicy(), self.risk.limits)
         self.cash_buffer = cash_buffer
+        self.last_sizing: SizingResult | None = None
         self._listeners = list(listeners)
 
         self.instruments: dict[str, Instrument] = {}
@@ -154,7 +178,7 @@ class Engine:
                 if known != instrument:
                     raise ValueError(f"conflicting definitions for {instrument.symbol}")
                 lookbacks[instrument.symbol] = max(lookbacks.get(instrument.symbol, 1),
-                                                   allocation.strategy.lookback)
+                                                   allocation.strategy.lookback, self.sizer.lookback)
         self._history: dict[str, deque[Bar]] = {s: deque(maxlen=n) for s, n in lookbacks.items()}
         self._targets: dict[str, dict[str, Decimal]] = {}
         self.orders: dict[str, Order] = {}
@@ -174,6 +198,9 @@ class Engine:
                 listener(event)
             except Exception:
                 logger.exception("Engine listener failed on %s event", kind)
+
+    def emit_risk_state(self) -> None:
+        self._emit("risk_state", data=self.risk.state_dict())
 
     # -- market data --------------------------------------------------------
 
@@ -206,11 +233,18 @@ class Engine:
         if not new:
             return []
         self.broker.on_bars(new)
+        equity = self.equity()
+        if self.risk.on_equity(equity, self.clock.now()) == "kill":
+            self._emit("kill_switch", detail=self.risk.halt_reason)
+            self._guarded(lambda: self.halt(self.risk.halt_reason, flatten=self.risk.limits.flatten_on_kill,
+                                            kind="drawdown"))
+            return []
         if self.risk.halted:
+            if self._liquidation_incomplete():
+                self._guarded(self._liquidate)  # the kill switch's liquidation failed: retry
+            self.emit_risk_state()
             return []
 
-        changed = False
-        equity = self.equity()
         for allocation in self.allocations:
             strategy = allocation.strategy
             symbols = [i.symbol for i in strategy.instruments]
@@ -233,11 +267,14 @@ class Engine:
                     raise ValueError(f"targets for symbols outside the strategy: {sorted(unknown)}")
                 self._targets[strategy.name] = {
                     s: _decimal(float(weights.get(s, 0.0))).quantize(WEIGHT_SCALE) for s in symbols}
-                changed = True
             except Exception as e:
                 logger.exception("Strategy %s failed", strategy.name)
                 self._emit("strategy_error", detail=f"{strategy.name}: {e}")
-        return self.rebalance() if changed else []
+        # Rebalance on every new bar, not only when targets change: volatility and
+        # drawdown scaling move with the market. The rebalance band prevents churn.
+        sent = self.rebalance() if self._targets else []
+        self.emit_risk_state()
+        return sent
 
     # -- account state ------------------------------------------------------
 
@@ -297,16 +334,22 @@ class Engine:
         if equity <= 0:
             return []
         exposure = self.exposure()
+        targets = {}
+        for symbol, weight in self.target_weights().items():
+            if weight < 0 and not self.instruments[symbol].shortable:
+                logger.warning("Ignoring short target for %s, which cannot be shorted", symbol)
+                weight = ZERO
+            targets[symbol] = weight
+        self.last_sizing = self.sizer.size(targets, self._history, self.instruments, self.risk.drawdown)
+        band = self.sizer.policy.rebalance_band
+
         sells: list[tuple[Instrument, Decimal, Decimal]] = []
         buys: list[tuple[Instrument, Decimal, Decimal]] = []
-        for symbol, weight in self.target_weights().items():
+        for symbol, weight in self.last_sizing.weights.items():
             instrument = self.instruments[symbol]
             price = self.prices.get(symbol)
             if price is None:
                 continue
-            if weight < 0 and not instrument.shortable:
-                logger.warning("Ignoring short target for %s, which cannot be shorted", symbol)
-                weight = ZERO
             current = exposure.get(symbol, ZERO)
             target = instrument.round_qty(weight * equity / price)
             # Positions can sit off the increment grid (crypto fees are taken in the
@@ -315,8 +358,10 @@ class Engine:
             closing = target == 0 and current != 0
             if abs(delta) < instrument.min_qty:
                 continue
-            if not closing and abs(delta) * price < self.min_trade_fraction * equity:
-                continue
+            if not closing and abs(delta) * price < band * equity:
+                continue  # inside the rebalance band
+            if self.risk.cooling_down and abs(current + delta) >= abs(current):
+                continue  # during a cool-down only risk-reducing trades
             (sells if delta < 0 else buys).append((instrument, delta, price))
 
         # Buys are funded by cash and by proceeds from reducing longs, never by shorting
@@ -347,12 +392,22 @@ class Engine:
             return RiskDecision(False, "duplicate client_order_id")
         if request.symbol not in self.instruments:
             return RiskDecision(False, f"unknown symbol {request.symbol}")
-        decision = self.risk.check(request, self.prices.get(request.symbol), self.exposure(), self._marks(),
-                                   self.equity())
+        now = self.clock.now()
+        price = self.prices.get(request.symbol)
+        history = self._history.get(request.symbol) or ()
+        jump = None
+        if len(history) >= 2 and history[-2].close > 0:
+            jump = abs(_decimal(history[-1].close / history[-2].close) - 1)
+        context = OrderContext(
+            now=now, price=price, exposure=self.exposure(), prices=self._marks(),
+            asset_classes={s: i.asset_class for s, i in self.instruments.items()}, equity=self.equity(),
+            last_bar_end=history[-1].end if history else None, price_jump=jump)
+        decision = self.risk.check(request, context)
         if not decision.allowed:
             logger.warning("Risk gate rejected %s: %s", request.client_order_id, decision.reason)
             self._emit("rejected", detail=f"{request.client_order_id}: {decision.reason}")
             return decision
+        self.risk.record(request, price, now)
         order = Order.new(request, self.clock.now())
         self.orders[request.client_order_id] = order
         self._emit("order", order=order)
@@ -361,7 +416,10 @@ class Engine:
 
     def submit_order(self, request: OrderRequest) -> RiskDecision:
         """An operator's order: same risk gate and broker path as strategy orders."""
-        return self._send(request)
+        decision = self._send(request)
+        if decision.allowed:
+            self.emit_risk_state()
+        return decision
 
     def cancel_order(self, client_order_id: str) -> bool:
         """Ask the broker to cancel a working order; False if the engine has no such open order."""
@@ -401,41 +459,65 @@ class Engine:
 
     # -- kill switch --------------------------------------------------------
 
-    def halt(self, reason: str, flatten: bool = False) -> list[OrderRequest]:
+    def halt(self, reason: str, flatten: bool = False, kind: str = "manual") -> list[str]:
         """
-        Stop trading: cancel every open order and, with ``flatten``, close every
-        position with market orders. Returns the closing orders sent.
+        Stop trading (the kill switch): only position-reducing orders pass the
+        risk gate until ``resume``. Without ``flatten`` every open order is
+        cancelled. With ``flatten`` the broker's own liquidation cancels every
+        order and closes every position: the broker sequences cancels and closes
+        correctly, which separate engine orders cannot while cancels are still
+        in flight. The liquidation orders are adopted so their fills are booked.
+
+        Returns:
+            Client order ids of the liquidation orders (empty without ``flatten``).
         """
-        self.risk.halt(reason)
+        self.risk.halt(reason, kind=kind, now=self.clock.now())
         self._emit("halt", detail=reason)
-        for order in list(self.orders.values()):
-            if order.status.is_open:
-                self.broker.cancel(order.client_order_id)
+        self.emit_risk_state()
         if not flatten:
+            for order in list(self.orders.values()):
+                if order.status.is_open:
+                    self.broker.cancel(order.client_order_id)
             return []
-        now = self.clock.now()
-        sent = []
+        return self._liquidate()
+
+    def _liquidate(self) -> list[str]:
+        ids = self.broker.close_all()
+        for order in self.broker.open_orders():
+            if order.client_order_id not in self.orders:
+                self.sync_order(order)
+        return ids
+
+    def _liquidation_incomplete(self) -> bool:
+        """After a drawdown kill with flatten: positions left and nothing working to close them."""
+        if self.risk.state.halt_kind != "drawdown" or not self.risk.limits.flatten_on_kill:
+            return False
+        if any(o.status.is_open for o in self.orders.values()):
+            return False
         for symbol, position in self.ledger.positions.items():
             instrument = self.instruments.get(symbol)
-            qty = instrument.round_qty(abs(position.qty)) if instrument else abs(position.qty)
-            if instrument and qty < instrument.min_qty:
-                continue  # dust below the broker's minimum
-            side = Side.SELL if position.qty > 0 else Side.BUY
-            tif = self._time_in_force(instrument, now) if instrument else TimeInForce.DAY
-            request = OrderRequest(f"nt-{now:%y%m%d%H%M%S}-{_slug(symbol)}-x", symbol, side, qty,
-                                   OrderType.MARKET, tif, tag="flatten")
-            if self._send(request).allowed:
-                sent.append(request)
-        return sent
+            if instrument is None or instrument.round_qty(abs(position.qty)) >= instrument.min_qty:
+                return True
+        return False
+
+    def _guarded(self, action: Callable[[], object]) -> None:
+        """Run an automatic risk action; a broker failure is reported and retried on the next bar."""
+        try:
+            action()
+        except Exception as e:
+            logger.exception("Automatic liquidation failed")
+            self._emit("broker_error", detail=f"kill switch liquidation failed: {e}")
 
     def resume(self) -> None:
-        self.risk.resume()
+        self.risk.resume(self.equity())
         self._emit("resume")
+        self.emit_risk_state()
 
     # -- reporting ----------------------------------------------------------
 
     def snapshot(self) -> EngineSnapshot:
         marks = self._marks()
+        sizing = self.last_sizing
         positions = tuple(
             PositionView(s, p.qty, p.avg_price, marks[s], p.market_value(marks[s]), p.unrealized_pnl(marks[s]))
             for s, p in sorted(self.ledger.positions.items()))
@@ -451,4 +533,15 @@ class Engine:
             halted=self.risk.halted,
             halt_reason=self.risk.halt_reason,
             last_bar_end={s: h[-1].end for s, h in self._history.items() if h},
+            risk=RiskView(
+                drawdown=self.risk.drawdown,
+                high_water_mark=self.risk.state.high_water_mark,
+                cooling_down=self.risk.cooling_down,
+                orders_today=self.risk.state.orders_today,
+                turnover_today=self.risk.state.turnover_today,
+                predicted_volatility=sizing.volatility if sizing else None,
+                volatility_scale=sizing.volatility_scale if sizing else Decimal("1"),
+                drawdown_scale=sizing.drawdown_scale if sizing else Decimal("1"),
+                halt_kind=self.risk.state.halt_kind,
+            ),
         )

@@ -3,12 +3,14 @@ NOCTURNA Trading System - Trading history models.
 
 The broker is the source of truth for current state; these tables keep the
 history: every order the engine placed with its latest status, every fill,
-and periodic equity snapshots for performance reporting.
+and periodic equity snapshots for performance reporting. The one exception
+is the risk gate's state, which no broker knows: its single row is restored
+on restart, so a halt or a drawdown high-water mark survives it.
 """
 
 from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, Column, Integer, Numeric, String, Text
+from sqlalchemy import JSON, Boolean, Column, Integer, Numeric, String, Text
 
 from .user import UTCDateTime, db
 
@@ -108,3 +110,13 @@ class EquitySnapshot(db.Model):
             'fees': str(self.fees),
             'halted': self.halted,
         }
+
+
+class RiskStateRecord(db.Model):
+    """The risk gate's state (``RiskGate.state_dict``); a single row with id 1."""
+
+    __tablename__ = 'risk_state'
+
+    id = Column(Integer, primary_key=True)
+    state = Column(JSON, nullable=False)
+    updated_at = Column(UTCDateTime, nullable=False)
