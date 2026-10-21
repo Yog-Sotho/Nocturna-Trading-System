@@ -287,7 +287,7 @@ class EngineService:
 
     def _maybe_reconcile(self) -> None:
         engine = self.engine
-        if any(o.status.is_open for o in engine.orders.values()):
+        if engine.open_orders():
             return
         if self._last_update is not None and self.clock.now() - self._last_update < self._quiet_period:
             return

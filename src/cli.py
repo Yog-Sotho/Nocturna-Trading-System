@@ -4,7 +4,12 @@ NOCTURNA Trading System - Operator CLI commands.
 Usage:
     flask --app src.main create-admin --email ops@example.com
     flask --app src.main db current|upgrade|downgrade|check|revision
+    flask --app src.main validate benchmark --start 2017-01-01 --output reports/benchmark.md
 """
+
+import json
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import click
 from alembic import command
@@ -85,3 +90,63 @@ def register_cli(app: Flask) -> None:
     def db_revision(message: str) -> None:
         """Autogenerate a revision from model changes (review it before committing)."""
         command.revision(db_migrations.alembic_config(), message=message, autogenerate=True)
+
+    @app.cli.command("validate")
+    @click.argument("candidate")
+    @click.option("--start", type=click.DateTime(["%Y-%m-%d"]), default="2017-01-01", show_default=True,
+                  help="First day traded; the year before it warms up indicators (equity data starts in 2016).")
+    @click.option("--end", type=click.DateTime(["%Y-%m-%d"]), default=None, help="Last day (default: today).")
+    @click.option("--output", type=click.Path(dir_okay=False, path_type=Path), default=None,
+                  help="Write the Markdown tear sheet here, and the JSON report next to it.")
+    @click.option("--resume-after-kill-days", type=click.IntRange(min=0), default=30, show_default=True,
+                  help="Simulated operator: days after a drawdown kill before trading resumes.")
+    @click.option("--train-months", type=click.IntRange(min=1), default=36, show_default=True)
+    @click.option("--test-months", type=click.IntRange(min=1), default=12, show_default=True)
+    @click.option("--min-sharpe", type=float, default=None,
+                  help="Out-of-sample Sharpe gate (default 1.0, the portfolio-level gate).")
+    def validate_candidate(candidate: str, start: datetime, end: datetime | None, output: Path | None,
+                           resume_after_kill_days: int, train_months: int, test_months: int,
+                           min_sharpe: float | None) -> None:
+        """Validate CANDIDATE against the promotion gates on Alpaca data. Exit code 1 means rejected."""
+        from src.trading.backtest import BacktestConfig
+        from src.trading.runtime import TradingNotConfiguredError, risk_limits, sizing_policy
+        from src.trading.validation import market
+        from src.trading.validation.candidates import CANDIDATES
+        from src.trading.validation.experiment import WalkForwardConfig
+        from src.trading.validation.gates import PromotionGates
+        from src.trading.validation.pipeline import ValidationConfig, validate
+
+        spec = CANDIDATES.get(candidate)
+        if spec is None:
+            raise click.ClickException(f"unknown candidate {candidate!r}; known: {', '.join(sorted(CANDIDATES))}")
+        settings = current_app.extensions["settings"]
+        start = start.replace(tzinfo=UTC)
+        end = (end.replace(tzinfo=UTC) if end else datetime.now(UTC)).replace(hour=0, minute=0, second=0,
+                                                                              microsecond=0)
+        if end <= start:
+            raise click.ClickException("--end must be after --start")
+        try:
+            instruments, bars = market.load(settings, spec.symbols, start - timedelta(days=400), end)
+        except TradingNotConfiguredError as e:
+            raise click.ClickException(str(e)) from e
+        gates = PromotionGates() if min_sharpe is None else PromotionGates(min_oos_sharpe=min_sharpe)
+        config = ValidationConfig(
+            BacktestConfig(start=start, end=end, risk_limits=risk_limits(settings), sizing=sizing_policy(settings),
+                           resume_after_kill=timedelta(days=resume_after_kill_days)),
+            walk_forward=WalkForwardConfig(train_months, test_months), gates=gates)
+        click.echo(f"Validating {candidate} ({spec.description}) from {start:%Y-%m-%d} to {end:%Y-%m-%d}...")
+        try:
+            report = validate(spec.build(instruments), bars, config)
+        except ValueError as e:
+            raise click.ClickException(str(e)) from e
+        markdown = report.to_markdown()
+        if output is None:
+            click.echo(markdown)
+        else:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(markdown, encoding="utf-8")
+            output.with_suffix(".json").write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+            click.echo(f"Report written to {output} and {output.with_suffix('.json')}")
+        click.echo(f"Verdict: {report.verdict}")
+        if not report.passed:
+            raise SystemExit(1)

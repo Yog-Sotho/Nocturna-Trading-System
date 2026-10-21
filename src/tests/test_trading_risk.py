@@ -507,6 +507,17 @@ class TestBacktestRiskControls:
         # Daily bars: the kill trips at a close and the book is sold at the next open
         assert result.metrics()["max_drawdown"] > -0.11
 
+    def test_a_simulated_operator_resumes_after_a_kill(self):
+        result = run_backtest([Allocation(BuyAndHold({SPY: 0.6}), D("1"))], _crash(),
+                              BacktestConfig(**CRASH, sizing=SizingPolicy.unscaled(),
+                                             resume_after_kill=timedelta(days=30)))
+        kills = [e.timestamp for e in result.events if e.kind == "kill_switch"]
+        resumes = [e.timestamp for e in result.events if e.kind == "resume"]
+        # The relentless crash trips the switch again after each resume
+        assert len(kills) >= 2 and len(resumes) >= 1
+        assert all(r - k >= timedelta(days=30) for k, r in zip(kills, resumes, strict=False))
+        assert result.metrics()["kill_switch_trips"] == len(kills)
+
     def test_the_ladder_slows_the_slide_and_never_locks_the_book_in_cash(self):
         plain, plain_kills = self._run(SizingPolicy.unscaled())
         laddered, kills = self._run(SizingPolicy())

@@ -135,6 +135,36 @@ reaches 3%, and trips the kill switch (halt and flatten) at a 10% drawdown. A re
 adjustment that raises equity (a deposit, a dividend) moves the high-water mark with it so it
 cannot hide a drawdown; one that lowers equity counts as a loss.
 
+## Validation
+
+`src/trading/validation` decides whether a candidate (a strategy family and its parameter
+grid) may paper trade. Every number in it comes from `run_backtest`, so it already includes
+costs, the risk gate, sizing and the kill switch.
+
+- **Trials:** each parameter set is backtested over the whole period. A trial's return on a
+  day depends only on data before that day, so any slice of it is what that parameter set
+  would have earned; selections below use only slices that ended before they are made.
+- **Walk-forward** (`experiment.walk_forward`): calendar windows (36 months of training,
+  12 of testing by default). At each test start the set with the best training Sharpe is
+  chosen; a `SwitchingStrategy` then trades the chosen sets through the engine, consulting
+  every set on every bar so a set switched in is current. The engine pays for every switch.
+- **Selection bias** (`stats`): the Deflated Sharpe ratio of the best set, with the number of
+  effectively independent trials N = rho + (1 - rho) M from their average correlation. Checked
+  against the paper's own example (DSR 0.9004 for N = 100, 0.9505 for N = 46).
+- **Overfitting** (`overfitting`): PBO by CSCV over C(16, 8) = 12,870 splits, computed from
+  per-block sums so it stays fast; combinatorial purged cross-validation with an embargo after
+  each test group, stitched into C(N-1, k-1) out-of-sample paths.
+- **Robustness:** cost stress re-trades the walk-forward at 2x and 3x costs; neighbours are the
+  sets one grid step away; regimes classify each day by the reference symbol's 6-month trend
+  and 1-month volatility known when the day began.
+- **Gates and report** (`gates`, `report`, `pipeline`): `validate()` returns a report with
+  every gate decided, a Markdown tear sheet and a JSON form. The paper track record gate stays
+  open until paper trading decides it.
+
+The backtester's `resume_after_kill` simulates the operator: a kill halts and flattens, and
+trading resumes that long after, once the book is flat. Without it a long backtest would stop
+measuring the strategy at its first kill.
+
 ## Safety
 
 `src/trading/safety.py` refuses to start the app or build the Alpaca adapter unless
@@ -143,5 +173,5 @@ connects to Alpaca's paper API.
 
 ## What comes next
 
-Phase 4 adds walk-forward validation on top of the backtester and Phase 5 adds the
-strategies; see [ROADMAP.md](ROADMAP.md).
+Phase 5 adds the candidate strategies, each admitted only through the validation pipeline;
+see [ROADMAP.md](ROADMAP.md).

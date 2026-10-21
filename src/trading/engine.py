@@ -182,6 +182,7 @@ class Engine:
         self._history: dict[str, deque[Bar]] = {s: deque(maxlen=n) for s, n in lookbacks.items()}
         self._targets: dict[str, dict[str, Decimal]] = {}
         self.orders: dict[str, Order] = {}
+        self._open: dict[str, Order] = {}  # the working subset of ``orders``
         self.prices: dict[str, Decimal] = {}
         self._calendar = TradingCalendar(AssetClass.EQUITY)
         broker.set_listener(self.on_order_update)
@@ -291,11 +292,21 @@ class Engine:
     def exposure(self) -> dict[str, Decimal]:
         """Signed quantity per symbol including the unfilled part of open orders."""
         exposure = {s: p.qty for s, p in self.ledger.positions.items()}
-        for order in self.orders.values():
-            if order.status.is_open:
-                symbol = order.request.symbol
-                exposure[symbol] = exposure.get(symbol, ZERO) + order.remaining_qty * order.request.side.sign
+        for order in self._open.values():
+            symbol = order.request.symbol
+            exposure[symbol] = exposure.get(symbol, ZERO) + order.remaining_qty * order.request.side.sign
         return exposure
+
+    def open_orders(self) -> list[Order]:
+        """Orders still working at the broker, oldest first."""
+        return list(self._open.values())
+
+    def _store(self, order: Order) -> None:
+        self.orders[order.client_order_id] = order
+        if order.status.is_open:
+            self._open[order.client_order_id] = order
+        else:
+            self._open.pop(order.client_order_id, None)
 
     def target_weights(self) -> dict[str, Decimal]:
         """Account-level targets: each strategy's weights times its allocation."""
@@ -366,8 +377,8 @@ class Engine:
 
         # Buys are funded by cash and by proceeds from reducing longs, never by shorting
         long_proceeds = sum((min(-d, max(exposure.get(i.symbol, ZERO), ZERO)) * p for i, d, p in sells), ZERO)
-        open_buys = sum((o.remaining_qty * self.prices.get(o.request.symbol, ZERO) for o in self.orders.values()
-                         if o.status.is_open and o.request.side is Side.BUY), ZERO)
+        open_buys = sum((o.remaining_qty * self.prices.get(o.request.symbol, ZERO) for o in self._open.values()
+                         if o.request.side is Side.BUY), ZERO)
         available = self.ledger.cash + long_proceeds - open_buys - self.cash_buffer * equity
         needed = sum((d * p for _, d, p in buys), ZERO)
         if needed > 0 and needed > available:
@@ -409,7 +420,7 @@ class Engine:
             return decision
         self.risk.record(request, price, now)
         order = Order.new(request, self.clock.now())
-        self.orders[request.client_order_id] = order
+        self._store(order)
         self._emit("order", order=order)
         self.broker.submit(request)
         return decision
@@ -444,7 +455,7 @@ class Engine:
             return
         try:
             order = order.apply(update)
-            self.orders[update.client_order_id] = order
+            self._store(order)
         except InvalidTransitionError as e:
             logger.error("Inconsistent broker update: %s", e)
             self._emit("broker_error", detail=f"broker update: {e}")
@@ -454,7 +465,7 @@ class Engine:
 
     def sync_order(self, order: Order) -> None:
         """Take the broker's view of an order (reconciliation and restarts)."""
-        self.orders[order.client_order_id] = order
+        self._store(order)
         self._emit("order", order=order)
 
     # -- kill switch --------------------------------------------------------
@@ -475,9 +486,8 @@ class Engine:
         self._emit("halt", detail=reason)
         self.emit_risk_state()
         if not flatten:
-            for order in list(self.orders.values()):
-                if order.status.is_open:
-                    self.broker.cancel(order.client_order_id)
+            for order in self.open_orders():
+                self.broker.cancel(order.client_order_id)
             return []
         return self._liquidate()
 
@@ -492,7 +502,7 @@ class Engine:
         """After a drawdown kill with flatten: positions left and nothing working to close them."""
         if self.risk.state.halt_kind != "drawdown" or not self.risk.limits.flatten_on_kill:
             return False
-        if any(o.status.is_open for o in self.orders.values()):
+        if self._open:
             return False
         for symbol, position in self.ledger.positions.items():
             instrument = self.instruments.get(symbol)
@@ -528,7 +538,7 @@ class Engine:
             realized_pnl=self.ledger.realized_pnl,
             fees=self.ledger.fees,
             positions=positions,
-            open_orders=tuple(o for o in self.orders.values() if o.status.is_open),
+            open_orders=tuple(self._open.values()),
             target_weights=self.target_weights(),
             halted=self.risk.halted,
             halt_reason=self.risk.halt_reason,

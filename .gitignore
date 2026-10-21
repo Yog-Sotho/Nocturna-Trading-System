@@ -72,3 +72,6 @@ optimization_*.json
 task_plan.md
 findings.md
 progress.md
+
+# Validation reports (flask validate --output reports/...)
+reports/
