@@ -5,9 +5,12 @@ Usage:
     flask --app src.main create-admin --email ops@example.com
     flask --app src.main db current|upgrade|downgrade|check|revision
     flask --app src.main validate benchmark --start 2017-01-01 --output reports/benchmark.md
+    flask --app src.main engine run          # the engine as its own process (ENGINE_MODE=external)
 """
 
 import json
+import signal
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -151,3 +154,29 @@ def register_cli(app: Flask) -> None:
         click.echo(f"Verdict: {report.verdict}")
         if not report.passed:
             raise SystemExit(1)
+
+    @app.cli.group("engine")
+    def engine_group() -> None:
+        """The trading engine as its own process (ENGINE_MODE=external)."""
+
+    @engine_group.command("run")
+    def engine_run() -> None:
+        """Run the engine until SIGTERM or SIGINT; the API reaches it through the database."""
+        from src.trading.channel import EngineChannel
+        from src.trading.runtime import TradingRuntime
+        from src.trading.worker import AnotherWorkerRunningError, EngineWorker
+
+        settings = current_app.extensions["settings"]
+        if settings.engine_mode != "external":
+            raise click.ClickException(
+                "Set ENGINE_MODE=external for the API and the engine process alike; in embedded mode "
+                "the API runs an engine of its own, and two engines must never trade one account.")
+        flask_app = current_app._get_current_object()
+        worker = EngineWorker(TradingRuntime(flask_app, settings), EngineChannel(flask_app))
+        stop = threading.Event()
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(signum, lambda *_: stop.set())
+        try:
+            worker.run(stop)
+        except AnotherWorkerRunningError as e:
+            raise click.ClickException(str(e)) from e

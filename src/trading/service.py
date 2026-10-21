@@ -34,10 +34,11 @@ from typing import Any
 from .broker import Broker
 from .clock import Clock
 from .data import BarSource
-from .domain import DAILY, Bar, OrderRequest, OrderUpdate, Timeframe
+from .domain import DAILY, Bar, Order, OrderRequest, OrderUpdate, Timeframe
 from .engine import Allocation, Engine, EngineListener, EngineSnapshot
 from .feed import PollingFeed
 from .ledger import Ledger
+from .operator import OperatorOrder, place
 from .reconcile import ReconciliationReport, reconcile
 from .risk import RiskDecision, RiskGate, RiskLimits
 from .sizing import SizingPolicy
@@ -153,6 +154,17 @@ class EngineService:
     def submit_order(self, request: OrderRequest) -> RiskDecision:
         return self._call(lambda engine: engine.submit_order(request))
 
+    def submit_operator_order(self, order: OperatorOrder) -> tuple[RiskDecision, Order | None]:
+        """
+        The decision and the order as it stands after the broker's immediate answer.
+
+        Raises:
+            UnknownSymbolError: If the engine does not trade the symbol.
+        """
+        decision, _ = self._call(lambda engine: place(engine, order))
+        # A second call: the first one's queued broker reports are applied before it runs
+        return decision, self._call(lambda engine: engine.orders.get(order.client_order_id))
+
     def cancel_order(self, client_order_id: str) -> bool:
         return self._call(lambda engine: engine.cancel_order(client_order_id))
 
@@ -161,6 +173,12 @@ class EngineService:
         if self.running:
             raise RuntimeError("use halt(flatten=True) while the engine is running")
         return self._broker.close_all()
+
+    def broker_cancel_all(self) -> list[str]:
+        """The emergency path when the engine is not running: cancel every order at the broker."""
+        if self.running:
+            raise RuntimeError("use halt() while the engine is running")
+        return self._broker.cancel_all()
 
     def _call(self, command: Callable[[Engine], Any], timeout: float = 30.0) -> Any:
         if self.engine is None or self._state != "running":

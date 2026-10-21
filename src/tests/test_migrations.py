@@ -20,7 +20,7 @@ from src.models.user import db
 REPO_ROOT = Path(__file__).resolve().parents[2]
 POSTGRES_URL = os.environ.get("TEST_POSTGRES_URL")
 APP_TABLES = {"users", "api_keys", "audit_logs", "revoked_tokens", "trading_orders", "trading_fills",
-              "equity_snapshots", "risk_state"}
+              "equity_snapshots", "risk_state", "engine_status", "engine_commands"}
 
 
 def _tables(app):
@@ -64,6 +64,33 @@ class TestRevisions:
         db_migrations.upgrade(migration_app)
         db_migrations.upgrade(migration_app)
         assert db_migrations.current_revision(migration_app) == db_migrations.head_revision()
+
+    def test_concurrent_upgrades_are_serialised(self, migration_app):
+        """The API and the engine process start together and both upgrade at startup."""
+        import threading
+        url = migration_app.config["SQLALCHEMY_DATABASE_URI"]
+        if url.startswith("sqlite"):
+            pytest.skip("only PostgreSQL serves two processes")
+        other = Flask("migration-test-other")
+        other.config["SQLALCHEMY_DATABASE_URI"] = url
+        db.init_app(other)
+        errors, barrier = [], threading.Barrier(2)
+
+        def run(app):
+            barrier.wait()
+            try:
+                db_migrations.upgrade(app)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=run, args=(a,)) for a in (migration_app, other)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(60)
+        with other.app_context():
+            db.engine.dispose()
+        assert errors == [] and db_migrations.current_revision(migration_app) == db_migrations.head_revision()
 
     def test_downgrade_to_base_and_back(self, migration_app):
         db_migrations.upgrade(migration_app)

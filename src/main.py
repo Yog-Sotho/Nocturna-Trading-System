@@ -190,9 +190,11 @@ def create_app(config_override=None):
     app.register_blueprint(user_bp, url_prefix='/api')
     app.register_blueprint(trading_bp, url_prefix='/api/trading')
 
-    # Live (paper) trading engine; built and started on demand, never at import
-    from src.trading.runtime import TradingRuntime
-    app.extensions['trading'] = TradingRuntime(app, settings)
+    # Live (paper) trading engine: in this process (built and started on demand, never at
+    # import), or a separate engine process reached through the database
+    from src.trading.runtime import RemoteRuntime, TradingRuntime
+    app.extensions['trading'] = (RemoteRuntime(app, settings) if settings.engine_mode == "external"
+                                 else TradingRuntime(app, settings))
 
     # =============================================================================
     # REQUEST ID TRACKING

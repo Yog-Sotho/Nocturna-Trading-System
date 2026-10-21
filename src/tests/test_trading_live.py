@@ -76,6 +76,12 @@ class FakeTradingClient:
     def cancel_order_by_id(self, order_id):
         self.cancelled.append(order_id)
 
+    def cancel_orders(self):
+        # alpaca-py returns one CancelOrderResponse (id, HTTP status) per open order
+        responses = [SimpleNamespace(id=o.id, status=200) for o in self.get_orders(None)]
+        self.cancelled.extend(r.id for r in responses)
+        return responses
+
     def get_all_positions(self):
         return self.positions
 
@@ -157,6 +163,13 @@ class TestAlpacaBrokerOrders:
         broker.cancel("nt-1")
         assert client.cancelled == [client.orders["nt-1"].id]
         broker.cancel("unknown")  # logged, not raised
+
+    def test_cancel_all_uses_alpacas_cancel_all(self):
+        client, broker, _ = _alpaca()
+        broker.submit(OrderRequest("nt-1", "SPY", Side.BUY, D("10")))
+        broker.submit(OrderRequest("nt-2", "SPY", Side.BUY, D("5")))
+        ids = broker.cancel_all()
+        assert ids == [str(client.orders["nt-1"].id), str(client.orders["nt-2"].id)]
 
 
 class TestAlpacaTradeUpdates:

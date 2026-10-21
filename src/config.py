@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     alpaca_secret_key: SecretStr | None = None
     # Start the engine when the server process starts (otherwise via the API)
     engine_autostart: bool = False
+    # embedded: the engine runs inside the web worker. external: it runs as its own process
+    # (`flask engine run`) and the API reaches it through the database
+    engine_mode: Literal["embedded", "external"] = "embedded"
 
     # Risk limits, as fractions of account equity (src/trading/risk.py, sizing.py).
     # Conservative defaults; leverage is not configurable (gross exposure <= 100%).
