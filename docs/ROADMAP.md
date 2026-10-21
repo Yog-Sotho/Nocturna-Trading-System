@@ -17,7 +17,7 @@ limits. No strategy trades live unless it passes the promotion gates below.
 | Risk profile | Conservative / low risk |
 | Users | Single operator (public registration disabled) |
 
-### Conservative risk limits (Phase 3 defaults, configurable; awaiting operator confirmation)
+### Conservative risk limits (confirmed by the operator after the real-data run below)
 
 - Maximum drawdown kill switch: 10% below the equity high-water mark (halt and flatten)
 - Drawdown ladder: exposure shrinks linearly from 5% drawdown to 25% at the limit
@@ -89,12 +89,20 @@ stock selection needs full-market real-time volume, which requires a $99/month d
   approval 14 April 2026, effective 4 June 2026, Regulatory Notice 26-10), and Alpaca now
   applies its intraday margin rule instead. The engine uses no leverage (gross exposure is
   capped at 100% of equity).
-- The risk defaults are conservative and their cost in return has not yet been measured on
-  real equity data: equity history needs Alpaca keys, which the build environment does not
-  have. `flask validate benchmark` measures it on the operator's account. On one synthetic
-  14-year 60/40 path the defaults did not cost return (Sharpe 0.41 against 0.35 without the
-  kill switch and ladder) but the 10% kill switch tripped four times in 14 years, which the
-  12% drawdown gate would reject; Phase 5 sets the final limits with the lineup.
+- The risk limits were confirmed on real data (Alpaca, SPY/IEF 60/40, January 2017 to
+  October 2026, a single history with one large drawdown in 2022):
+
+  | Settings | Return/yr | Volatility | Sharpe | Max drawdown |
+  |---|---|---|---|---|
+  | Kill switch 10%, ladder, 8% volatility target (chosen) | 6.6% | 6.9% | 0.96 | -12.1% |
+  | No kill switch or ladder, 8% target | 7.1% | 7.3% | 0.98 | -14.1% |
+  | No kill switch or ladder, 10% target | 7.9% | 8.2% | 0.96 | -16.8% |
+  | Plain 60/40 | 9.5% | 10.7% | 0.90 | -21.2% |
+
+  The kill switch and ladder cost about 0.5% a year for 2 points less drawdown; the volatility
+  target sets the return. The validated benchmark family was rejected (walk-forward Sharpe
+  0.81, PBO 0.74, out-of-sample drawdown -14.1% after a kill on 2022-06-11), as a passive
+  yardstick should be.
 - Phase 4 validates one candidate at a time. The 1.0 Sharpe gate is for the portfolio; a
   component can be validated with `--min-sharpe`, and Phase 5 validates the combined lineup as
   its own candidate.
