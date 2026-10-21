@@ -24,6 +24,7 @@ psycopg[binary]>=3.3.6,<4
 redis>=5.2,<9
 
 # Data and numerics
+exchange-calendars>=4.13.2,<5
 numpy>=2.2,<3
 pandas>=2.2.3,<3
 scipy>=1.14,<2

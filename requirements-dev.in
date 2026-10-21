@@ -3,6 +3,7 @@
 -r requirements.in
 
 pytest>=9.0.3,<10
+hypothesis>=6.170,<7
 pytest-cov>=6,<8
 pytest-mock>=3.14,<4
 ruff>=0.17,<0.18
