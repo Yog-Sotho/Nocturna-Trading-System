@@ -7,6 +7,10 @@ on:
   pull_request:
     branches: [main]
 
+# No job writes to the repository; the token only needs to read it for checkout
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
