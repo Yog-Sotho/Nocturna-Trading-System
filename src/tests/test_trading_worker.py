@@ -11,7 +11,9 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from flask import Flask
 
+from src.models.user import db
 from src.tests.trading_fixtures import IEF, SPY, daily_bars, ny
 from src.trading.broker import SimulatedBroker
 from src.trading.channel import CommandTimeoutError, EngineChannel
@@ -56,14 +58,33 @@ def settings(app):
 
 
 @pytest.fixture
-def worker(app, settings):
+def shared_app(tmp_path):
+    """
+    The database the API and the engine process share: a file, not the suite's
+    in-memory database. That one is a single connection shared by every thread,
+    where one thread's rollback can undo another's commit; two processes on a
+    server database each have their own connections.
+    """
+    shared = Flask("engine-channel-test")
+    shared.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{tmp_path / 'channel.db'}"
+    db.init_app(shared)
+    with shared.app_context():
+        db.create_all()
+    yield shared
+    with shared.app_context():
+        db.session.remove()
+        db.engine.dispose()
+
+
+@pytest.fixture
+def worker(shared_app, settings):
     """An engine worker on its own thread, and the API's remote runtime."""
-    local = TradingRuntime(app, settings, factory=_factory)
-    engine_worker = EngineWorker(local, EngineChannel(app), interval=0.02, instance="test-worker")
+    local = TradingRuntime(shared_app, settings, factory=_factory)
+    engine_worker = EngineWorker(local, EngineChannel(shared_app), interval=0.02, instance="test-worker")
     stop = threading.Event()
     thread = threading.Thread(target=engine_worker.run, args=(stop,), daemon=True)
     thread.start()
-    remote = RemoteRuntime(app, settings, broker_factory=lambda s: _Broker(), timeout=10)
+    remote = RemoteRuntime(shared_app, settings, broker_factory=lambda s: _Broker(), timeout=10)
     _wait(lambda: remote.views()["status"]["state"] == "stopped")
     yield remote, local
     stop.set()
