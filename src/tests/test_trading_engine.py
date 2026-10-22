@@ -526,6 +526,24 @@ class TestCashSleeve:
         assert [(r.symbol, r.side) for r in sent] == [("BIL", Side.SELL), ("SPY", Side.BUY)]
         assert sent[0].qty == D("547") and sent[1].qty == D("500")  # BIL down to 49.5%, SPY at 50% of equity
 
+    def test_targets_moving_inside_the_band_do_not_trade_the_sleeve(self):
+        """Regression: the sleeve followed the targets, so two drifts inside the band sold T-bills for cash."""
+        weights = {"SPY": 0.3, "IEF": 0.2}
+        clock, _, engine, _ = _sleeved(_Fixed(lambda: dict(weights), (SPY, IEF)))
+
+        def day(d):
+            bars = {s: bar(i, ny(2026, 3, d), p, p, p, p) for s, i, p in (("SPY", SPY, 100.0), ("IEF", IEF, 50.0),
+                                                                          ("BIL", BIL, 91.5))}
+            clock.advance_to(bars["SPY"].end + timedelta(minutes=15))
+            return engine.on_bars(bars)
+
+        day(2)
+        day(3)
+        weights.update(SPY=0.315, IEF=0.215)  # each 1.5% of equity: inside the 2% band, 3% together
+        assert day(4) == []
+        weights.update(SPY=0.33)  # SPY now 3% off its holding: it trades, and BIL pays for it
+        assert [(r.symbol, r.side) for r in day(5)] == [("BIL", Side.SELL), ("SPY", Side.BUY)]
+
     def test_short_of_cash_the_strategy_is_scaled_and_the_sleeve_stays_empty(self):
         clock, _, engine, _ = _sleeved(_Fixed({"SPY": 0.5}, (SPY,)), cash="10000")
         engine.cash_buffer = D("0.6")  # $4,000 to spend against the $5,000 the strategy wants
