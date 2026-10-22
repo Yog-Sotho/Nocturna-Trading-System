@@ -58,6 +58,16 @@ adverse slippage; limits need the price to trade through them; stops fill at the
 gapped open. Fees and slippage are per asset class (`DEFAULT_COSTS`); crypto purchases pay the
 fee in the asset received, as on Alpaca.
 
+### When equity orders go out
+
+Market orders sent between 19:00 ET and two minutes before the open go to the opening
+auction (OPG), and the rest are DAY orders. A strategy whose dates are known in advance (a
+calendar) can set `execution = CLOSE`. The engine then sends its equity orders to the next
+closing auction (CLS), as soon as the previous session's bar is final. Alpaca queues a CLS
+order sent after 19:00 ET for the next session's close, and rejects one sent from 10 minutes
+before the close (15:50 on a full day) until 19:00, so the engine sends nothing then and the
+next bar retries. Strategies trading at the open and at the close cannot share an engine.
+
 ## Accounting
 
 `Ledger` derives cash, positions and P&L from fills only. Positions store a signed cost basis
@@ -159,6 +169,15 @@ Positions are traded only when they are more than the rebalance band (2% of equi
 target, or to close them. Strategies with protective stops size entries with
 `stop_risk_weight`: the weight that loses 0.5% of equity if the stop is hit.
 
+**The cash sleeve.** With a T-bill ETF as cash sleeve (`Engine(cash_sleeve=...)`; the live
+lineup uses BIL), the equity the sized weights leave unused, minus the 0.5% cash buffer, is
+held in it instead of in cash.
+- It is bought after the strategies' positions are funded, and sold first when they need cash.
+- It counts toward gross exposure but not toward the position or single-order caps.
+- It may be bought during a cool-down, since it adds no market risk, but never while trading
+  is halted.
+- The kill switch sells it like every position.
+
 **The gate** (`risk.py`) checks every order: halt, reference price, limit collar,
 duplicates; then, for orders that add risk, the cool-down, market-data age and one-bar
 jumps, daily order and turnover breakers, single-order size, and the position, asset-class
@@ -193,6 +212,12 @@ costs, the risk gate, sizing and the kill switch.
 - **Gates and report** (`gates`, `report`, `pipeline`): `validate()` returns a report with
   every gate decided, a Markdown tear sheet and a JSON form. The paper track record gate stays
   open until paper trading decides it.
+- **The T-bill hurdle:** `flask validate` holds idle cash in BIL, as the live engine does. It
+  measures every Sharpe-based number on daily returns minus BIL's daily total return
+  (`ValidationConfig.hurdle`; `Returns.excess`). That covers the selection, walk-forward,
+  deflated and probabilistic Sharpe, overfitting, cross-validation, neighbours and regimes.
+  The cost-stress gate needs a total return above BIL's. Returns, volatility and drawdowns
+  stay as earned. `--no-tbills` runs the earlier rules: no sleeve, Sharpe against zero.
 
 The backtester's `resume_after_kill` simulates the operator: a kill halts and flattens, and
 trading resumes that long after, once the book is flat. Without it a long backtest would stop
@@ -210,6 +235,7 @@ paper is silent the module says what was assumed.
 | `rebalancing.RebalancingFlows` | simulate threshold (0-2.5%) and month-end 60/40 rebalancers; trade SPY against IEF ahead of their flows (`spread`), or tilt a 60/40 (`tilt`) | Harvey, Mazzoleni and Melone, NBER w33554 (2025) |
 | `trend.TimeSeriesMomentum` | each month, sign of the 12-month return (or the clipped t-statistic of daily returns) times 40% / EWMA volatility (60-day centre of mass), averaged over the basket | Moskowitz, Ooi and Pedersen, JFE 2012; Baltas and Kosowski 2013 |
 | `crypto_trend.DonchianEnsemble` | nine breakout models (5-360 days) with trailing stops at the channel midpoint, each sized to 25% volatility, averaged; long only | Zarattini, Pagani and Barbon, SFI 25-80 (2025) |
+| `month_end.MonthEndCycle` | SPY from the closing auction of T-k to that of T+3 around each month's last session T; k follows the settlement cycle (4, 3 from 5 September 2017, 2 from 28 May 2024), or 4, or 1; trades at the close | Etula, Rinne, Suominen and Vaittinen, RFS 2020 |
 | `blend.Blend` | fixed-weight sum of strategies, so a lineup validates and trades as one book | - |
 
 A strategy held inside another (a blend, a walk-forward switch) is asked for targets through

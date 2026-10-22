@@ -213,6 +213,9 @@ you set.
 
 Pause the `engine` check on healthchecks.io before you stop trading on purpose.
 
+BIL among the positions is not a trade: it is the idle cash, held in T-bills so it earns
+interest.
+
 To update to a new version, do it outside US market hours. The engine restarts too, and then
 waits for you to start trading:
 
