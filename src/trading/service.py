@@ -95,7 +95,8 @@ class EngineService:
         self._retry_delay = retry_delay
         self._quiet_period = quiet_period
 
-        self._queue: queue.Queue = queue.Queue()
+        # Broker updates ("update", update), commands ("call", command, future), and None to wake the loop
+        self._queue: queue.Queue[tuple[Any, ...] | None] = queue.Queue()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stopping = threading.Event()
@@ -180,12 +181,12 @@ class EngineService:
             raise RuntimeError("use halt() while the engine is running")
         return self._broker.cancel_all()
 
-    def _call(self, command: Callable[[Engine], Any], timeout: float = 30.0) -> Any:
+    def _call[T](self, command: Callable[[Engine], T], timeout: float = 30.0) -> T:
         if self.engine is None or self._state != "running":
             raise ServiceNotRunningError("the trading engine is not running")
         if threading.current_thread() is self._thread:
             return self._execute(command)
-        future: Future = Future()
+        future: Future[T] = Future()
         self._queue.put(("call", command, future))
         return future.result(timeout)
 
@@ -270,7 +271,8 @@ class EngineService:
             if item is not None:
                 self._handle(item)
 
-    def _handle(self, item: tuple) -> None:
+    def _handle(self, item: tuple[Any, ...]) -> None:
+        assert self.engine is not None  # the engine thread runs only after prepare()
         if item[0] == "update":
             self._last_update = self.clock.now()
             self.engine.on_order_update(item[1])
@@ -281,13 +283,15 @@ class EngineService:
             except Exception as e:
                 future.set_exception(e)
 
-    def _execute(self, command: Callable[[Engine], Any]) -> Any:
+    def _execute[T](self, command: Callable[[Engine], T]) -> T:
+        assert self.engine is not None
         result = command(self.engine)
         self._drain()  # apply the broker's immediate answers before replying
         self._publish()
         return result
 
     def _poll(self, now: datetime) -> None:
+        assert self.engine is not None and self._feed is not None
         try:
             groups = self._feed.poll(now)
             for _, group in groups:
@@ -305,6 +309,7 @@ class EngineService:
 
     def _maybe_reconcile(self) -> None:
         engine = self.engine
+        assert engine is not None
         if engine.open_orders():
             return
         if self._last_update is not None and self.clock.now() - self._last_update < self._quiet_period:
@@ -320,6 +325,7 @@ class EngineService:
             self._last_error = f"reconciliation: {e}"
 
     def _publish(self) -> None:
+        assert self.engine is not None
         snapshot = self.engine.snapshot()
         with self._lock:
             self._snapshot = snapshot

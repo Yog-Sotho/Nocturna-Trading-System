@@ -157,17 +157,17 @@ class TestAuthEndpoints:
     """Integration tests for auth-protected endpoints."""
 
     def test_unauth_returns_401(self, client):
-        resp = client.get("/api/auth/me")
+        resp = client.get("/api/v1/auth/me")
         assert resp.status_code == 401
 
     def test_auth_me_returns_user(self, client, auth_headers):
-        resp = client.get("/api/auth/me", headers=auth_headers)
+        resp = client.get("/api/v1/auth/me", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["success"] is True
 
     def test_login_returns_token(self, client, test_user):
-        resp = client.post("/api/auth/login", json={
+        resp = client.post("/api/v1/auth/login", json={
             "username": "testuser",
             "password": "SecureP@ss123",
         })
@@ -176,7 +176,7 @@ class TestAuthEndpoints:
         assert "access_token" in data.get("data", {})
 
     def test_login_wrong_password(self, client, test_user):
-        resp = client.post("/api/auth/login", json={
+        resp = client.post("/api/v1/auth/login", json={
             "username": "testuser",
             "password": "WrongPassword123!",
         })
@@ -190,17 +190,17 @@ class TestAuthEndpoints:
     }
 
     def test_public_registration_is_closed(self, client, db):
-        resp = client.post("/api/users", json=self.NEW_USER)
+        resp = client.post("/api/v1/users", json=self.NEW_USER)
         assert resp.status_code == 401
         with client.application.app_context():
             assert User.query.filter_by(username="newusertest").first() is None
 
     def test_non_admin_cannot_create_user(self, client, auth_headers):
-        resp = client.post("/api/users", json=self.NEW_USER, headers=auth_headers)
+        resp = client.post("/api/v1/users", json=self.NEW_USER, headers=auth_headers)
         assert resp.status_code == 403
 
     def test_admin_creates_user_without_issuing_tokens(self, client, admin_headers):
-        resp = client.post("/api/users", json=self.NEW_USER, headers=admin_headers)
+        resp = client.post("/api/v1/users", json=self.NEW_USER, headers=admin_headers)
         assert resp.status_code == 201
         body = resp.get_json()
         assert "access_token" not in body["data"]
@@ -209,14 +209,14 @@ class TestAuthEndpoints:
 
     def test_admin_create_duplicate_email_conflicts(self, client, admin_headers, test_user):
         payload = {**self.NEW_USER, "username": "anotheruser", "email": "test@example.com"}
-        resp = client.post("/api/users", json=payload, headers=admin_headers)
+        resp = client.post("/api/v1/users", json=payload, headers=admin_headers)
         assert resp.status_code == 409
 
 
     def test_invalid_api_key_returns_401(self, client):
         """SEC-02: Invalid API key must be rejected."""
         resp = client.get(
-            "/api/auth/me",
+            "/api/v1/auth/me",
             headers={"X-API-Key": "ntr_invalid_key_12345678901234567890"},
         )
         assert resp.status_code == 401
@@ -226,7 +226,7 @@ class TestAPIKeyEndpoints:
     """DB-backed API keys: created via the API, accepted by auth, scoped, revocable."""
 
     def _create(self, client, headers, **body):
-        return client.post("/api/api-keys", json=body, headers=headers)
+        return client.post("/api/v1/api-keys", json=body, headers=headers)
 
     def _key(self, client, headers, permissions):
         resp = self._create(client, headers, name="bot", permissions=permissions)
@@ -241,7 +241,7 @@ class TestAPIKeyEndpoints:
             key_id, secret = parse_api_key(raw)
             assert record.key_id == key_id
             assert secret not in record.key_hash
-        listed = client.get("/api/api-keys", headers=auth_headers).get_json()["data"]["api_keys"]
+        listed = client.get("/api/v1/api-keys", headers=auth_headers).get_json()["data"]["api_keys"]
         assert [k["id"] for k in listed] == [data["key"]["id"]]
         assert listed[0]["key_id"] == key_id
         assert "api_key" not in listed[0] and "key_hash" not in listed[0]
@@ -249,23 +249,23 @@ class TestAPIKeyEndpoints:
 
     def test_read_key_authenticates(self, client, auth_headers):
         raw = self._key(client, auth_headers, ["read"])["api_key"]
-        resp = client.get("/api/auth/me", headers={"X-API-Key": raw})
+        resp = client.get("/api/v1/auth/me", headers={"X-API-Key": raw})
         assert resp.status_code == 200
         assert resp.get_json()["data"]["user"]["username"] == "testuser"
 
     def test_read_key_cannot_trade(self, client, auth_headers):
         raw = self._key(client, auth_headers, ["read"])["api_key"]
-        resp = client.post("/api/trading/orders/probe/cancel", headers={"X-API-Key": raw})
+        resp = client.post("/api/v1/trading/orders/probe/cancel", headers={"X-API-Key": raw})
         assert resp.status_code == 403
 
     def test_trade_key_passes_trading_checks(self, client, auth_headers):
         raw = self._key(client, auth_headers, ["read", "trade"])["api_key"]
-        resp = client.post("/api/trading/orders/probe/cancel", headers={"X-API-Key": raw})
+        resp = client.post("/api/v1/trading/orders/probe/cancel", headers={"X-API-Key": raw})
         assert resp.status_code not in (401, 403)
 
     def test_admin_owner_key_never_grants_admin(self, client, admin_headers):
         raw = self._key(client, admin_headers, ["read", "trade"])["api_key"]
-        resp = client.get("/api/users", headers={"X-API-Key": raw})
+        resp = client.get("/api/v1/users", headers={"X-API-Key": raw})
         assert resp.status_code == 403
 
     @pytest.mark.parametrize("body", [
@@ -282,15 +282,15 @@ class TestAPIKeyEndpoints:
 
     def test_revoked_key_is_rejected(self, client, auth_headers):
         data = self._key(client, auth_headers, ["read"])
-        resp = client.delete(f"/api/api-keys/{data['key']['id']}", headers=auth_headers)
+        resp = client.delete(f"/api/v1/api-keys/{data['key']['id']}", headers=auth_headers)
         assert resp.status_code == 200
-        assert client.get("/api/auth/me", headers={"X-API-Key": data["api_key"]}).status_code == 401
+        assert client.get("/api/v1/auth/me", headers={"X-API-Key": data["api_key"]}).status_code == 401
 
     def test_cannot_revoke_another_users_key(self, client, auth_headers, admin_headers):
         data = self._key(client, admin_headers, ["read"])
-        resp = client.delete(f"/api/api-keys/{data['key']['id']}", headers=auth_headers)
+        resp = client.delete(f"/api/v1/api-keys/{data['key']['id']}", headers=auth_headers)
         assert resp.status_code == 404
-        assert client.get("/api/auth/me", headers={"X-API-Key": data["api_key"]}).status_code == 200
+        assert client.get("/api/v1/auth/me", headers={"X-API-Key": data["api_key"]}).status_code == 200
 
     def test_expired_key_is_rejected(self, client, auth_headers):
         from datetime import datetime, timedelta
@@ -299,7 +299,7 @@ class TestAPIKeyEndpoints:
             record = _get_key(data["key"]["id"])
             record.expires_at = datetime.now(UTC) - timedelta(minutes=1)
             _db_commit()
-        assert client.get("/api/auth/me", headers={"X-API-Key": data["api_key"]}).status_code == 401
+        assert client.get("/api/v1/auth/me", headers={"X-API-Key": data["api_key"]}).status_code == 401
 
     def test_key_of_deactivated_user_is_rejected(self, client, auth_headers, test_user):
         data = self._key(client, auth_headers, ["read"])
@@ -307,14 +307,14 @@ class TestAPIKeyEndpoints:
             user = User.query.filter_by(username="testuser").first()
             user.is_active = False
             _db_commit()
-        assert client.get("/api/auth/me", headers={"X-API-Key": data["api_key"]}).status_code == 401
+        assert client.get("/api/v1/auth/me", headers={"X-API-Key": data["api_key"]}).status_code == 401
 
     def test_trading_disabled_user_cannot_trade(self, client, auth_headers):
         with client.application.app_context():
             user = User.query.filter_by(username="testuser").first()
             user.trading_disabled = True
             _db_commit()
-        resp = client.post("/api/trading/orders/probe/cancel", headers=auth_headers)
+        resp = client.post("/api/v1/trading/orders/probe/cancel", headers=auth_headers)
         assert resp.status_code == 403
 
     def test_user_without_trader_role_cannot_trade(self, client):
@@ -324,13 +324,13 @@ class TestAPIKeyEndpoints:
             user.set_password("ViewerP@ss123")
             _db_add(user)
             token = create_token(str(user.id), {"username": "viewer", "roles": [], "is_admin": False})
-        resp = client.post("/api/trading/orders/probe/cancel", headers={"Authorization": f"Bearer {token}"})
+        resp = client.post("/api/v1/trading/orders/probe/cancel", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 403
 
     def test_usage_is_counted(self, client, auth_headers):
         data = self._key(client, auth_headers, ["read"])
         for _ in range(2):
-            client.get("/api/auth/me", headers={"X-API-Key": data["api_key"]})
+            client.get("/api/v1/auth/me", headers={"X-API-Key": data["api_key"]})
         with client.application.app_context():
             assert _get_key(data["key"]["id"]).use_count == 2
 
@@ -341,7 +341,7 @@ class TestSessionLifecycle:
     PASSWORD = "SecureP@ss123"
 
     def _login(self, client):
-        resp = client.post("/api/auth/login", json={"username": "testuser", "password": self.PASSWORD})
+        resp = client.post("/api/v1/auth/login", json={"username": "testuser", "password": self.PASSWORD})
         assert resp.status_code == 200, resp.get_json()
         return resp.get_json()["data"]
 
@@ -350,16 +350,16 @@ class TestSessionLifecycle:
         return {"Authorization": f"Bearer {token}"}
 
     def _me(self, client, token):
-        return client.get("/api/auth/me", headers=self._bearer(token)).status_code
+        return client.get("/api/v1/auth/me", headers=self._bearer(token)).status_code
 
     def _refresh(self, client, refresh_token):
-        return client.post("/api/auth/refresh", json={"refresh_token": refresh_token})
+        return client.post("/api/v1/auth/refresh", json={"refresh_token": refresh_token})
 
     def test_logout_revocation_survives_a_new_token_manager(self, client, test_user, monkeypatch):
         extensions = client.application.extensions
         monkeypatch.setitem(extensions, "token_manager", extensions["token_manager"])
         tokens = self._login(client)
-        resp = client.post("/api/auth/logout", headers=self._bearer(tokens["access_token"]))
+        resp = client.post("/api/v1/auth/logout", headers=self._bearer(tokens["access_token"]))
         assert resp.status_code == 200
         assert self._me(client, tokens["access_token"]) == 401
         with client.application.app_context():
@@ -370,14 +370,14 @@ class TestSessionLifecycle:
 
     def test_logout_also_revokes_refresh_token_in_body(self, client, test_user):
         tokens = self._login(client)
-        client.post("/api/auth/logout", headers=self._bearer(tokens["access_token"]),
+        client.post("/api/v1/auth/logout", headers=self._bearer(tokens["access_token"]),
                     json={"refresh_token": tokens["refresh_token"]})
         assert self._refresh(client, tokens["refresh_token"]).status_code == 401
 
     def test_logout_requires_bearer_token(self, client, auth_headers):
-        raw = client.post("/api/api-keys", json={"permissions": ["read"]},
+        raw = client.post("/api/v1/api-keys", json={"permissions": ["read"]},
                           headers=auth_headers).get_json()["data"]["api_key"]
-        assert client.post("/api/auth/logout", headers={"X-API-Key": raw}).status_code == 400
+        assert client.post("/api/v1/auth/logout", headers={"X-API-Key": raw}).status_code == 400
 
     def test_refresh_rotates_tokens(self, client, test_user):
         tokens = self._login(client)
@@ -400,12 +400,12 @@ class TestSessionLifecycle:
 
     @pytest.mark.parametrize("body", [{}, {"refresh_token": 123}, {"refresh_token": ""}])
     def test_refresh_requires_token(self, client, body):
-        assert client.post("/api/auth/refresh", json=body).status_code == 400
+        assert client.post("/api/v1/auth/refresh", json=body).status_code == 400
 
     def test_own_password_change_invalidates_old_tokens_and_returns_new(self, client, test_user):
         user, _ = test_user
         tokens = self._login(client)
-        resp = client.put(f"/api/users/{user.id}/password", headers=self._bearer(tokens["access_token"]),
+        resp = client.put(f"/api/v1/users/{user.id}/password", headers=self._bearer(tokens["access_token"]),
                           json={"current_password": self.PASSWORD, "new_password": "N3w!Passw0rd-xyz"})
         assert resp.status_code == 200
         assert self._me(client, tokens["access_token"]) == 401
@@ -415,7 +415,7 @@ class TestSessionLifecycle:
     def test_admin_password_reset_invalidates_users_tokens(self, client, test_user, admin_headers):
         user, _ = test_user
         tokens = self._login(client)
-        resp = client.put(f"/api/users/{user.id}/password", headers=admin_headers,
+        resp = client.put(f"/api/v1/users/{user.id}/password", headers=admin_headers,
                           json={"current_password": "unused", "new_password": "N3w!Passw0rd-xyz"})
         assert resp.status_code == 200
         assert "data" not in resp.get_json()
@@ -423,7 +423,7 @@ class TestSessionLifecycle:
 
     def test_logout_all(self, client, test_user):
         first, second = self._login(client), self._login(client)
-        assert client.post("/api/auth/logout-all", headers=self._bearer(first["access_token"])).status_code == 200
+        assert client.post("/api/v1/auth/logout-all", headers=self._bearer(first["access_token"])).status_code == 200
         assert self._me(client, first["access_token"]) == 401
         assert self._me(client, second["access_token"]) == 401
         assert self._me(client, self._login(client)["access_token"]) == 200
@@ -432,15 +432,15 @@ class TestSessionLifecycle:
         user, _ = test_user
         tokens = self._login(client)
         trade = self._bearer(tokens["access_token"])
-        assert client.post("/api/trading/orders/probe/cancel", headers=trade).status_code not in (401, 403)
-        resp = client.put(f"/api/users/{user.id}", headers=admin_headers, json={"roles": ["reader"]})
+        assert client.post("/api/v1/trading/orders/probe/cancel", headers=trade).status_code not in (401, 403)
+        resp = client.put(f"/api/v1/users/{user.id}", headers=admin_headers, json={"roles": ["reader"]})
         assert resp.status_code == 200
-        assert client.post("/api/trading/orders/probe/cancel", headers=trade).status_code == 403
+        assert client.post("/api/v1/trading/orders/probe/cancel", headers=trade).status_code == 403
 
     def test_deactivation_applies_to_existing_token(self, client, test_user, admin_headers):
         user, _ = test_user
         tokens = self._login(client)
-        client.put(f"/api/users/{user.id}", headers=admin_headers, json={"is_active": False})
+        client.put(f"/api/v1/users/{user.id}", headers=admin_headers, json={"is_active": False})
         assert self._me(client, tokens["access_token"]) == 401
 
     def test_revoke_rejects_foreign_tokens(self, app, db):
@@ -474,11 +474,11 @@ class TestUpdateUserValidation:
     ])
     def test_rejected(self, client, test_user, admin_headers, body):
         user, _ = test_user
-        assert client.put(f"/api/users/{user.id}", headers=admin_headers, json=body).status_code == 400
+        assert client.put(f"/api/v1/users/{user.id}", headers=admin_headers, json=body).status_code == 400
 
     def test_rejected_update_changes_nothing(self, client, test_user, admin_headers):
         user, _ = test_user
-        resp = client.put(f"/api/users/{user.id}", headers=admin_headers,
+        resp = client.put(f"/api/v1/users/{user.id}", headers=admin_headers,
                           json={"is_active": False, "trading_disabled": True, "roles": ["admin"]})
         assert resp.status_code == 400
         with client.application.app_context():
@@ -487,12 +487,12 @@ class TestUpdateUserValidation:
 
     def test_non_object_body_rejected(self, client, test_user, admin_headers):
         user, _ = test_user
-        assert client.put(f"/api/users/{user.id}", headers=admin_headers, json=["roles"]).status_code == 400
+        assert client.put(f"/api/v1/users/{user.id}", headers=admin_headers, json=["roles"]).status_code == 400
 
     @pytest.mark.parametrize("body", [{"is_active": False}, {"is_admin": False}])
     def test_admin_cannot_lock_themselves_out(self, client, admin_user, admin_headers, body):
         admin, _ = admin_user
-        assert client.put(f"/api/users/{admin.id}", headers=admin_headers, json=body).status_code == 400
+        assert client.put(f"/api/v1/users/{admin.id}", headers=admin_headers, json=body).status_code == 400
 
     def test_roles_in_db_never_grant_admin(self, client, app, db):
         with app.app_context():
@@ -501,9 +501,9 @@ class TestUpdateUserValidation:
             user.set_password("Sn3aky!Passw0rd")
             _db_add(user)
             assert user.effective_roles() == ["trader"]
-        resp = client.post("/api/auth/login", json={"username": "sneaky", "password": "Sn3aky!Passw0rd"})
+        resp = client.post("/api/v1/auth/login", json={"username": "sneaky", "password": "Sn3aky!Passw0rd"})
         token = resp.get_json()["data"]["access_token"]
-        assert client.get("/api/users", headers={"Authorization": f"Bearer {token}"}).status_code == 403
+        assert client.get("/api/v1/users", headers={"Authorization": f"Bearer {token}"}).status_code == 403
 
 
 class TestCreateAdminCommand:
@@ -547,7 +547,7 @@ class TestLoginLockout:
     PASSWORD = "SecureP@ss123"
 
     def _login(self, client, username, password):
-        return client.post("/api/auth/login", json={"username": username, "password": password})
+        return client.post("/api/v1/auth/login", json={"username": username, "password": password})
 
     def _clear_ip_lockout(self):
         from src.middleware.security import ip_manager

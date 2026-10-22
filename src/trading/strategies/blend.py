@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 
+from ..domain import Instrument
 from ..strategy import Strategy, StrategyContext, consult
 
 _NAME = re.compile(r"[a-z0-9-]{1,16}")
@@ -25,7 +26,7 @@ class Blend(Strategy):
             raise ValueError("component weights must be positive and sum to at most 1")
         self.name = name
         self._components = list(components)
-        instruments = {}
+        instruments: dict[str, Instrument] = {}
         for strategy, _ in self._components:
             for instrument in strategy.instruments:
                 known = instruments.setdefault(instrument.symbol, instrument)

@@ -32,12 +32,12 @@ ZERO = Decimal("0")
 LEDGER_CONTEXT = Context(prec=60, rounding=ROUND_HALF_EVEN)
 COST_SCALE = Decimal("1e-12")
 
-def _exact[F: Callable](method: F) -> F:
+def _exact[**P, R](method: Callable[P, R]) -> Callable[P, R]:
     @wraps(method)
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         with localcontext(LEDGER_CONTEXT):
             return method(*args, **kwargs)
-    return wrapper  # type: ignore[return-value]
+    return wrapper
 
 
 @dataclass(frozen=True)

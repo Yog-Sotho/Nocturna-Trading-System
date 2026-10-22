@@ -1,0 +1,30 @@
+# Mutation testing of the risk code with Cosmic Ray (https://cosmic-ray.readthedocs.io).
+# It edits these files in place while it runs: use a clean checkout (CI does).
+#   cosmic-ray init tools/mutation/cosmic-ray.toml mutation.sqlite
+#   cr-filter-operators mutation.sqlite tools/mutation/cosmic-ray.toml
+#   cr-filter-pragma mutation.sqlite
+#   cosmic-ray baseline tools/mutation/cosmic-ray.toml
+#   cosmic-ray exec tools/mutation/cosmic-ray.toml mutation.sqlite
+#   cosmic-ray dump mutation.sqlite | python tools/mutation/gate.py --max-survival 3
+# Not cr-rate: it counts the mutants the filters skipped as killed.
+[cosmic-ray]
+module-path = ["src/trading/risk.py", "src/trading/sizing.py"]
+timeout = 60.0
+excluded-modules = []
+test-command = "python -m pytest -x -q -p no:cacheprovider src/tests/test_trading_risk.py"
+
+[cosmic-ray.distributor]
+name = "local"
+
+# Mutants that teach nothing: Decimal and float arithmetic turned into bitwise,
+# shift, power, modulo or floor division (a TypeError, or no test could tell),
+# `X | None` in annotations (never evaluated), and ordered comparisons swapped
+# with identity tests. tools/mutation/gate.py scores only the mutants tested.
+[cosmic-ray.filters.operators-filter]
+exclude-operators = [
+    "core/ReplaceBinaryOperator_[A-Za-z]+_(FloorDiv|Pow|Mod|BitAnd|BitOr|BitXor|LShift|RShift)$",
+    "core/ReplaceBinaryOperator_(FloorDiv|Pow|Mod|BitAnd|BitOr|BitXor|LShift|RShift)_",
+    "core/ReplaceComparisonOperator_(Lt|LtE|Gt|GtE|Eq|NotEq)_(Is|IsNot)$",
+    "core/ReplaceComparisonOperator_(Is|IsNot)_(Lt|LtE|Gt|GtE|Eq|NotEq)$",
+    "core/ReplaceUnaryOperator_USub_Invert$",
+]

@@ -16,6 +16,8 @@ from flask import Blueprint, current_app, g, jsonify, request
 
 from src.middleware.auth import require_admin, require_auth, require_trading_permissions
 from src.models.trading import EquitySnapshot, TradingFill, TradingOrder
+from src.routes import schemas
+from src.routes.openapi import documented
 from src.trading.operator import OperatorOrder, UnknownSymbolError
 from src.trading.runtime import (
     NOT_CONFIGURED_MESSAGE,
@@ -26,7 +28,12 @@ from src.trading.runtime import (
 )
 from src.trading.service import ServiceNotRunningError
 from src.utils.audit import record_audit_event
-from src.utils.validators import validate_emergency_stop, validate_manual_order
+from src.utils.validators import (
+    EmergencyStopSchema,
+    ManualOrderSchema,
+    validate_emergency_stop,
+    validate_manual_order,
+)
 
 trading_bp = Blueprint('trading', __name__)
 logger = logging.getLogger(__name__)
@@ -71,18 +78,24 @@ def _unavailable():
 # =============================================================================
 
 @trading_bp.route('/health', methods=['GET'])
+@documented("Whether the engine runs", tag="trading", access="public",
+            responses={200: ("The engine's state, no account data", schemas.TradingHealth)})
 def trading_health():
     """Public: whether the engine is running (no account data)."""
     return format_response(True, data={'engine': _runtime().views()['status']['state']})
 
 
 @trading_bp.route('/status', methods=['GET'])
+@documented("The engine's state, account and risk", tag="trading", access="user",
+            responses={200: ("Status", schemas.Status)})
 @require_auth
 def get_status():
     return format_response(True, data=_runtime().views()['status'])
 
 
 @trading_bp.route('/positions', methods=['GET'])
+@documented("Positions", tag="trading", access="user",
+            responses={200: ("Positions", schemas.Positions), 409: "The engine is not running"})
 @require_auth
 def get_positions():
     positions = _runtime().views()['positions']
@@ -92,6 +105,8 @@ def get_positions():
 
 
 @trading_bp.route('/targets', methods=['GET'])
+@documented("Target weights", tag="trading", access="user",
+            responses={200: ("Targets", schemas.Targets), 409: "The engine is not running"})
 @require_auth
 def get_targets():
     targets = _runtime().views()['targets']
@@ -101,6 +116,9 @@ def get_targets():
 
 
 @trading_bp.route('/orders', methods=['GET'])
+@documented("Working orders and order history", tag="trading", access="user",
+            query={"limit": ("integer", "History rows, at most 500 (default 100)")},
+            responses={200: ("Orders", schemas.Orders)})
 @require_auth
 def get_orders():
     """Working orders from the engine, and order history (newest first) from the database."""
@@ -112,6 +130,9 @@ def get_orders():
 
 
 @trading_bp.route('/fills', methods=['GET'])
+@documented("Fills, newest first", tag="trading", access="user",
+            query={"limit": ("integer", "At most 500 (default 100)")},
+            responses={200: ("Fills", schemas.Fills)})
 @require_auth
 def get_fills():
     fills = TradingFill.query.order_by(TradingFill.timestamp.desc()).limit(_limit()).all()
@@ -119,6 +140,9 @@ def get_fills():
 
 
 @trading_bp.route('/equity-curve', methods=['GET'])
+@documented("Recorded equity", tag="trading", access="user",
+            query={"limit": ("integer", "The most recent snapshots, at most 500 (default 100)")},
+            responses={200: ("Equity snapshots, oldest first", schemas.EquityCurve)})
 @require_auth
 def get_equity_curve():
     """Recorded equity snapshots, oldest first (the most recent ``limit``)."""
@@ -131,6 +155,13 @@ def get_equity_curve():
 # =============================================================================
 
 @trading_bp.route('/orders', methods=['POST'])
+@documented("Place an order", tag="trading", access="trader", body=ManualOrderSchema,
+            description="Checked by the same risk gate as the strategies' orders.",
+            responses={201: ("Sent; the order as the broker first answered", schemas.PlacedOrder),
+                       400: ("Invalid order, or a symbol the engine does not trade", schemas.ValidationErrors,
+                             False),
+                       409: "The engine is not running", 422: "Rejected by the risk gate",
+                       503: "The engine process is not answering"})
 @require_auth
 @require_trading_permissions
 def submit_order():
@@ -164,6 +195,9 @@ def submit_order():
 
 
 @trading_bp.route('/orders/<client_order_id>/cancel', methods=['POST'])
+@documented("Cancel a working order", tag="trading", access="trader", responses={
+    202: "Cancel requested", 404: "No working order with that id", 409: "The engine is not running",
+    503: "The engine process is not answering"})
 @require_auth
 @require_trading_permissions
 def cancel_order(client_order_id):
@@ -184,6 +218,9 @@ def cancel_order(client_order_id):
 # =============================================================================
 
 @trading_bp.route('/control/start', methods=['POST'])
+@documented("Start the engine", tag="control", access="admin", responses={
+    202: "Starting", 409: "Already running", 502: "Start-up failed",
+    503: "Alpaca keys are not set, or the engine process is not answering"})
 @require_auth
 @require_admin
 def start_engine():
@@ -203,6 +240,9 @@ def start_engine():
 
 
 @trading_bp.route('/control/stop', methods=['POST'])
+@documented("Stop the engine", tag="control", access="admin",
+            description="Working orders stay at the broker; the emergency stop cancels them.",
+            responses={200: "Stopped", 503: "The engine process is not answering"})
 @require_auth
 @require_admin
 def stop_engine():
@@ -216,6 +256,10 @@ def stop_engine():
 
 
 @trading_bp.route('/control/resume', methods=['POST'])
+@documented("Lift a halt", tag="control", access="admin",
+            description="After a drawdown kill the high-water mark restarts at the current equity.",
+            responses={200: "Resumed", 409: "The engine is not running",
+                       503: "The engine process is not answering"})
 @require_auth
 @require_admin
 def resume_engine():
@@ -234,6 +278,13 @@ def resume_engine():
 
 
 @trading_bp.route('/emergency-stop', methods=['POST'])
+@documented("Emergency stop", tag="control", access="admin", body=EmergencyStopSchema,
+            body_required=False, rate_limited=False,
+            description="Halts the engine and cancels its orders; with close_all_positions (the default) "
+                        "also closes every position. Without an engine that answers, asks Alpaca directly.",
+            responses={200: ("Done", schemas.EmergencyStopResult), 400: ("Invalid body", schemas.ValidationErrors,
+                                                                       False),
+                       502: "Failed: check the broker directly", 503: "Alpaca keys are not set"})
 @require_auth
 @require_admin
 @require_trading_permissions

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from ..domain import AssetClass, Instrument
 from ..strategies.benchmark import BuyAndHold
@@ -18,6 +19,7 @@ from ..strategies.blend import Blend
 from ..strategies.crypto_trend import DonchianEnsemble
 from ..strategies.rebalancing import RebalancingFlows
 from ..strategies.trend import TimeSeriesMomentum
+from ..strategy import Strategy
 from .experiment import Candidate
 
 #: A diversified, liquid ETF basket with Alpaca history from 2016: US large and small caps,
@@ -87,7 +89,7 @@ def _lineup(instruments: Mapping[str, Instrument]) -> Candidate:
     basket = [instruments[s] for s in TREND_ETFS]
     coins = [instruments[s] for s in CRYPTO]
 
-    def build(p):
+    def build(p: Mapping[str, Any]) -> Strategy:
         core, trend, crypto = LINEUP_MIXES[p["mix"]]
         return Blend("lineup", [
             (BuyAndHold({spy: 0.6, ief: 0.4}), core),

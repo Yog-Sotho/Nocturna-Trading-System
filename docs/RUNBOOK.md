@@ -1,5 +1,8 @@
 # NOCTURNA operations runbook
 
+Setting up a home server from scratch (Ubuntu, Docker, Tailscale, Telegram,
+healthchecks.io): [HOME_SERVER.md](HOME_SERVER.md).
+
 How to run the paper-trading stack around the clock on one host with Docker
 Compose, what the alerts mean, and what to do when something goes wrong.
 Everything here is paper trading on Alpaca; the app refuses any live
@@ -48,7 +51,8 @@ Every container restarts on failure (`restart: unless-stopped`), logs to
    - alerts and the heartbeat ([below](#alerts-and-the-dead-mans-switch));
    - `ENGINE_AUTOSTART=true` if a restart (a crash, a host reboot, an
      upgrade) should resume trading by itself. Without it the engine waits
-     for `POST /api/trading/control/start` after every restart.
+     to be started after every restart: **Start engine** in the dashboard,
+     `/start_engine` in Telegram, or `POST /api/v1/trading/control/start`.
 
    `DATABASE_URL`, `REDIS_URL`, `FLASK_ENV`, `ENGINE_MODE`, `TRADING_MODE`
    and the log settings are fixed by `docker-compose.yml`; values for them
@@ -73,6 +77,9 @@ Every container restarts on failure (`restart: unless-stopped`), logs to
 
 The API listens on `127.0.0.1:5000` of the host only. Either:
 
+- reach it through [Tailscale](https://tailscale.com) from your own devices,
+  with no port opened to the internet: `sudo tailscale serve --bg 5000` and
+  `TRUSTED_PROXY_COUNT=1` (step by step in [HOME_SERVER.md](HOME_SERVER.md));
 - tunnel to it: `ssh -L 5000:127.0.0.1:5000 you@host`, then use
   `http://localhost:5000`; or
 - serve it over HTTPS with the `caddy` proxy. Point a DNS record for your
@@ -119,6 +126,30 @@ An alert repeated within 15 minutes is sent once.
    number at `"chat":{"id":...}` is your chat id.
 4. Set `ALERT_TELEGRAM_BOT_TOKEN` and `ALERT_TELEGRAM_CHAT_ID`.
 
+### Commands from Telegram
+
+With `TELEGRAM_COMMANDS=true` the same bot also takes commands, only from that
+private chat (messages from anyone else, and from groups, are ignored):
+
+| Command | What it does |
+|---|---|
+| `/status` | Engine state, equity, drawdown, halt, cool-down, last market data, last error |
+| `/positions` | Positions and working orders |
+| `/start_engine` | Start the engine (after a restart when `ENGINE_AUTOSTART=false`) |
+| `/stop_engine` | Stop the engine; positions and working orders stay at Alpaca |
+| `/resume` | Lift a halt; the high-water mark restarts at the current equity |
+| `/halt [reason]` | Emergency stop: halt and cancel every order, keeping the positions |
+| `/flatten [reason]` | Emergency stop that also closes every position |
+
+Every command that changes something answers with a code and runs only after
+`/confirm <code>` within 60 seconds, since a tap on the command menu sends at
+once. A change sent while the server was down is not run when it comes back.
+The bot runs in the `api` container and acts like the API's own endpoints:
+with the engine not answering, `/halt` and `/flatten` go to Alpaca directly.
+Each action is in the audit log with `"source": "telegram"`. Anyone who can
+use your Telegram account can use these commands: protect the account with
+two-step verification.
+
 ### ntfy
 
 Install the ntfy app and subscribe to a topic whose name nobody can guess
@@ -144,7 +175,7 @@ Alerts come from the stack itself, so they cannot report a dead host. A
 
 ## Daily operation
 
-- **State:** `GET /api/trading/status` shows the engine's state, equity,
+- **State:** `GET /api/v1/trading/status` shows the engine's state, equity,
   drawdown, whether it is halted or cooling down, and the last
   reconciliation. `docker compose ps` shows each container's health.
 - **Logs:** `docker compose logs -f engine` (or `api`); one JSON object per
@@ -187,7 +218,7 @@ starts first.
 ### Emergency stop
 
 ```bash
-curl -X POST https://trading.example.com/api/trading/emergency-stop \
+curl -X POST https://trading.example.com/api/v1/trading/emergency-stop \
   -H "Authorization: Bearer <token>" -H 'Content-Type: application/json' \
   -d '{"reason": "what happened", "close_all_positions": true}'
 ```
@@ -205,9 +236,9 @@ running engine would buy its targets back on the next bar.
 ### Kill switch fired
 
 Trading is halted and, with `RISK_FLATTEN_ON_KILL`, every position is being
-closed. Check `GET /api/trading/status` (`halted`, `halt_reason`, `risk`) and
+closed. Check `GET /api/v1/trading/status` (`halted`, `halt_reason`, `risk`) and
 the Alpaca dashboard. Understand the loss before resuming: `POST
-/api/trading/control/resume` lifts the halt and restarts the high-water mark
+/api/v1/trading/control/resume` lifts the halt and restarts the high-water mark
 at the current equity.
 
 ### Daily loss limit reached

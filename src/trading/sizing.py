@@ -123,7 +123,7 @@ def stop_risk_weight(price: float, stop: float, risk: float = 0.005) -> float:
     return risk * price / (price - stop)
 
 
-@lru_cache(maxsize=1 << 16)
+@lru_cache(maxsize=1 << 16)  # pragma: no mutate - the cache size changes speed, not results
 def _day(start: datetime, asset_class: AssetClass) -> date:
     # Daily bars start at midnight: New York for equities, UTC for crypto
     zone = NEW_YORK if asset_class is AssetClass.EQUITY else UTC
@@ -156,9 +156,9 @@ def ewma_covariance(history: Mapping[str, Sequence[Bar]], instruments: Mapping[s
     if len(tail):
         weights = (1 - lam) * lam ** np.arange(len(tail) - 1, -1, -1)
         cov = lam ** len(tail) * cov + (tail * weights[:, None]).T @ tail
+    # At least min_history + 1 >= 3 distinct dates, so the span is never zero
     years = (common[-1] - common[0]).days / 365.25
-    periods_per_year = len(returns) / years if years > 0 else 252.0
-    return cov, periods_per_year
+    return cov, len(returns) / years
 
 
 class PortfolioSizer:

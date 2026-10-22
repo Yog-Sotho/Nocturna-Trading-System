@@ -278,10 +278,12 @@ class SimulatedBroker:
             return (c if request.time_in_force is TimeInForce.CLS else o) * adverse
         if request.order_type is OrderType.LIMIT:
             limit = request.limit_price
+            assert limit is not None  # OrderRequest requires it
             if buy:
                 return o if o <= limit else (limit if low < limit else None)
             return o if o >= limit else (limit if h > limit else None)
         stop = request.stop_price  # OrderType.STOP
+        assert stop is not None
         if buy:
             return (o if o >= stop else stop) * adverse if h >= stop else None
         return (o if o <= stop else stop) * adverse if low <= stop else None

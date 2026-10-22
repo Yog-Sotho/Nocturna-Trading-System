@@ -36,7 +36,7 @@ from typing import Any
 import numpy as np
 
 from ..backtest import BacktestConfig, BacktestResult, run_backtest
-from ..domain import Bar
+from ..domain import Bar, Instrument
 from ..engine import Allocation
 from ..strategy import Strategy, StrategyContext, consult, needed_history
 from .stats import Returns, daily_returns, sharpe_ratio, summarize
@@ -164,7 +164,7 @@ class SwitchingStrategy(Strategy):
         self.name = name
         self._strategies = list(strategies)
         self._schedule = sorted(schedule)
-        instruments = {}
+        instruments: dict[str, Instrument] = {}
         for strategy in self._strategies:
             for instrument in strategy.instruments:
                 instruments.setdefault(instrument.symbol, instrument)

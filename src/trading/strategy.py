@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 import numpy as np
 
@@ -57,7 +58,7 @@ class Strategy(ABC):
     lookback: int = 1
     min_history: int | None = None
 
-    def __init_subclass__(cls, **kwargs) -> None:
+    def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         name = getattr(cls, "name", None)
         if name is not None and not _NAME.fullmatch(name):

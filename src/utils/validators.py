@@ -62,11 +62,6 @@ class EmergencyStopSchema(BaseModel):
         description="Whether to close all positions"
     )
 
-    notify: bool = Field(
-        default=True,
-        description="Whether to send notifications"
-    )
-
     @field_validator('reason', mode='before')
     @classmethod
     def validate_reason(cls, v):
@@ -94,11 +89,6 @@ class LoginSchema(BaseModel):
         min_length=8,
         max_length=128,
         description="Password"
-    )
-
-    remember_me: bool = Field(
-        default=False,
-        description="Extend token expiration"
     )
 
     @field_validator('username', mode='before')

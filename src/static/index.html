@@ -1,14 +1,97 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>NOCTURNA v2.0 - Advanced Trading Bot</title>
-    <script type="module" crossorigin src="/assets/index-DQUQ25rj.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-BhMayFqy.css">
-  </head>
-  <body>
-    <div id="root"></div>
-  </body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Nocturna</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <main id="login" class="login" hidden>
+    <h1>Nocturna</h1>
+    <p class="muted">Paper trading</p>
+    <form id="login-form" autocomplete="on">
+      <label>Username or email
+        <input name="username" autocomplete="username" required autocapitalize="none" spellcheck="false">
+      </label>
+      <label>Password
+        <input name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <label class="check">
+        <input name="remember" type="checkbox"> Stay signed in on this device
+      </label>
+      <button type="submit" class="primary">Sign in</button>
+      <p id="login-error" class="error" role="alert" hidden></p>
+    </form>
+  </main>
+
+  <div id="app" hidden>
+    <header class="top">
+      <span class="brand">Nocturna</span>
+      <span id="engine-badge" class="badge">…</span>
+      <button id="logout" class="link">Sign out</button>
+    </header>
+
+    <p id="banner" class="banner" role="alert" hidden></p>
+    <p id="notice" class="notice" role="status" hidden></p>
+
+    <section class="card" aria-labelledby="h-account">
+      <h2 id="h-account">Account</h2>
+      <dl id="account" class="figures"></dl>
+      <p id="updated" class="muted small"></p>
+    </section>
+
+    <section class="card" aria-labelledby="h-controls">
+      <h2 id="h-controls">Controls</h2>
+      <div class="buttons">
+        <button data-action="start">Start engine</button>
+        <button data-action="stop">Stop engine</button>
+        <button data-action="resume">Resume after halt</button>
+      </div>
+      <div class="buttons">
+        <button data-action="halt" class="danger">Emergency stop</button>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="h-equity">
+      <h2 id="h-equity">Equity</h2>
+      <div id="equity-chart" class="chart"></div>
+    </section>
+
+    <section class="card" aria-labelledby="h-positions">
+      <h2 id="h-positions">Positions</h2>
+      <div id="positions"></div>
+    </section>
+
+    <section class="card" aria-labelledby="h-orders">
+      <h2 id="h-orders">Working orders</h2>
+      <div id="working"></div>
+    </section>
+
+    <section class="card" aria-labelledby="h-fills">
+      <h2 id="h-fills">Recent fills</h2>
+      <div id="fills"></div>
+    </section>
+
+    <section class="card" aria-labelledby="h-history">
+      <h2 id="h-history">Order history</h2>
+      <div id="history"></div>
+    </section>
+  </div>
+
+  <dialog id="confirm">
+    <form method="dialog">
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-text"></p>
+      <div id="confirm-extra"></div>
+      <div class="buttons">
+        <button value="cancel">Cancel</button>
+        <button value="ok" id="confirm-ok" class="primary">Confirm</button>
+      </div>
+    </form>
+  </dialog>
+</body>
 </html>

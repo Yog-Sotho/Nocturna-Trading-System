@@ -77,7 +77,7 @@ _EVENT_STATUS = {
 
 
 def _value(enum_or_str: Any) -> str:
-    return getattr(enum_or_str, "value", enum_or_str)
+    return str(getattr(enum_or_str, "value", enum_or_str))
 
 
 def _decimal(value: Any) -> Decimal:
@@ -281,12 +281,16 @@ class AlpacaBroker:
                       client_order_id=request.client_order_id)
         if request.order_type is OrderType.MARKET:
             return MarketOrderRequest(**common)
+        # OrderRequest requires the prices each order type uses
+        limit, stop = request.limit_price, request.stop_price
         if request.order_type is OrderType.LIMIT:
-            return LimitOrderRequest(**common, limit_price=float(request.limit_price))
+            assert limit is not None
+            return LimitOrderRequest(**common, limit_price=float(limit))
         if request.order_type is OrderType.STOP:
-            return StopOrderRequest(**common, stop_price=float(request.stop_price))
-        return StopLimitOrderRequest(**common, limit_price=float(request.limit_price),
-                                     stop_price=float(request.stop_price))
+            assert stop is not None
+            return StopOrderRequest(**common, stop_price=float(stop))
+        assert limit is not None and stop is not None
+        return StopLimitOrderRequest(**common, limit_price=float(limit), stop_price=float(stop))
 
 
 def load_instruments(client: Any, wanted: Iterable[tuple[str, AssetClass]]) -> dict[str, Instrument]:

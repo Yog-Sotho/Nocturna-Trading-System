@@ -224,6 +224,37 @@ history begins in 2021) does not hold back the others.
 `TRADING_MODE=PAPER` and `ALPACA_BASE_URL` (if set) is the paper endpoint. The adapter only
 connects to Alpaca's paper API.
 
+## Dashboard and Telegram
+
+The dashboard (`src/static/`) is plain HTML, CSS and one JavaScript module, served by the API
+with no build step, so the source is what runs. It signs in with the JWT endpoints, keeps the
+access token in memory and the single-use refresh token in `sessionStorage` (or
+`localStorage` with "Stay signed in"), and rotates it one request at a time per tab, under a
+Web Lock across tabs, since presenting a used refresh token revokes every session. It reads
+the same endpoints as any API client and builds every element with DOM calls, never
+`innerHTML`, under the API's `script-src 'self'` policy. Its files are served with
+`Cache-Control: no-cache`, so an upgrade reaches phones at once. `tools/dashboard/` runs the
+app with a simulated engine and drives it in Chromium at phone size.
+
+Telegram commands (`src/trading/telegram.py`) are a second front end on the same runtime: a
+long-polling bot in the API's serving process, answering only the operator's private chat,
+with every change confirmed by a one-time code.
+
+## API contract
+
+The API is versioned under `/api/v1`. Each route declares its contract with `@documented`
+(`src/routes/openapi.py`): a summary, who may call it, the request body and query parameters,
+and the `data` of each response as a pydantic model (`src/routes/schemas.py`, unknown fields
+forbidden). 500 and, unless exempt, 429 are implied, as are 401 for signed-in access and 403
+for trader and admin access. `build_spec` walks the URL map, so an undeclared route cannot
+reach the document: it fails the build. `src/tests/test_openapi.py` keeps the declarations
+true: every signed-in route answers 401 without credentials, admin routes refuse a trader and
+trader routes a reader, and a tour of the whole API checks every response against the
+declared model for its status (an undeclared status fails) and that every operation was
+exercised.
+
 ## What comes next
 
-Phase 7 versions the API and rebuilds the dashboard; see [ROADMAP.md](ROADMAP.md).
+Phase 9 is the paper soak: at least 60 trading days of the engine trading the Alpaca paper account
+unattended, then a staged live ramp only if the promotion gates hold; see
+[ROADMAP.md](ROADMAP.md).

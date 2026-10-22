@@ -27,7 +27,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from .domain import NEW_YORK, AssetClass, OrderRequest, OrderType, Side
+from .domain import NEW_YORK, AssetClass, OrderRequest, Side
 
 ZERO = Decimal("0")
 
@@ -138,7 +138,7 @@ class RiskGate:
     def drawdown(self) -> Decimal:
         """Current drawdown from the high-water mark, 0 when at a new high."""
         hwm, equity = self.state.high_water_mark, self.state.last_equity
-        if not hwm or equity is None or hwm <= 0:
+        if hwm is None or equity is None or hwm <= 0:
             return ZERO
         return max(ZERO, 1 - equity / hwm)
 
@@ -253,7 +253,7 @@ class RiskGate:
             return RiskDecision(False, f"{request.symbol} position would exceed "
                                        f"{limits.max_position_weight:.0%} of equity")
 
-        values = {s: abs(q) * ctx.prices.get(s, ZERO) for s, q in ctx.exposure.items() if q and s != request.symbol}
+        values = {s: abs(q) * ctx.prices.get(s, ZERO) for s, q in ctx.exposure.items() if s != request.symbol}
         values[request.symbol] = abs(after) * ctx.price
         cap = limits.max_asset_class_weight.get(asset_class)
         if cap is not None:
@@ -272,7 +272,7 @@ class RiskGate:
         self._recent.append((now, request.symbol, request.side, request.qty))
 
     def _collar(self, request: OrderRequest, price: Decimal) -> str:
-        if request.order_type not in (OrderType.LIMIT, OrderType.STOP_LIMIT) or request.limit_price is None:
+        if request.limit_price is None:  # only limit and stop-limit orders carry one (OrderRequest checks)
             return ""
         collar = self.limits.limit_collar
         if request.side is Side.BUY and request.limit_price > price * (1 + collar):

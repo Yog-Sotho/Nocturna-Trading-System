@@ -23,9 +23,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from flask import Flask
+from sqlalchemy import select
 
 from src.models.trading import EngineCommand, EngineStatusRecord
 from src.models.user import db
+
+from .clock import Clock
 
 #: How long a command may wait for the engine before it is not executed at all
 COMMAND_TTL = {"halt": None, "submit_order": timedelta(seconds=30), "cancel_order": timedelta(seconds=30),
@@ -49,7 +52,7 @@ class CommandTimeoutError(TimeoutError):
 
 
 class EngineChannel:
-    def __init__(self, app: Flask, clock=None) -> None:
+    def __init__(self, app: Flask, clock: Clock | None = None) -> None:
         self._app = app
         self._now = clock.now if clock is not None else (lambda: datetime.now(UTC))
 
@@ -69,7 +72,8 @@ class EngineChannel:
         now = self._now()
         out = []
         with self._app.app_context():
-            for row in EngineCommand.query.filter_by(status="pending").order_by(EngineCommand.id).all():
+            pending = select(EngineCommand).where(EngineCommand.status == "pending").order_by(EngineCommand.id)
+            for row in db.session.scalars(pending).all():
                 if row.expires_at is not None and row.expires_at < now:
                     row.status, row.completed_at = "expired", now
                 else:
@@ -128,6 +132,8 @@ class EngineChannel:
         while True:
             with self._app.app_context():
                 row = db.session.get(EngineCommand, command_id)
+                if row is None:  # gone, e.g. the database was restored from a backup
+                    raise CommandTimeoutError(f"command {command_id} no longer exists")
                 if not withdrawn and time.monotonic() >= deadline:
                     withdrawn = True
                     if row.status == "pending" and row.kind != "halt":

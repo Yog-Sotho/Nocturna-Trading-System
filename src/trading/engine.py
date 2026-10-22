@@ -192,7 +192,7 @@ class Engine:
     def add_listener(self, listener: EngineListener) -> None:
         self._listeners.append(listener)
 
-    def _emit(self, kind: str, **fields) -> None:
+    def _emit(self, kind: str, **fields: Any) -> None:
         event = EngineEvent(kind, self.clock.now(), **fields)
         for listener in self._listeners:
             try:
@@ -405,7 +405,7 @@ class Engine:
             return RiskDecision(False, f"unknown symbol {request.symbol}")
         now = self.clock.now()
         price = self.prices.get(request.symbol)
-        history = self._history.get(request.symbol) or ()
+        history: Sequence[Bar] = self._history.get(request.symbol) or ()
         jump = None
         if len(history) >= 2 and history[-2].close > 0:
             jump = abs(_decimal(history[-1].close / history[-2].close) - 1)
@@ -418,6 +418,7 @@ class Engine:
             logger.warning("Risk gate rejected %s: %s", request.client_order_id, decision.reason)
             self._emit("rejected", detail=f"{request.client_order_id}: {decision.reason}")
             return decision
+        assert price is not None  # the gate refuses an order without a reference price
         self.risk.record(request, price, now)
         order = Order.new(request, self.clock.now())
         self._store(order)

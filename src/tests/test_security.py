@@ -124,7 +124,7 @@ class TestIPLockoutExpiry:
 
 class TestRateLimits:
     def _post_login(self, client, ip="127.0.0.1"):
-        return client.post("/api/auth/login", json={}, environ_base={"REMOTE_ADDR": ip})
+        return client.post("/api/v1/auth/login", json={}, environ_base={"REMOTE_ADDR": ip})
 
     def test_login_is_limited_per_ip(self, client):
         for _ in range(10):
@@ -141,12 +141,12 @@ class TestRateLimits:
             assert self._post_login(client).status_code == 400
 
     def test_route_and_default_limits_are_advertised(self, client):
-        assert client.post("/api/auth/login", json={}).headers["X-RateLimit-Limit"] == "10"
+        assert client.post("/api/v1/auth/login", json={}).headers["X-RateLimit-Limit"] == "10"
         assert client.get("/api/version").headers["X-RateLimit-Limit"] == "300"
 
     def test_health_and_emergency_stop_are_exempt(self, client, admin_headers):
         assert "X-RateLimit-Limit" not in client.get("/health").headers
-        resp = client.post("/api/trading/emergency-stop", headers=admin_headers, json={"reason": "drill"})
+        resp = client.post("/api/v1/trading/emergency-stop", headers=admin_headers, json={"reason": "drill"})
         assert "X-RateLimit-Limit" not in resp.headers
 
     def test_every_configured_endpoint_exists(self, app):
@@ -191,12 +191,12 @@ class TestRequestHandling:
         assert resp.get_json()["error"] == "Endpoint not found"
 
     def test_wrong_method_is_json_405(self, client):
-        resp = client.get("/api/auth/login")
+        resp = client.get("/api/v1/auth/login")
         assert resp.status_code == 405
         assert resp.get_json()["success"] is False
 
     def test_oversized_body_is_json_413(self, client):
-        resp = client.post("/api/auth/login", data=b"x" * (1024 * 1024 + 1),
+        resp = client.post("/api/v1/auth/login", data=b"x" * (1024 * 1024 + 1),
                            content_type="application/json")
         assert resp.status_code == 413
         assert resp.get_json()["error"] == "Request body too large"
@@ -210,13 +210,13 @@ class TestRequestHandling:
         # As in production: unhandled errors reach the JSON 500 handler instead of the test client
         monkeypatch.setitem(client.application.config, "PROPAGATE_EXCEPTIONS", False)
         monkeypatch.setattr(trading_routes, "_runtime", explode)
-        resp = client.get("/api/trading/status", headers=auth_headers)
+        resp = client.get("/api/v1/trading/status", headers=auth_headers)
         assert resp.status_code == 500
         assert resp.get_json()["error"] == "Internal server error"
         assert "hunter2" not in resp.get_data(as_text=True)
 
     def test_login_does_not_bypass_cors_allowlist(self, client):
-        resp = client.options("/api/auth/login", headers={
+        resp = client.options("/api/v1/auth/login", headers={
             "Origin": "https://evil.example",
             "Access-Control-Request-Method": "POST",
         })
@@ -225,11 +225,11 @@ class TestRequestHandling:
 
 class TestMalformedBodies:
     @pytest.mark.parametrize("path,method", [
-        ("/api/auth/login", "post"),
-        ("/api/auth/refresh", "post"),
-        ("/api/api-keys", "post"),
-        ("/api/users", "post"),
-        ("/api/trading/orders", "post"),
+        ("/api/v1/auth/login", "post"),
+        ("/api/v1/auth/refresh", "post"),
+        ("/api/v1/api-keys", "post"),
+        ("/api/v1/users", "post"),
+        ("/api/v1/trading/orders", "post"),
     ])
     @pytest.mark.parametrize("body", [b"{not json", b"[1, 2]", b'"text"'])
     def test_rejected_with_400(self, client, admin_headers, path, method, body):
@@ -240,7 +240,7 @@ class TestMalformedBodies:
 
 class TestCodeScanningFixes:
     def test_invalid_order_does_not_echo_exception_text(self, client, auth_headers):
-        resp = client.post("/api/trading/orders", headers=auth_headers, json={
+        resp = client.post("/api/v1/trading/orders", headers=auth_headers, json={
             "symbol": "SPY", "side": "buy", "order_type": "market", "quantity": "not-a-number",
         })
         assert resp.status_code == 400

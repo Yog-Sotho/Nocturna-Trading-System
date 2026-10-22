@@ -23,6 +23,8 @@ from src.config import ensure_sqlite_directory, load_settings
 from src.db_migrations import upgrade as upgrade_database
 from src.middleware.security import configure_proxy, setup_rate_limiting, setup_security_headers
 from src.models.user import db
+from src.routes import schemas
+from src.routes.openapi import documented
 from src.routes.ops import ops_bp
 from src.routes.trading import trading_bp
 from src.routes.user import user_bp
@@ -30,6 +32,27 @@ from src.trading.safety import assert_paper_only
 from src.utils.logger import setup_secure_logging
 
 _REQUEST_ID_PATTERN = re.compile(r'[A-Za-z0-9._-]{1,64}')
+
+
+def _revalidated(response):
+    """The dashboard's files keep their names across upgrades: browsers must check for a new version."""
+    response.headers['Cache-Control'] = 'no-cache'
+    return response
+
+
+def start_serving(app):
+    """
+    Start what runs beside the web server: the engine (when ENGINE_AUTOSTART is
+    set), the engine monitor and Telegram commands. Call in the process that
+    serves requests, after gunicorn's fork: threads started before it do not
+    survive, and one Telegram bot must have exactly one poller.
+    """
+    from src.trading.alerts import start_monitoring
+    from src.trading.telegram import start_telegram_commands
+
+    app.extensions['trading'].autostart()
+    start_monitoring(app)
+    start_telegram_commands(app)
 
 
 def create_app(config_override=None):
@@ -188,8 +211,9 @@ def create_app(config_override=None):
     # =============================================================================
     # REGISTER BLUEPRINTS
     # =============================================================================
-    app.register_blueprint(user_bp, url_prefix='/api')
-    app.register_blueprint(trading_bp, url_prefix='/api/trading')
+    # Version 1 of the API; /api/version (unversioned) says which versions exist
+    app.register_blueprint(user_bp, url_prefix='/api/v1')
+    app.register_blueprint(trading_bp, url_prefix='/api/v1/trading')
 
     # Live (paper) trading engine: in this process (built and started on demand, never at
     # import), or a separate engine process reached through the database
@@ -308,6 +332,9 @@ def create_app(config_override=None):
     # HEALTH CHECK ENDPOINT
     # =============================================================================
     @app.route('/health', methods=['GET'])
+    @documented("Liveness", tag="system", access="public", envelope=False, rate_limited=False,
+                description="Answers while the API process runs; /ready also needs the database.",
+                responses={200: ("Alive", schemas.Health)})
     def health_check():
         """Public health check endpoint for load balancers."""
         return jsonify({
@@ -337,11 +364,11 @@ def create_app(config_override=None):
         # check cannot be used to probe for files elsewhere on the server
         static_file = safe_join(static_folder, path) if path else None
         if static_file is not None and os.path.isfile(static_file):
-            return send_from_directory(static_folder, path)
+            return _revalidated(send_from_directory(static_folder, path))
         else:
             index_path = os.path.join(static_folder, 'index.html')
             if os.path.exists(index_path):
-                return send_from_directory(static_folder, 'index.html')
+                return _revalidated(send_from_directory(static_folder, 'index.html'))
             else:
                 return jsonify({
                     'success': False,
@@ -352,11 +379,15 @@ def create_app(config_override=None):
     # API VERSION ENDPOINT
     # =============================================================================
     @app.route('/api/version', methods=['GET'])
+    @documented("API versions", tag="system", access="public", envelope=False,
+                description="Unversioned on purpose: it says which versions exist.",
+                responses={200: ("Versions", schemas.Version)})
     def api_version():
-        """Return API version and status."""
         return jsonify({
             'version': '2.0.0',
             'api_version': 'v1',
+            'versions': ['v1'],
+            'openapi': '/api/v1/openapi.json',
             'environment': settings.flask_env,
             'timestamp': datetime.now(UTC).isoformat()
         })
@@ -376,9 +407,7 @@ if __name__ == '__main__':
     app = create_app()
     # Only the reloader's serving child may start the engine (see main.py)
     if not app.config['DEBUG'] or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
-        from src.trading.alerts import start_monitoring
-        app.extensions['trading'].autostart()
-        start_monitoring(app)
+        start_serving(app)
 
     # =============================================================================
     # PRODUCTION WARNING
@@ -394,7 +423,7 @@ if __name__ == '__main__':
 
     # Development server with improved settings
     app.run(
-        host=os.environ.get('HOST', '0.0.0.0'),
+        host=os.environ.get('HOST', '127.0.0.1'),
         port=int(os.environ.get('PORT', 5000)),
         debug=app.config['DEBUG'],
         threaded=True

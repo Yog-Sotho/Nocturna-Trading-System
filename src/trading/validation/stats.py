@@ -96,7 +96,8 @@ def sharpe_columns(matrix: np.ndarray) -> np.ndarray:
     """Per-period Sharpe ratio of every column."""
     sd = matrix.std(axis=0, ddof=1)
     mean = matrix.mean(axis=0)
-    return np.divide(mean, sd, out=np.zeros_like(mean), where=sd > 0)
+    sharpe: np.ndarray = np.divide(mean, sd, out=np.zeros_like(mean), where=sd > 0)
+    return sharpe
 
 
 def skewness(returns: np.ndarray) -> float:
@@ -151,7 +152,7 @@ def effective_trials(matrix: np.ndarray) -> float:
     k = corr.shape[0]
     rho = (corr.sum() - k) / (k * (k - 1))
     rho = min(1.0, max(0.0, float(rho)))
-    return rho + (1 - rho) * m
+    return float(rho + (1 - rho) * m)
 
 
 @dataclass(frozen=True)

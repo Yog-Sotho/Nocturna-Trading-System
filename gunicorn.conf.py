@@ -61,6 +61,10 @@ daemon = False
 # PID file for daemonized master
 pidfile = '/var/run/nocturna/gunicorn.pid'
 
+# Gunicorn's control socket (gunicornc) is not used; it would also need a writable
+# $HOME, which the image's read-only /app is not
+control_socket_disable = True
+
 # User/Group for worker processes
 # user = 'nocturna'
 # group = 'nocturna'
@@ -138,16 +142,14 @@ def child_exit(server, worker):
 
 def post_worker_init(worker):
     """
-    Start the trading engine and the engine monitor inside the worker. With
-    preload_app the app is built in the master, and a thread started there
-    would not survive the fork.
+    Start the engine, the engine monitor and Telegram commands inside the
+    worker. With preload_app the app is built in the master, and a thread
+    started there would not survive the fork.
     """
     app = getattr(worker, "wsgi", None)
-    runtime = getattr(app, "extensions", {}).get("trading")
-    if runtime is not None:
-        from src.trading.alerts import start_monitoring
-        runtime.autostart()
-        start_monitoring(app)
+    if "trading" in getattr(app, "extensions", {}):
+        from src.main import start_serving
+        start_serving(app)
 
 
 def worker_int(worker):

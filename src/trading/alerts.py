@@ -36,8 +36,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
+from flask import Flask
+
 from src.config import Settings
 
+from .clock import Clock
 from .engine import EngineEvent
 from .runtime import STALE_AFTER
 
@@ -74,7 +77,8 @@ def http_post(url: str, body: bytes, headers: Mapping[str, str]) -> None:
     if urlsplit(url).scheme not in ("http", "https"):
         raise ValueError("only http(s) URLs are allowed")
     request = urllib.request.Request(url, data=body, headers=dict(headers), method="POST")
-    with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT):  # nosec B310 - scheme checked above
+    # The scheme is checked above, so B310 (file:// and custom schemes) does not apply
+    with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT):  # nosec B310
         pass
 
 
@@ -183,7 +187,7 @@ class _Background:
 
 
 class AlertDispatcher:
-    def __init__(self, sinks: list[Sink], clock=None, dedup_window: timedelta = DEDUP_WINDOW,
+    def __init__(self, sinks: list[Sink], clock: Clock | None = None, dedup_window: timedelta = DEDUP_WINDOW,
                  retry_delays: tuple[float, ...] = (2.0, 10.0)) -> None:
         """
         Args:
@@ -406,7 +410,7 @@ class ReachabilityMonitor:
             self._state = state
 
 
-def start_monitoring(app, interval: float = 5.0) -> threading.Thread | None:
+def start_monitoring(app: Flask, interval: float = 5.0) -> threading.Thread | None:
     """
     Watch the engine from the web process: all of it when the engine runs
     here (embedded), only that it answers when it runs as its own process.

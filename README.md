@@ -29,7 +29,8 @@ trading; only the clock, the market-data source and the broker are swapped. See
 | Strategies | `src/trading/strategies/` | 60/40 benchmark (traded), plus month-end rebalancing flows, ETF time-series momentum, a crypto Donchian ensemble and a blend; none has passed the promotion gates yet |
 | Trading history (orders, fills, equity snapshots) and audit log | `src/models/` | Working |
 | REST API with JWT and API-key auth (single operator) | `src/main.py`, `src/routes/` | Working; public registration is disabled |
-| Dashboard | `src/static/` | Compiled bundle only (no source); it targets the old API and does not send auth headers. Rebuilt in Phase 7 |
+| Dashboard: sign-in, account and risk figures, equity curve, positions and targets, working orders (cancel), fills and order history, start / stop / resume, emergency stop; phone-first, light and dark | `src/static/` (plain HTML, CSS and JavaScript; no build step) | Working; checked in Chromium at phone size by `tools/dashboard/e2e.cjs` |
+| Telegram commands: `/status`, `/positions`, `/start_engine`, `/stop_engine`, `/resume`, `/halt`, `/flatten`, each change confirmed with a code | `src/trading/telegram.py` | Working against a fake Bot API; not yet run against Telegram |
 | Operations: the engine as its own process, alerts (Telegram, ntfy, webhook), a dead man's switch, readiness and Prometheus endpoints, JSON logs, a Compose stack with backups and an HTTPS proxy | `src/trading/worker.py`, `alerts.py`, `docker-compose.yml`, [docs/RUNBOOK.md](docs/RUNBOOK.md) | Working; verified as a full stack without Alpaca keys |
 
 ### Known limitations
@@ -67,12 +68,12 @@ python main.py
 Log in to get a token, then pass it as `Authorization: Bearer <token>`:
 
 ```bash
-curl -s -X POST http://localhost:5000/api/auth/login \
+curl -s -X POST http://localhost:5000/api/v1/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"username": "admin", "password": "<your password>"}'
 ```
 
-Start the engine with `POST /api/trading/control/start` (admin), or set `ENGINE_AUTOSTART=true`.
+Start the engine with `POST /api/v1/trading/control/start` (admin), or set `ENGINE_AUTOSTART=true`.
 On start it loads the paper account from Alpaca (cash, positions, working orders), warms up
 history, and acts on the latest closed bars; after that it wakes each time a new bar becomes
 final.
@@ -81,7 +82,9 @@ final.
 
 `docker compose up -d --build` runs the API, the engine as its own process, PostgreSQL,
 Redis and daily backups; `--profile proxy` adds HTTPS through Caddy. Setup, alerts, upgrades,
-incidents and restores are in [docs/RUNBOOK.md](docs/RUNBOOK.md).
+incidents and restores are in [docs/RUNBOOK.md](docs/RUNBOOK.md); a home server reached through
+Tailscale, with Telegram and healthchecks.io, step by step in
+[docs/HOME_SERVER.md](docs/HOME_SERVER.md).
 
 The API's entry point is `gunicorn -c gunicorn.conf.py 'src.main:create_app()'`, a single,
 never-recycled worker (in development the engine lives in that process); the engine's is
@@ -111,7 +114,7 @@ account equity and configurable through `RISK_*` / `SIZING_*` variables:
 Orders that only reduce a position skip the daily breakers and data checks, so the book can
 always be reduced. The gate's state (high-water mark, halt, daily counters) is stored in the
 database and restored on restart, so a halt survives a redeploy. After a drawdown halt,
-`POST /api/trading/control/resume` restarts the high-water mark at the current equity.
+`POST /api/v1/trading/control/resume` restarts the high-water mark at the current equity.
 Strategies with protective stops size positions with `stop_risk_weight` (0.5% of equity at
 risk per trade by default).
 
@@ -162,13 +165,21 @@ Candidates are defined in `src/trading/validation/candidates.py`.
 
 ## API
 
-All endpoints except `/health`, `/api/version`, `/api/trading/health` and the login and
-refresh endpoints require a bearer token or an API key (`X-API-Key` header). Roles and account
+Version 1 of the API is served under `/api/v1`; `GET /api/version` lists the versions. The
+OpenAPI 3.1 document is at `GET /api/v1/openapi.json` (or `flask --app src.main openapi
+--output openapi.json`), generated from each route's declaration (`src/routes/openapi.py`,
+response models in `src/routes/schemas.py`); contract tests check that every route is declared,
+that its declared access holds and that real responses match its models. Money and quantities
+are decimal strings.
+
+All endpoints except `/health`, `/ready`, `/api/version`, `/api/v1/openapi.json`,
+`/api/v1/trading/health` and the login and refresh endpoints require a bearer token or an API key (`X-API-Key` header). Roles and account
 status are read from the database on every request, so changes apply immediately. Endpoints marked
 *admin* also require the admin role; order and control endpoints require the trader role and
 an account whose trading is not disabled.
 
-**System:** `GET /health`, `GET /api/version`
+**System:** `GET /health` (liveness), `GET /ready` (database), `GET /metrics` (Prometheus, with
+`METRICS_TOKEN`), `GET /api/version`, `GET /api/v1/openapi.json`
 
 Requests are rate limited per client IP: 300 per minute by default, with tighter limits on
 login (10/min), token refresh (30/min), password changes (5/min), user creation (5/min) and
@@ -177,7 +188,7 @@ API key creation (10/hour); see `ROUTE_RATE_LIMITS` in `src/middleware/security.
 within 15 minutes block logins from it until the failures are 15 minutes old. Request bodies
 are limited to 1 MB.
 
-**Auth and users** (`/api`)
+**Auth and users** (`/api/v1`)
 
 | Method | Path | Notes |
 |---|---|---|
@@ -193,7 +204,7 @@ are limited to 1 MB.
 | DELETE | `/api-keys/<id>` | revokes one of your keys |
 | GET | `/audit-logs` | admin; logins, logouts, password, user and API key changes, operator orders, engine start/stop/halt, emergency stops, risk rejections, reconciliations and engine errors. Filters: `event_type`, `user_id`, `page`, `per_page` |
 
-**Trading** (`/api/trading`)
+**Trading** (`/api/v1/trading`)
 
 | Method | Path | Notes |
 |---|---|---|
@@ -237,7 +248,8 @@ to start and lists every problem if the configuration is unsafe. The ones that m
 ```bash
 pip install --require-hashes -r requirements-dev.txt   # runtime + dev tools, hashed lockfile
 pytest src/tests                                        # test suite
-ruff check src/                                         # lint
+ruff check src/ tools/                                  # lint
+mypy                                                    # strict typing of the trading core
 ```
 
 ### Database migrations
@@ -263,8 +275,36 @@ startup. It holds only the operator account, so back it up, delete `src/database
 
 Dependencies are declared in `requirements.in` / `requirements-dev.in` and compiled into
 hashed lockfiles with `uv pip compile ... --generate-hashes` (commands are in the `.in`
-headers). CI (`.github/workflows/ci.yml`) runs ruff, bandit (report only), a dependency
-audit with pip-audit, and pytest.
+headers).
+
+### Quality gates
+
+CI (`.github/workflows/ci.yml`) blocks a merge on any of:
+
+| Gate | What it checks |
+|---|---|
+| ruff | lint of `src/` and `tools/` |
+| mypy | `--strict` typing of the trading core (`src/trading/`, `src/models/trading.py`; settings in `pyproject.toml`) |
+| bandit | security findings of medium severity and confidence or higher; a reviewed exception carries `# nosec <id>` with the reason on the line above |
+| pip-audit | known vulnerabilities in both lockfiles |
+| pytest | the suite on SQLite and PostgreSQL; at least 94% line coverage overall and 95% for each core module (`tools/coverage_gate.py`) |
+| dashboard | the dashboard against a simulated engine in Chromium at phone size (`tools/dashboard/`) |
+| image | the Docker image builds and the Compose stack starts healthy with a throwaway `.env` |
+
+Mutation testing (`.github/workflows/mutation.yml`, weekly, on demand, and on pull requests
+that touch the risk code) changes `risk.py` and `sizing.py` one operator at a time with
+[Cosmic Ray](https://github.com/sixty-north/cosmic-ray) and runs the risk tests against each
+change; a change no test notices survives, and the job fails when more than 3% of the tested
+changes survive. To run it locally (it takes a while):
+
+```bash
+pip install --require-hashes -r requirements-mutation.txt
+cosmic-ray init tools/mutation/cosmic-ray.toml mutation.sqlite
+cr-filter-operators mutation.sqlite tools/mutation/cosmic-ray.toml
+cr-filter-pragma mutation.sqlite
+cosmic-ray exec tools/mutation/cosmic-ray.toml mutation.sqlite
+cosmic-ray dump mutation.sqlite | python tools/mutation/gate.py --max-survival 3
+```
 
 ```
 src/
@@ -290,7 +330,7 @@ src/
 ├── models/          # SQLAlchemy models (users, keys, audit, trading history)
 ├── migrations/      # Alembic revisions
 ├── utils/           # validators, logging, audit
-├── static/          # compiled dashboard bundle
+├── static/          # the dashboard (index.html, app.js, app.css)
 └── tests/
 ```
 
@@ -305,7 +345,8 @@ src/
 | 4 | Validation pipeline: walk-forward, purged cross-validation, deflated Sharpe ratio, overfitting tests (done) |
 | 5 | Strategy rebuild: four candidates built and validated; none passed, the engine keeps the 60/40 benchmark (done) |
 | 6 | Operations: engine as its own process, alerts, heartbeat, readiness, metrics, JSON logs, Compose stack, backups, runbook (done) |
-| 7–8 | API and dashboard, CI quality gates |
+| 7 | Dashboard rebuilt with source and auth, Telegram commands, versioned API with OpenAPI docs (done) |
+| 8 | CI quality gates: strict typing, coverage floors, mutation testing of the risk code, blocking security scans (done) |
 | 9 | Paper-trading soak, then a staged live ramp |
 
 The full plan, operator decisions, strategy lineup and promotion gates are in
