@@ -30,7 +30,11 @@ jobs:
           pip install --require-hashes -r requirements-dev.txt
 
       - name: Ruff lint
-        run: ruff check src/ tools/ ops/ --output-format=github
+        run: ruff check src/ tools/ setup/ --output-format=github
+
+      # The runner image ships shellcheck
+      - name: Shell scripts
+        run: shellcheck setup.sh ops/backup.sh
 
       # Strict on the trading core and its models (pyproject.toml [tool.mypy])
       - name: Type check

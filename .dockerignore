@@ -45,3 +45,7 @@ Dockerfile
 
 # Mounted from the host by the backup and caddy services
 ops/
+
+# The host's setup, not the app's
+setup/
+setup.sh

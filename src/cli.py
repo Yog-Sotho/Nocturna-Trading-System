@@ -3,6 +3,7 @@ NOCTURNA Trading System - Operator CLI commands.
 
 Usage:
     flask --app src.main create-admin --email ops@example.com
+    flask --app src.main list-admins
     flask --app src.main db current|upgrade|downgrade|check|revision
     flask --app src.main validate benchmark --start 2017-01-01 --output reports/benchmark.md
     flask --app src.main engine run          # the engine as its own process (ENGINE_MODE=external)
@@ -51,6 +52,14 @@ def register_cli(app: Flask) -> None:
             raise click.ClickException(str(e)) from e
 
         click.echo(f"Admin user {admin.username!r} created (id={admin.id}).")
+
+    @app.cli.command("list-admins")
+    def list_admins() -> None:
+        """Print the username of each admin account, one per line (setup.sh uses it)."""
+        from src.models.user import User
+
+        for user in User.query.filter_by(is_admin=True).order_by(User.username):
+            click.echo(user.username)
 
     @app.cli.group("db")
     def db_group() -> None:
