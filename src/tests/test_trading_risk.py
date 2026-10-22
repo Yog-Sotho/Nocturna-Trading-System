@@ -186,6 +186,13 @@ class TestCashEquivalent:
         gate.halt("drill")
         assert _refused(gate.check(_req(symbol="IEF", qty="1"), _ctx(cash=True)), "halted")
 
+    def test_an_order_is_not_one_unless_the_engine_says_so(self):
+        fields = {f.name: getattr(_ctx(), f.name) for f in dataclasses.fields(OrderContext)}
+        del fields["cash_equivalent"]
+        plain = OrderContext(**fields)
+        assert _refused(RiskGate(RiskLimits(max_order_weight=D("0.5"))).check(_req(qty="60"), plain),
+                        "single-order limit")
+
     def test_every_other_check_applies(self):
         assert _refused(RiskGate(RiskLimits(max_order_notional=D("500"))).check(
             _req(symbol="IEF", qty="6"), _ctx(cash=True)), "notional")
