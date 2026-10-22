@@ -11,7 +11,7 @@ MANAGED_VARS = (
     "FLASK_ENV", "FLASK_DEBUG", "FLASK_SECRET_KEY", "JWT_SECRET_KEY", "JWT_EXPIRATION_HOURS", "API_KEY_PEPPER",
     "DATABASE_URL", "REDIS_URL", "ALLOWED_ORIGINS", "SECURE_COOKIES", "ALERT_TELEGRAM_BOT_TOKEN",
     "ALERT_TELEGRAM_CHAT_ID", "ALERT_NTFY_URL", "ALERT_NTFY_TOKEN", "ALERT_WEBHOOK_URL", "HEARTBEAT_URL",
-    "HEARTBEAT_INTERVAL_SECONDS", "METRICS_TOKEN", "ENGINE_ALIVE_FILE",
+    "HEARTBEAT_INTERVAL_SECONDS", "METRICS_TOKEN", "ENGINE_ALIVE_FILE", "TELEGRAM_COMMANDS",
 )
 STRONG_A = "a" * 64
 STRONG_B = "b" * 64
@@ -68,6 +68,13 @@ class TestAlertsAndMonitoring:
             load_settings()
         env({"ALERT_TELEGRAM_CHAT_ID": "42"})
         assert load_settings().alert_telegram_chat_id == "42"
+
+    def test_telegram_commands_need_the_bot(self, env):
+        env({"TELEGRAM_COMMANDS": "true"})
+        with pytest.raises(ConfigurationError, match="TELEGRAM_COMMANDS needs"):
+            load_settings()
+        env({"ALERT_TELEGRAM_BOT_TOKEN": "123:abc", "ALERT_TELEGRAM_CHAT_ID": "42"})
+        assert load_settings().telegram_commands is True
 
     @pytest.mark.parametrize("name", ["ALERT_NTFY_URL", "ALERT_WEBHOOK_URL", "HEARTBEAT_URL"])
     def test_urls_must_be_http(self, env, name):

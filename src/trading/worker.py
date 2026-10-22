@@ -103,8 +103,11 @@ class EngineWorker:
         """Run until ``stop`` is set; starts the engine first when ENGINE_AUTOSTART is set."""
         self.ensure_alone()
         logger.info("Engine worker %s started", self.instance)
-        self._notify("Engine process started")
         self.runtime.autostart()
+        state = self.runtime.views()["status"]["state"]
+        self._notify("Engine process started", f"engine {state}" + (
+            ": trading waits until you start it (dashboard, or /start_engine in Telegram)"
+            if state == "stopped" else ""))
         try:
             while not stop.is_set():
                 try:
@@ -121,6 +124,6 @@ class EngineWorker:
             logger.info("Engine worker %s stopped", self.instance)
             self._notify("Engine process stopped")
 
-    def _notify(self, title: str) -> None:
+    def _notify(self, title: str, detail: str = "") -> None:
         if self._alerts is not None:
-            self._alerts.notify(Alert(title, f"instance {self.instance}"))
+            self._alerts.notify(Alert(title, f"instance {self.instance}" + (f"; {detail}" if detail else "")))

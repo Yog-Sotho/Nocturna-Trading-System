@@ -32,6 +32,21 @@ from src.utils.logger import setup_secure_logging
 _REQUEST_ID_PATTERN = re.compile(r'[A-Za-z0-9._-]{1,64}')
 
 
+def start_serving(app):
+    """
+    Start what runs beside the web server: the engine (when ENGINE_AUTOSTART is
+    set), the engine monitor and Telegram commands. Call in the process that
+    serves requests, after gunicorn's fork: threads started before it do not
+    survive, and one Telegram bot must have exactly one poller.
+    """
+    from src.trading.alerts import start_monitoring
+    from src.trading.telegram import start_telegram_commands
+
+    app.extensions['trading'].autostart()
+    start_monitoring(app)
+    start_telegram_commands(app)
+
+
 def create_app(config_override=None):
     """
     Application factory for creating Flask app instances.
@@ -376,9 +391,7 @@ if __name__ == '__main__':
     app = create_app()
     # Only the reloader's serving child may start the engine (see main.py)
     if not app.config['DEBUG'] or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
-        from src.trading.alerts import start_monitoring
-        app.extensions['trading'].autostart()
-        start_monitoring(app)
+        start_serving(app)
 
     # =============================================================================
     # PRODUCTION WARNING

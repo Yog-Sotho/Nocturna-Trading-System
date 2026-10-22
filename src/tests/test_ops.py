@@ -369,7 +369,9 @@ class TestWorkerNotices:
         stop.set()
         worker.run(stop)
         assert _sent(dispatcher, sink) == ["Engine process started", "Engine process stopped"]
-        assert sink.alerts[0].message == "instance host:1"
+        assert sink.alerts[0].message == ("instance host:1; engine stopped: trading waits until you start it "
+                                          "(dashboard, or /start_engine in Telegram)")
+        assert sink.alerts[1].message == "instance host:1"
 
 
 SAMPLE = re.compile(r'^[a-z_]+(\{[a-z_]+="[^"]*"(,[a-z_]+="[^"]*")*\})? (NaN|[+-]Inf|-?[0-9.e+-]+)$')

@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     alert_ntfy_url: SecretStr | None = None
     alert_ntfy_token: SecretStr | None = None
     alert_webhook_url: SecretStr | None = None
+    # Take commands (status, start, resume, emergency stop) from the Telegram alert chat
+    telegram_commands: bool = False
     # Dead man's switch: a healthchecks.io ping URL, pinged while the engine runs
     heartbeat_url: SecretStr | None = None
     heartbeat_interval_seconds: int = Field(default=60, ge=15, le=3600)
@@ -118,6 +120,8 @@ class Settings(BaseSettings):
     def _telegram_needs_both(self) -> Self:
         if (self.alert_telegram_bot_token is None) != (self.alert_telegram_chat_id is None):
             raise ValueError("set both ALERT_TELEGRAM_BOT_TOKEN and ALERT_TELEGRAM_CHAT_ID, or neither")
+        if self.telegram_commands and self.alert_telegram_bot_token is None:
+            raise ValueError("TELEGRAM_COMMANDS needs ALERT_TELEGRAM_BOT_TOKEN and ALERT_TELEGRAM_CHAT_ID")
         return self
 
     @property

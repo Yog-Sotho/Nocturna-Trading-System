@@ -119,6 +119,30 @@ An alert repeated within 15 minutes is sent once.
    number at `"chat":{"id":...}` is your chat id.
 4. Set `ALERT_TELEGRAM_BOT_TOKEN` and `ALERT_TELEGRAM_CHAT_ID`.
 
+### Commands from Telegram
+
+With `TELEGRAM_COMMANDS=true` the same bot also takes commands, only from that
+private chat (messages from anyone else, and from groups, are ignored):
+
+| Command | What it does |
+|---|---|
+| `/status` | Engine state, equity, drawdown, halt, cool-down, last market data, last error |
+| `/positions` | Positions and working orders |
+| `/start_engine` | Start the engine (after a restart when `ENGINE_AUTOSTART=false`) |
+| `/stop_engine` | Stop the engine; positions and working orders stay at Alpaca |
+| `/resume` | Lift a halt; the high-water mark restarts at the current equity |
+| `/halt [reason]` | Emergency stop: halt and cancel every order, keeping the positions |
+| `/flatten [reason]` | Emergency stop that also closes every position |
+
+Every command that changes something answers with a code and runs only after
+`/confirm <code>` within 60 seconds, since a tap on the command menu sends at
+once. A change sent while the server was down is not run when it comes back.
+The bot runs in the `api` container and acts like the API's own endpoints:
+with the engine not answering, `/halt` and `/flatten` go to Alpaca directly.
+Each action is in the audit log with `"source": "telegram"`. Anyone who can
+use your Telegram account can use these commands: protect the account with
+two-step verification.
+
 ### ntfy
 
 Install the ntfy app and subscribe to a topic whose name nobody can guess
