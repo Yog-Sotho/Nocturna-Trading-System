@@ -3,7 +3,9 @@ NOCTURNA Trading System - Database schema migrations (Alembic).
 
 The schema is owned by the revisions in ``src/migrations/versions``. The app
 upgrades the database to the latest revision at startup; the ``flask db``
-commands expose the same operations to the operator.
+commands expose the same operations to the operator. On PostgreSQL the
+upgrade holds an advisory lock, so the API and the engine process starting
+together migrate one after the other.
 """
 
 from __future__ import annotations
@@ -21,6 +23,8 @@ from src.config import ConfigurationError
 from src.models.user import db
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+#: Arbitrary application-wide key for pg_advisory_lock
+MIGRATION_LOCK_KEY = 0x4E4F4354  # "NOCT"
 
 
 def alembic_config() -> Config:
@@ -55,9 +59,19 @@ def _assert_not_legacy(app: Flask) -> None:
 
 def upgrade(app: Flask, revision: str = "head") -> None:
     """Upgrade the database to ``revision`` (default: the latest)."""
-    _assert_not_legacy(app)
     with app.app_context():
-        command.upgrade(alembic_config(), revision)
+        if db.engine.dialect.name != "postgresql":
+            _assert_not_legacy(app)
+            command.upgrade(alembic_config(), revision)
+            return
+        # A session-level lock on a connection of its own: another process waits here
+        with db.engine.connect() as lock:
+            lock.execute(sa.text("SELECT pg_advisory_lock(:key)"), {"key": MIGRATION_LOCK_KEY})
+            try:
+                _assert_not_legacy(app)
+                command.upgrade(alembic_config(), revision)
+            finally:
+                lock.execute(sa.text("SELECT pg_advisory_unlock(:key)"), {"key": MIGRATION_LOCK_KEY})
 
 
 def downgrade(app: Flask, revision: str) -> None:

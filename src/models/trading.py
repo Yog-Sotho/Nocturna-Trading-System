@@ -120,3 +120,35 @@ class RiskStateRecord(db.Model):
     id = Column(Integer, primary_key=True)
     state = Column(JSON, nullable=False)
     updated_at = Column(UTCDateTime, nullable=False)
+
+
+class EngineStatusRecord(db.Model):
+    """
+    What the separate engine process publishes (``views.engine_views``) and
+    when it last did; a single row with id 1. The API treats an old
+    heartbeat as an engine that is not running.
+    """
+
+    __tablename__ = 'engine_status'
+
+    id = Column(Integer, primary_key=True)
+    instance = Column(String(64), nullable=False)
+    document = Column(JSON, nullable=False)
+    heartbeat_at = Column(UTCDateTime, nullable=False)
+
+
+class EngineCommand(db.Model):
+    """A command from the API to the separate engine process, and its result."""
+
+    __tablename__ = 'engine_commands'
+
+    id = Column(Integer, primary_key=True)
+    kind = Column(String(32), nullable=False)
+    payload = Column(JSON, nullable=False)
+    status = Column(String(16), nullable=False, index=True)  # pending, done, failed, expired
+    result = Column(JSON)
+    error = Column(Text)
+    requested_by = Column(String(64))
+    created_at = Column(UTCDateTime, nullable=False)
+    expires_at = Column(UTCDateTime)  # None: never (emergency halts)
+    completed_at = Column(UTCDateTime)

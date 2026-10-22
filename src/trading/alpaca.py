@@ -180,6 +180,10 @@ class AlpacaBroker:
         except Exception:
             return None
 
+    def cancel_all(self) -> list[str]:
+        """Alpaca's own cancel-all: every open order, whoever placed it."""
+        return [str(r.id) for r in self._client.cancel_orders()]
+
     def close_all(self) -> list[str]:
         """Alpaca's own liquidation: cancels every open order and closes every position."""
         responses = self._client.close_all_positions(cancel_orders=True)

@@ -41,12 +41,20 @@ A strategy moves research → paper → small live → scaled live only if:
 
 | Mode | Strategy | Data | Status |
 |---|---|---|---|
-| SENTINEL | Trend following on a diversified basket of ~10–15 liquid ETFs (crypto optional), daily bars, entries only on statistically significant trends, volatility-scaled, weekly rebalance | Daily bars (free) | Candidate |
-| LUCIFER | **Replaced.** Month-end pension-rebalancing flows (Harvey, Mazzoleni & Melone, NBER w33554, 2025): simulate a 60/40 SPY/IEF portfolio; Threshold signal (drift > ~2 pp) and Calendar signal (last week of month, reversal on the first business day); trade the equity-vs-bond spread against the expected flows. Two variants to test: long/short spread scaled to ~4–5% vol, and long-only SPY/IEF switch | Daily bars (free) | Candidate |
-| CRYPTO BREAKOUT | Donchian ensemble (Zarattini, Pagani & Barbon 2025): 9 lookbacks 5–360 days, trailing stop at channel midpoint, volatility-targeted; long-only, no leverage, Alpaca's supported coins; client-side stops | Alpaca crypto data (free) | Candidate, small risk budget |
-| REAPER | Large-cap/ETF short-term reversal with a trend filter, low-turnover construction | Daily bars (free) | Candidate |
+| SENTINEL | Time-series momentum on 12 liquid ETFs across asset classes (`tsmom`): sign of the 12-month return, or the clipped t-statistic of daily returns (statistically significant trends), each sized 40% / EWMA volatility, monthly (Moskowitz, Ooi & Pedersen 2012) | Daily bars (free) | Built; alone 2017–2026: walk-forward Sharpe 0.32, long-only full period 0.71; a lineup component |
+| LUCIFER | **Replaced.** Month-end pension-rebalancing flows (Harvey, Mazzoleni & Melone, NBER w33554, 2025): simulate a 60/40 SPY/IEF portfolio; Threshold signal (drift > ~2 pp) and Calendar signal (last week of month, reversal on the first business day); trade the equity-vs-bond spread against the expected flows. Two variants to test: long/short spread scaled to ~4–5% vol, and long-only SPY/IEF switch | Daily bars (free) | Built (`rebalancing`); rejected for now: the signal works close-to-close (Sharpe 0.64 on 2017–2026 SPY/IEF, before costs) but only 0.24 at the next open, and it turns over about 43 times a year. Needs close-of-day execution |
+| CRYPTO BREAKOUT | Donchian ensemble (Zarattini, Pagani & Barbon 2025): 9 lookbacks 5–360 days, trailing stop at channel midpoint, volatility-targeted; long-only, no leverage, BTC/ETH/SOL; the engine trades the stops at the next bar | Alpaca crypto data (free, from 2021) | Built (`crypto-trend`); alone 2023–2026: Sharpe 0.85, walk-forward 2024–2026 0.45; a lineup component at the 15% crypto limit |
+| REAPER | Large-cap/ETF short-term reversal with a trend filter, low-turnover construction | Daily bars (free) | Deferred: net-of-cost reversal evidence is for individual large-cap stocks (residual reversal), whose honest test needs point-in-time index membership (not free); no peer-reviewed ETF evidence was found |
 | EVE | Grid trading — expected return ≈ 0 and ruin risk in trends | — | Retired from live; research only |
 | Overlays | Regime model used only to scale exposure; crypto Fear & Greed and x70 signals removed from equity decisions | — | Planned |
+
+**Phase 5 outcome.** The lineup (60/40 core, ETF trend, crypto trend at 15%; two mixes and
+two trend variants fixed before any lineup backtest) was validated as one candidate on Alpaca
+data from 2017 to October 2026 and rejected: walk-forward Sharpe 0.76 (gate 1.0), 4.6% a year,
+maximum drawdown -11.0%, probability of backtest overfitting 0.24 (gate 0.20); deflated Sharpe
+0.999, 3x costs, stability and drawdown passed. Out of sample it did not beat the 60/40
+benchmark (Sharpe 0.81, 5.5% a year, drawdown -14.1%); its best full-period mix (Sharpe 1.01)
+was in-sample selection. No candidate is promoted, so paper trading keeps the benchmark.
 
 The original LUCIFER (opening-range breakout on "stocks in play") was dropped because its
 stock selection needs full-market real-time volume, which requires a $99/month data plan.
@@ -69,8 +77,8 @@ stock selection needs full-market real-time volume, which requires a $99/month d
 | 2 | Event-driven core: domain model, event flow, one broker interface (simulated + Alpaca via `alpaca-py`), data layer with explicit ranges and closed bars, removal of the legacy engine and `alpaca-trade-api` | Done |
 | 3 | Risk engine: pre-trade controls (price collar, size/exposure caps, duplicate detection, kill switch), equity-based loss limits, volatility-targeted sizing, PDT logic removed | Done |
 | 4 | Validation pipeline: walk-forward, combinatorial purged cross-validation, deflated Sharpe, overfitting probability, cost stress, regime splits, tear sheets | Done |
-| 5 | Strategy rebuild per the lineup above, each gated by Phase 4 | Planned |
-| 6 | Operations: engine as its own service, structured logs, metrics, alerts, health/readiness, Docker/Compose fixes, backups, runbooks | Planned |
+| 5 | Strategy rebuild per the lineup above, each gated by Phase 4 | Done: four candidates built and validated on Alpaca data; none passed, so the engine keeps the 60/40 benchmark |
+| 6 | Operations: engine as its own service, structured logs, metrics, alerts, health/readiness, Docker/Compose fixes, backups, runbooks | Done: see [RUNBOOK.md](RUNBOOK.md) |
 | 7 | Versioned API with OpenAPI docs; dashboard rebuilt with source and auth | Planned |
 | 8 | CI quality gates: strict typing on core, coverage targets, mutation testing on risk, blocking security scans | Planned |
 | 9 | ≥ 60-day paper soak, then staged live ramp | Planned |
@@ -111,5 +119,9 @@ stock selection needs full-market real-time volume, which requires a $99/month d
 - The Alpaca adapter is tested against fakes with alpaca-py's real request models; its first
   run against a live paper account should be watched (order acknowledgements, fill events,
   crypto fee postings, position symbol formats).
-- The engine runs inside the single web worker; a crash or redeploy restarts it from the
-  broker's state. Phase 6 moves it into its own service.
+- In the Compose stack the engine runs as its own process (`ENGINE_MODE=external`), so an API
+  redeploy never restarts it; an engine restart rebuilds from the broker's state and the
+  persisted risk state. The stack was verified end to end without Alpaca keys (commands
+  across processes, crash restart, alerts when the engine stops answering, the emergency
+  stop's broker fallback, backup and in-place restore, the HTTPS proxy); its first run
+  against the paper account should be watched.

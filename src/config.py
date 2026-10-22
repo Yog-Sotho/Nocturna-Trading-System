@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     alpaca_secret_key: SecretStr | None = None
     # Start the engine when the server process starts (otherwise via the API)
     engine_autostart: bool = False
+    # embedded: the engine runs inside the web worker. external: it runs as its own process
+    # (`flask engine run`) and the API reaches it through the database
+    engine_mode: Literal["embedded", "external"] = "embedded"
 
     # Risk limits, as fractions of account equity (src/trading/risk.py, sizing.py).
     # Conservative defaults; leverage is not configurable (gross exposure <= 100%).
@@ -72,8 +75,25 @@ class Settings(BaseSettings):
     sizing_derisk_start: Decimal = Field(default=Decimal("0.05"), ge=0, le=Decimal("0.5"))
     sizing_rebalance_band: Decimal = Field(default=Decimal("0.02"), ge=0, le=Decimal("0.2"))
 
+    # Alerts (src/trading/alerts.py): Telegram, ntfy and a JSON webhook, in any combination
+    alert_telegram_bot_token: SecretStr | None = None
+    alert_telegram_chat_id: str | None = None
+    # A topic URL such as https://ntfy.sh/<topic>; a public topic's name works as its password
+    alert_ntfy_url: SecretStr | None = None
+    alert_ntfy_token: SecretStr | None = None
+    alert_webhook_url: SecretStr | None = None
+    # Dead man's switch: a healthchecks.io ping URL, pinged while the engine runs
+    heartbeat_url: SecretStr | None = None
+    heartbeat_interval_seconds: int = Field(default=60, ge=15, le=3600)
+    # Bearer token for GET /metrics (Prometheus text format); unset, the endpoint does not exist
+    metrics_token: SecretStr | None = None
+    # A file the engine process touches on every loop, for a container health check
+    engine_alive_file: Path | None = None
+
     @field_validator("flask_secret_key", "jwt_secret_key", "api_key_pepper", "database_url", "redis_url",
-                     "alpaca_api_key", "alpaca_secret_key", "risk_max_order_notional", mode="before")
+                     "alpaca_api_key", "alpaca_secret_key", "risk_max_order_notional", "alert_telegram_bot_token",
+                     "alert_telegram_chat_id", "alert_ntfy_url", "alert_ntfy_token", "alert_webhook_url",
+                     "heartbeat_url", "metrics_token", "engine_alive_file", mode="before")
     @classmethod
     def _blank_is_unset(cls, value: object) -> object:
         """Treat empty env vars (e.g. `FLASK_SECRET_KEY=`) as unset."""
@@ -81,10 +101,23 @@ class Settings(BaseSettings):
             return None
         return value
 
+    @field_validator("alert_ntfy_url", "alert_webhook_url", "heartbeat_url")
+    @classmethod
+    def _http_url(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not value.get_secret_value().startswith(("https://", "http://")):
+            raise ValueError("must be an http(s) URL")
+        return value
+
     @model_validator(mode="after")
     def _derisk_before_kill(self) -> Self:
         if self.sizing_derisk_start >= self.risk_max_drawdown:
             raise ValueError("SIZING_DERISK_START must be below RISK_MAX_DRAWDOWN")
+        return self
+
+    @model_validator(mode="after")
+    def _telegram_needs_both(self) -> Self:
+        if (self.alert_telegram_bot_token is None) != (self.alert_telegram_chat_id is None):
+            raise ValueError("set both ALERT_TELEGRAM_BOT_TOKEN and ALERT_TELEGRAM_CHAT_ID, or neither")
         return self
 
     @property
@@ -131,6 +164,8 @@ class Settings(BaseSettings):
             problems.append("SECURE_COOKIES must be true")
         if self.database_url is None or self.database_url.startswith("sqlite"):
             problems.append("DATABASE_URL must point at a server database (PostgreSQL)")
+        if self.metrics_token is not None and len(self.metrics_token.get_secret_value()) < MIN_SECRET_LENGTH:
+            problems.append(f"METRICS_TOKEN must be at least {MIN_SECRET_LENGTH} characters")
         return problems
 
 

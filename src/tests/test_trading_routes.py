@@ -141,5 +141,18 @@ class TestEmergencyStop:
         assert data["engine"] == "not running" and len(data["close_orders"]) == 1
         assert [o.request.side.value for o in broker.open_orders()] == ["sell"]
 
+    def test_without_flatten_or_engine_it_cancels_every_order_at_the_broker(self, client, admin_headers,
+                                                                            sim_runtime):
+        from decimal import Decimal
+
+        from src.trading.domain import OrderRequest, Side, TimeInForce
+        sim_runtime.service = sim_runtime._factory(client.application, sim_runtime._settings)
+        broker = sim_runtime.built["broker"]
+        broker.submit(OrderRequest("manual-1", "SPY", Side.BUY, Decimal("1"), time_in_force=TimeInForce.GTC))
+        resp = client.post("/api/trading/emergency-stop", headers=admin_headers,
+                           json={"reason": "drill", "close_all_positions": False})
+        assert resp.status_code == 200
+        assert resp.get_json()["data"]["cancelled_orders"] == ["manual-1"] and broker.open_orders() == []
+
     def test_traders_cannot_trigger_it(self, client, auth_headers):
         assert client.post("/api/trading/emergency-stop", headers=auth_headers, json={}).status_code == 403

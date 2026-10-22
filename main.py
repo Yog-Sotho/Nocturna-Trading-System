@@ -35,7 +35,9 @@ if __name__ == "__main__":
     # With the debug reloader the module runs in two processes; only the serving
     # child may start the engine, or two engines would trade one account
     if not app.config["DEBUG"] or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        from src.trading.alerts import start_monitoring
         app.extensions["trading"].autostart()
+        start_monitoring(app)
     app.run(
         host=os.environ.get("HOST", "0.0.0.0"),
         port=int(os.environ.get("PORT", 5000)),

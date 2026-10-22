@@ -35,7 +35,7 @@ ROUTE_RATE_LIMITS: dict[str, str] = {
 
 #: Never rate limited: load-balancer probes, and the emergency stop, which must
 #: always get through.
-RATE_LIMIT_EXEMPT = frozenset({"health_check", "trading.emergency_stop"})
+RATE_LIMIT_EXEMPT = frozenset({"health_check", "ops.ready", "trading.emergency_stop"})
 
 
 def setup_rate_limiting(app: Flask, storage_uri: str | None = None) -> Limiter:

@@ -9,7 +9,9 @@ from src.main import create_app
 
 MANAGED_VARS = (
     "FLASK_ENV", "FLASK_DEBUG", "FLASK_SECRET_KEY", "JWT_SECRET_KEY", "JWT_EXPIRATION_HOURS", "API_KEY_PEPPER",
-    "DATABASE_URL", "REDIS_URL", "ALLOWED_ORIGINS", "SECURE_COOKIES",
+    "DATABASE_URL", "REDIS_URL", "ALLOWED_ORIGINS", "SECURE_COOKIES", "ALERT_TELEGRAM_BOT_TOKEN",
+    "ALERT_TELEGRAM_CHAT_ID", "ALERT_NTFY_URL", "ALERT_NTFY_TOKEN", "ALERT_WEBHOOK_URL", "HEARTBEAT_URL",
+    "HEARTBEAT_INTERVAL_SECONDS", "METRICS_TOKEN", "ENGINE_ALIVE_FILE",
 )
 STRONG_A = "a" * 64
 STRONG_B = "b" * 64
@@ -51,6 +53,32 @@ class TestDevelopmentDefaults:
     def test_allowed_origins_are_split_and_trimmed(self, env):
         env({"ALLOWED_ORIGINS": " https://a.example , ,https://b.example "})
         assert load_settings().allowed_origin_list == ["https://a.example", "https://b.example"]
+
+
+class TestAlertsAndMonitoring:
+    def test_unset_by_default_and_when_blank(self, env):
+        env({"ALERT_NTFY_URL": " ", "HEARTBEAT_URL": "", "METRICS_TOKEN": ""})
+        settings = load_settings()
+        assert settings.alert_ntfy_url is None and settings.heartbeat_url is None and settings.metrics_token is None
+        assert settings.heartbeat_interval_seconds == 60
+
+    def test_telegram_needs_token_and_chat(self, env):
+        env({"ALERT_TELEGRAM_BOT_TOKEN": "123:abc"})
+        with pytest.raises(ConfigurationError, match="ALERT_TELEGRAM_CHAT_ID"):
+            load_settings()
+        env({"ALERT_TELEGRAM_CHAT_ID": "42"})
+        assert load_settings().alert_telegram_chat_id == "42"
+
+    @pytest.mark.parametrize("name", ["ALERT_NTFY_URL", "ALERT_WEBHOOK_URL", "HEARTBEAT_URL"])
+    def test_urls_must_be_http(self, env, name):
+        env({name: "file:///etc/passwd"})
+        with pytest.raises(ConfigurationError, match="must be an http"):
+            load_settings()
+
+    def test_heartbeat_respects_the_ping_rate_limit(self, env):
+        env({"HEARTBEAT_INTERVAL_SECONDS": "5"})
+        with pytest.raises(ConfigurationError):
+            load_settings()
 
 
 class TestDatabaseUrl:
@@ -97,6 +125,7 @@ class TestProductionValidation:
         ({"FLASK_DEBUG": "true"}, "FLASK_DEBUG must be false"),
         ({"SECURE_COOKIES": "false"}, "SECURE_COOKIES must be true"),
         ({"DATABASE_URL": "sqlite:////tmp/x.db"}, "DATABASE_URL must point at a server database"),
+        ({"METRICS_TOKEN": "short"}, "METRICS_TOKEN must be at least 32 characters"),
     ])
     def test_single_problem_detected(self, env, override, expected):
         env({**GOOD_PRODUCTION, **override})

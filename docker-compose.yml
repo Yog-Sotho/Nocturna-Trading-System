@@ -1,207 +1,193 @@
 # =============================================================================
-# NOCTURNA Trading System - Docker Compose Configuration
+# NOCTURNA Trading System - production stack
+# =============================================================================
+#   api       web API and dashboard (gunicorn); reaches the engine through the database
+#   engine    the trading engine in a process of its own, so redeploying or
+#             restarting the API never restarts trading
+#   postgres  the database both share
+#   redis     rate-limit counters
+#   backup    a pg_dump into ./backups every day, kept BACKUP_KEEP_DAYS days
+#   caddy     optional HTTPS reverse proxy: docker compose --profile proxy up -d
+#
+# Secrets and settings come from .env (see .env.example). Setup, operations,
+# incidents and restores: docs/RUNBOOK.md
 # =============================================================================
 
-version: '3.8'
+x-logging: &logging
+  # Docker's default json-file log never rotates; cap it so logs cannot fill the disk
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
+x-app-environment: &app-environment
+  # Fixed for this stack; .env cannot override them
+  FLASK_ENV: production
+  FLASK_DEBUG: "false"
+  TRADING_MODE: PAPER
+  ENGINE_MODE: external
+  DATABASE_URL: postgresql://nocturna:${DB_PASSWORD:?set DB_PASSWORD in .env}@postgres:5432/nocturna
+  REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@redis:6379/0
+  # Logs go to stdout (docker compose logs); audit events are also kept in the database
+  LOG_TO_FILE: "false"
+  LOG_JSON: ${LOG_JSON:-true}
+
+x-app: &app
+  build:
+    context: .
+    target: production
+  image: nocturna:latest
+  restart: unless-stopped
+  init: true
+  env_file: .env
+  logging: *logging
 
 services:
-  # ---------------------------------------------------------------------------
-  # Flask Application
-  # ---------------------------------------------------------------------------
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: production
-    container_name: nocturna-app
-    restart: unless-stopped
-    ports:
-      - "5000:5000"
+  api:
+    <<: *app
     environment:
-      # Flask Settings
-      - FLASK_ENV=production
-      - FLASK_DEBUG=false
-      - HOST=0.0.0.0
-      - PORT=5000
-
-      # Security
-      - SECURE_COOKIES=true
-      - SESSION_COOKIE_SAMESITE=Lax
-
-      # Database
-      - DATABASE_URL=postgresql://nocturna:${DB_PASSWORD}@postgres:5432/nocturna
-
-      # Redis
-      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
-
-      # Logging
-      - LOG_LEVEL=INFO
-      - LOG_TO_FILE=true
-      - LOG_TO_CONSOLE=true
-
-      # Trading: paper only (ALPACA_API_KEY / ALPACA_SECRET_KEY come from .env)
-      - TRADING_MODE=${TRADING_MODE:-PAPER}
-      - ENGINE_AUTOSTART=${ENGINE_AUTOSTART:-false}
-
-    env_file:
-      - .env
+      <<: *app-environment
+    command: ["gunicorn", "-c", "/app/gunicorn.conf.py", "src.main:create_app()"]
+    ports:
+      # Only this host can reach the API unless API_BIND says otherwise; use the
+      # proxy profile (HTTPS) to reach it from elsewhere
+      - "${API_BIND:-127.0.0.1}:5000:5000"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    volumes:
-      - ./logs:/app/logs
-      - ./database:/app/database
-    networks:
-      - nocturna-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      # Readiness: the database answers (the engine's state does not count)
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/ready', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 60s
     deploy:
       resources:
         limits:
-          cpus: '2'
-          memory: 2G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
+          memory: 1G
 
-  # ---------------------------------------------------------------------------
-  # PostgreSQL Database
-  # ---------------------------------------------------------------------------
+  engine:
+    <<: *app
+    environment:
+      <<: *app-environment
+      # The engine serves no HTTP and needs no rate-limit storage
+      REDIS_URL: ""
+      ENGINE_ALIVE_FILE: /tmp/engine.alive
+    command: ["flask", "--app", "src.main", "engine", "run"]
+    # Time to stop the engine thread and the trade-update stream and publish the
+    # final status before Docker kills the process
+    stop_grace_period: 60s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # The worker touches the file every second while its loop runs and the
+      # database takes its writes. Docker does not restart an unhealthy
+      # container: the API's alerts and HEARTBEAT_URL report it instead.
+      test: ["CMD", "python", "-c",
+             "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/tmp/engine.alive') > 30)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
   postgres:
     image: postgres:15-alpine
-    container_name: nocturna-postgres
     restart: unless-stopped
     environment:
-      - POSTGRES_USER=nocturna
-      - POSTGRES_PASSWORD=${DB_PASSWORD}
-      - POSTGRES_DB=nocturna
+      POSTGRES_USER: nocturna
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      POSTGRES_DB: nocturna
     volumes:
-      # The schema is created by the app's migrations at startup
+      # The schema is created by the app's migrations at start-up
       - postgres-data:/var/lib/postgresql/data
-    networks:
-      - nocturna-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U nocturna -d nocturna"]
       interval: 10s
       timeout: 5s
       retries: 5
+    logging: *logging
     deploy:
       resources:
         limits:
-          cpus: '1'
           memory: 1G
 
-  # ---------------------------------------------------------------------------
-  # Redis Cache
-  # ---------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
-    container_name: nocturna-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-}
-    volumes:
-      - redis-data:/data
-    networks:
-      - nocturna-network
+    # Rate-limit counters only: nothing worth persisting
+    command: ["redis-server", "--save", "", "--appendonly", "no",
+              "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}"]
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
     healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      test: ["CMD-SHELL", "redis-cli ping | grep -qx PONG"]
       interval: 10s
       timeout: 5s
       retries: 5
+    logging: *logging
     deploy:
       resources:
         limits:
-          cpus: '0.5'
+          memory: 128M
+
+  backup:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    entrypoint: ["sh", "/ops/backup.sh"]
+    environment:
+      PGHOST: postgres
+      PGUSER: nocturna
+      PGDATABASE: nocturna
+      PGPASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+      BACKUP_HEARTBEAT_URL: ${BACKUP_HEARTBEAT_URL:-}
+    volumes:
+      - ./ops/backup.sh:/ops/backup.sh:ro
+      - ./backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *logging
+    deploy:
+      resources:
+        limits:
           memory: 256M
 
-  # ---------------------------------------------------------------------------
-  # Nginx Reverse Proxy (Production)
-  # ---------------------------------------------------------------------------
-  nginx:
-    image: nginx:alpine
-    container_name: nocturna-nginx
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["proxy"]
     restart: unless-stopped
+    environment:
+      # Not ${DOMAIN:?...}: compose would then refuse every command without the profile
+      DOMAIN: ${DOMAIN:-}
+    command: ["sh", "-c", "test -n \"$$DOMAIN\" || { echo 'Set DOMAIN in .env for the proxy profile' >&2; exit 1; };
+               exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile"]
     ports:
       - "80:80"
       - "443:443"
+      - "443:443/udp"
     volumes:
-      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./config/ssl:/etc/nginx/ssl:ro
-      - nginx-logs:/var/log/nginx
+      - ./ops/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
     depends_on:
-      - app
-    networks:
-      - nocturna-network
-    profiles:
-      - production
+      - api
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
-  # ---------------------------------------------------------------------------
-  # Prometheus Metrics (Optional)
-  # ---------------------------------------------------------------------------
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: nocturna-prometheus
-    restart: unless-stopped
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-    volumes:
-      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-    networks:
-      - nocturna-network
-    profiles:
-      - monitoring
-
-  # ---------------------------------------------------------------------------
-  # Grafana Dashboard (Optional)
-  # ---------------------------------------------------------------------------
-  grafana:
-    image: grafana/grafana:latest
-    container_name: nocturna-grafana
-    restart: unless-stopped
-    environment:
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?GRAFANA_PASSWORD must be set}
-      - GF_USERS_ALLOW_SIGN_UP=false
-    volumes:
-      - grafana-data:/var/lib/grafana
-    networks:
-      - nocturna-network
-    depends_on:
-      - prometheus
-    profiles:
-      - monitoring
-
-# =============================================================================
-# Networks
-# =============================================================================
-networks:
-  nocturna-network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.28.0.0/16
-
-# =============================================================================
-# Volumes
-# =============================================================================
 volumes:
   postgres-data:
-    driver: local
-  redis-data:
-    driver: local
-  prometheus-data:
-    driver: local
-  grafana-data:
-    driver: local
-  nginx-logs:
-    driver: local
+  caddy-data:
+  caddy-config:

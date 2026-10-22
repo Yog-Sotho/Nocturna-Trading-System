@@ -86,6 +86,10 @@ class Broker(Protocol):
         """Emergency path that bypasses the engine: cancel every order, close every position."""
         ...
 
+    def cancel_all(self) -> list[str]:
+        """Emergency path that bypasses the engine: cancel every open order; positions stay."""
+        ...
+
 
 @dataclass(frozen=True)
 class CostModel:
@@ -200,6 +204,12 @@ class SimulatedBroker:
 
     def open_orders(self) -> list[Order]:
         return [w.order for w in sorted(self._working.values(), key=lambda w: w.sequence)]
+
+    def cancel_all(self) -> list[str]:
+        cancelled = list(self._working)
+        for client_order_id in cancelled:
+            self.cancel(client_order_id)
+        return cancelled
 
     def close_all(self) -> list[str]:
         for client_order_id in list(self._working):

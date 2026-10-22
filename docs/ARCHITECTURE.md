@@ -98,6 +98,39 @@ The broker is the source of current state; the database holds history (orders, f
 snapshots, audit log) and is not replayed to rebuild state. The exception is the risk state,
 which no broker knows.
 
+## Processes
+
+`ENGINE_MODE` decides where the engine service lives:
+
+- **embedded** (development): inside the single gunicorn worker, next to the API.
+- **external** (the Compose stack): in its own process, `flask engine run`
+  (`src/trading/worker.py`), so redeploying the API never restarts trading. The two meet only
+  in the database (`src/trading/channel.py`). Every second the worker runs the queued
+  commands in order and publishes the engine's views with a heartbeat to the single
+  `engine_status` row; the API's `RemoteRuntime` answers reads from that row and sends
+  commands through `engine_commands`, waiting for each result. A heartbeat older than 30
+  seconds means the engine is unreachable: the API reports it and its emergency stop goes to
+  Alpaca directly. A command the engine has not started when it expires, or when the API
+  stops waiting, is never executed (an order must not fill minutes late); halts never expire.
+  A second worker refuses to start while another's heartbeat is fresh.
+
+Both processes run the migrations at start-up; on PostgreSQL an advisory lock serialises them.
+
+## Monitoring
+
+`src/trading/alerts.py` turns what needs a person into alerts (Telegram, ntfy, a JSON webhook),
+sent from their own thread with retries and a 15-minute dedup window: the engine's events
+(kill switch, halts, broker and strategy errors, fills it did not place, reconciliation
+corrections) through an engine listener, and state changes (failed, an error, the daily loss
+limit) through a monitor that watches the published views where the engine runs. The API's
+monitor reports an engine process that stops answering, the one failure the engine cannot
+report itself. A dead host cannot report anything, so `HEARTBEAT_URL` (healthchecks.io) is
+pinged while the engine runs and alerts from outside when the pings stop.
+
+`/health` is liveness; `/ready` adds the database; `/metrics` serves Prometheus gauges behind
+`METRICS_TOKEN`. Logs are JSON lines on stdout in the Compose stack (`LOG_JSON`,
+`LOG_TO_FILE`). Operations are in [RUNBOOK.md](RUNBOOK.md).
+
 ## Risk
 
 Two layers, both on the engine thread and identical in backtests and paper trading.
@@ -165,6 +198,26 @@ The backtester's `resume_after_kill` simulates the operator: a kill halts and fl
 trading resumes that long after, once the book is flat. Without it a long backtest would stop
 measuring the strategy at its first kill.
 
+## Strategies
+
+Strategies (`src/trading/strategies/`) decide from bar history alone and return target weights;
+sizing, risk and execution belong to the engine. Each follows its published rules, and where a
+paper is silent the module says what was assumed.
+
+| Module | Rules | Source |
+|---|---|---|
+| `benchmark.BuyAndHold` | fixed weights, rebalanced by the engine | the yardstick |
+| `rebalancing.RebalancingFlows` | simulate threshold (0-2.5%) and month-end 60/40 rebalancers; trade SPY against IEF ahead of their flows (`spread`), or tilt a 60/40 (`tilt`) | Harvey, Mazzoleni and Melone, NBER w33554 (2025) |
+| `trend.TimeSeriesMomentum` | each month, sign of the 12-month return (or the clipped t-statistic of daily returns) times 40% / EWMA volatility (60-day centre of mass), averaged over the basket | Moskowitz, Ooi and Pedersen, JFE 2012; Baltas and Kosowski 2013 |
+| `crypto_trend.DonchianEnsemble` | nine breakout models (5-360 days) with trailing stops at the channel midpoint, each sized to 25% volatility, averaged; long only | Zarattini, Pagani and Barbon, SFI 25-80 (2025) |
+| `blend.Blend` | fixed-weight sum of strategies, so a lineup validates and trades as one book | - |
+
+A strategy held inside another (a blend, a walk-forward switch) is asked for targets through
+`strategy.consult`, exactly as the engine would ask it on its own: once it has the history it
+needs, seeing only its instruments and lookback. `Strategy.min_history` lets a blend be called
+before its slowest component is ready, so a component whose data starts later (Alpaca's crypto
+history begins in 2021) does not hold back the others.
+
 ## Safety
 
 `src/trading/safety.py` refuses to start the app or build the Alpaca adapter unless
@@ -173,5 +226,4 @@ connects to Alpaca's paper API.
 
 ## What comes next
 
-Phase 5 adds the candidate strategies, each admitted only through the validation pipeline;
-see [ROADMAP.md](ROADMAP.md).
+Phase 7 versions the API and rebuilds the dashboard; see [ROADMAP.md](ROADMAP.md).

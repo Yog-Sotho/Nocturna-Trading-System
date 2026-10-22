@@ -5,9 +5,12 @@ Usage:
     flask --app src.main create-admin --email ops@example.com
     flask --app src.main db current|upgrade|downgrade|check|revision
     flask --app src.main validate benchmark --start 2017-01-01 --output reports/benchmark.md
+    flask --app src.main engine run          # the engine as its own process (ENGINE_MODE=external)
 """
 
 import json
+import signal
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -151,3 +154,58 @@ def register_cli(app: Flask) -> None:
         click.echo(f"Verdict: {report.verdict}")
         if not report.passed:
             raise SystemExit(1)
+
+    @app.cli.command("send-test-alert")
+    def send_test_alert() -> None:
+        """Send an urgent test alert to every configured channel and report each result."""
+        from src.trading.alerts import Alert
+
+        alerts = current_app.extensions["alerts"]
+        if not alerts.enabled:
+            raise click.ClickException(
+                "No alert channel is configured: set ALERT_TELEGRAM_BOT_TOKEN and ALERT_TELEGRAM_CHAT_ID, "
+                "ALERT_NTFY_URL or ALERT_WEBHOOK_URL")
+        results = alerts.deliver_now(Alert("NOCTURNA test alert", "Alerts reach you.", urgent=True))
+        for name, error in results:
+            click.echo(f"{name}: " + ("sent" if error is None else f"FAILED ({error})"))
+        if any(error is not None for _, error in results):
+            raise SystemExit(1)
+
+    @app.cli.group("engine")
+    def engine_group() -> None:
+        """The trading engine as its own process (ENGINE_MODE=external)."""
+
+    @engine_group.command("run")
+    def engine_run() -> None:
+        """Run the engine until SIGTERM or SIGINT; the API reaches it through the database."""
+        from src.trading.alerts import EngineMonitor, build_heartbeat
+        from src.trading.channel import EngineChannel
+        from src.trading.runtime import TradingRuntime
+        from src.trading.worker import AnotherWorkerRunningError, EngineWorker
+
+        settings = current_app.extensions["settings"]
+        if settings.engine_mode != "external":
+            raise click.ClickException(
+                "Set ENGINE_MODE=external for the API and the engine process alike; in embedded mode "
+                "the API runs an engine of its own, and two engines must never trade one account.")
+        flask_app = current_app._get_current_object()
+        alerts = flask_app.extensions["alerts"]
+        monitor = EngineMonitor(alerts, build_heartbeat(settings))
+        alive_file = settings.engine_alive_file
+
+        def on_step(views) -> None:
+            if alive_file is not None:
+                alive_file.touch()  # the container health check reads its age
+            monitor(views)
+
+        worker = EngineWorker(TradingRuntime(flask_app, settings), EngineChannel(flask_app), on_step=on_step,
+                              alerts=alerts)
+        stop = threading.Event()
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(signum, lambda *_: stop.set())
+        try:
+            worker.run(stop)
+        except AnotherWorkerRunningError as e:
+            raise click.ClickException(str(e)) from e
+        finally:
+            alerts.flush(timeout=15)

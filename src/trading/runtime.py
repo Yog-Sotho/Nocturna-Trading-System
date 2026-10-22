@@ -1,9 +1,18 @@
 """
 NOCTURNA Trading System - The app's live trading runtime.
 
-Owns the engine service for one process. The service is built on first start,
-not at app start-up, so the API works (and can report the problem) when
-Alpaca is unreachable or not configured.
+The API talks to the engine through a runtime, whichever process the engine
+lives in (``ENGINE_MODE``):
+
+* ``TradingRuntime`` (embedded): owns the engine service in this process. The
+  service is built on first start, not at app start-up, so the API works (and
+  can report the problem) when Alpaca is unreachable or not configured. The
+  separate engine process (``flask engine run``) uses one too.
+* ``RemoteRuntime`` (external): the engine runs as its own process; reads come
+  from the views it publishes and commands go through the database channel.
+
+Both offer ``configured``, ``views``, ``start``, ``stop``, ``resume``,
+``submit_order``, ``cancel_order``, ``emergency_stop`` and ``autostart``.
 """
 
 from __future__ import annotations
@@ -11,16 +20,21 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from flask import Flask
 
 from src.config import Settings
 
+from .broker import Broker
+from .channel import CommandFailedError, CommandTimeoutError, EngineChannel
 from .domain import AssetClass
-from .risk import RiskLimits
-from .service import EngineService, ServiceStatus
+from .operator import OperatorOrder, UnknownSymbolError
+from .risk import RiskDecision, RiskLimits
+from .service import EngineService, ServiceNotRunningError, ServiceStatus
 from .sizing import SizingPolicy
+from .views import engine_views, order_view
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +45,10 @@ NOT_CONFIGURED_MESSAGE = "Set ALPACA_API_KEY and ALPACA_SECRET_KEY (Alpaca paper
 
 class TradingNotConfiguredError(RuntimeError):
     """Raised when live trading needs Alpaca credentials that are not set."""
+
+
+class EngineUnavailableError(RuntimeError):
+    """The separate engine process did not answer."""
 
 
 def risk_limits(settings: Settings) -> RiskLimits:
@@ -54,18 +72,36 @@ def sizing_policy(settings: Settings) -> SizingPolicy:
     )
 
 
+def _credentials(settings: Settings) -> tuple[str, str]:
+    if settings.alpaca_api_key is None or settings.alpaca_secret_key is None:
+        raise TradingNotConfiguredError(NOT_CONFIGURED_MESSAGE)
+    return settings.alpaca_api_key.get_secret_value(), settings.alpaca_secret_key.get_secret_value()
+
+
+def build_broker(settings: Settings) -> Broker:
+    """The Alpaca paper broker alone, for the emergency path when no engine answers."""
+    from alpaca.trading.client import TradingClient
+
+    from .alpaca import AlpacaBroker, load_instruments
+    from .clock import SystemClock
+    from .lineup import LINEUP_SYMBOLS
+
+    key, secret = _credentials(settings)
+    client = TradingClient(key, secret, paper=True)
+    return AlpacaBroker(api_key=key, secret_key=secret, instruments=load_instruments(client, LINEUP_SYMBOLS),
+                        clock=SystemClock(), trading_client=client)
+
+
 def build_service(app: Flask, settings: Settings) -> EngineService:
     """Wire the paper-trading engine to Alpaca."""
+    from .alerts import EngineAlerts
     from .alpaca import AlpacaBroker, TradeUpdateStream, load_instruments
     from .clock import SystemClock
     from .data import AlpacaBarSource
     from .lineup import LINEUP_SYMBOLS, build_lineup
     from .persistence import EngineRecorder
 
-    if settings.alpaca_api_key is None or settings.alpaca_secret_key is None:
-        raise TradingNotConfiguredError(NOT_CONFIGURED_MESSAGE)
-    key = settings.alpaca_api_key.get_secret_value()
-    secret = settings.alpaca_secret_key.get_secret_value()
+    key, secret = _credentials(settings)
 
     from alpaca.trading.client import TradingClient
 
@@ -75,6 +111,9 @@ def build_service(app: Flask, settings: Settings) -> EngineService:
     broker = AlpacaBroker(api_key=key, secret_key=secret, instruments=instruments, clock=clock,
                           trading_client=client)
     recorder = EngineRecorder(app)
+    listeners = [recorder]
+    if "alerts" in app.extensions:
+        listeners.append(EngineAlerts(app.extensions["alerts"]))
     return EngineService(
         clock=clock,
         source=AlpacaBarSource(clock, api_key=key, secret_key=secret),
@@ -83,7 +122,7 @@ def build_service(app: Flask, settings: Settings) -> EngineService:
         risk_limits=risk_limits(settings),
         sizing=sizing_policy(settings),
         risk_state=recorder.load_risk_state,
-        listeners=[recorder],
+        listeners=listeners,
         snapshot_recorder=recorder.record_snapshot,
         stream=TradeUpdateStream(api_key=key, secret_key=secret, on_update=broker.handle_trade_update),
     )
@@ -123,6 +162,30 @@ class TradingRuntime:
     def status(self) -> ServiceStatus | None:
         return self.service.status() if self.service is not None else None
 
+    def views(self) -> dict[str, Any]:
+        return engine_views(self.configured, self.status())
+
+    def _running(self) -> EngineService:
+        service = self.service
+        if service is None or not service.running:
+            raise ServiceNotRunningError("the trading engine is not running")
+        return service
+
+    def resume(self) -> None:
+        self._running().resume()
+
+    def submit_order(self, order: OperatorOrder) -> tuple[RiskDecision, dict[str, Any] | None]:
+        """
+        Raises:
+            ServiceNotRunningError: If the engine is not running.
+            UnknownSymbolError: If the engine does not trade the symbol.
+        """
+        decision, placed = self._running().submit_operator_order(order)
+        return decision, order_view(placed) if placed is not None else None
+
+    def cancel_order(self, client_order_id: str) -> bool:
+        return self._running().cancel_order(client_order_id)
+
     def autostart(self) -> None:
         """Start at process start-up when ENGINE_AUTOSTART is set; failures are logged, not raised."""
         if not self._settings.engine_autostart:
@@ -143,10 +206,101 @@ class TradingRuntime:
         if service is not None and service.running:
             closed = service.halt(reason, flatten=flatten)
             return {"engine": "halted", "close_orders": closed}
-        if not flatten:
-            return {"engine": "not running", "close_orders": []}
         if service is None:
             service = self._factory(self._app, self._settings)
             self.service = service
+        if not flatten:
+            return {"engine": "not running", "close_orders": [], "cancelled_orders": service.broker_cancel_all()}
         closed = service.broker_close_all()
         return {"engine": "not running", "close_orders": closed}
+
+
+#: A published status older than this means the engine process is not running
+STALE_AFTER = timedelta(seconds=30)
+#: How long a request waits for the engine process to run its command
+COMMAND_TIMEOUT = 15.0
+
+
+class RemoteRuntime:
+    """The API's view of an engine that runs as its own process (``flask engine run``)."""
+
+    def __init__(self, app: Flask, settings: Settings, channel: EngineChannel | None = None,
+                 broker_factory: Callable[[Settings], Broker] = build_broker,
+                 stale_after: timedelta = STALE_AFTER, timeout: float = COMMAND_TIMEOUT) -> None:
+        self._settings = settings
+        self._channel = channel or EngineChannel(app)
+        self._broker_factory = broker_factory
+        self._stale_after = stale_after
+        self._timeout = timeout
+
+    @property
+    def configured(self) -> bool:
+        return self._settings.alpaca_api_key is not None and self._settings.alpaca_secret_key is not None
+
+    def _published(self) -> dict[str, Any] | None:
+        """The engine's document while its heartbeat is fresh, else None."""
+        document, at = self._channel.status()
+        if document is None or at is None or datetime.now(UTC) - at > self._stale_after:
+            return None
+        return document
+
+    def views(self) -> dict[str, Any]:
+        document = self._published()
+        if document is None:
+            return {"status": {"configured": self.configured, "state": "unreachable"},
+                    "positions": None, "targets": None, "working": []}
+        return document
+
+    def _call(self, kind: str, payload: dict[str, Any] | None = None) -> Any:
+        if self._published() is None:
+            raise EngineUnavailableError("the engine process is not running")
+        try:
+            return self._channel.call(kind, payload or {}, self._timeout)
+        except CommandTimeoutError as e:
+            raise EngineUnavailableError("the engine process did not answer") from e
+        except CommandFailedError as e:
+            raise _ERRORS.get(e.kind, RuntimeError)(str(e)) from e
+
+    def start(self) -> None:
+        self._call("start")
+
+    def stop(self) -> None:
+        self._call("stop")
+
+    def resume(self) -> None:
+        self._call("resume")
+
+    def submit_order(self, order: OperatorOrder) -> tuple[RiskDecision, dict[str, Any] | None]:
+        result = self._call("submit_order", order.to_dict())
+        return RiskDecision(result["allowed"], result["reason"]), result["order"]
+
+    def cancel_order(self, client_order_id: str) -> bool:
+        return bool(self._call("cancel_order", {"client_order_id": client_order_id})["requested"])
+
+    def emergency_stop(self, reason: str, flatten: bool) -> dict[str, Any]:
+        """
+        Ask the engine process to halt; when it does not answer, go straight to
+        the broker. The halt stays queued, so an engine that comes back halts.
+        """
+        if self._published() is not None:
+            command = self._channel.send("halt", {"reason": reason, "flatten": flatten})
+            try:
+                return self._channel.wait(command, self._timeout)
+            except CommandTimeoutError:
+                logger.error("The engine process did not answer the emergency stop; using the broker directly")
+        broker = self._broker_factory(self._settings)
+        if flatten:
+            return {"engine": "not answering", "close_orders": broker.close_all()}
+        return {"engine": "not answering", "close_orders": [], "cancelled_orders": broker.cancel_all()}
+
+    def autostart(self) -> None:
+        """The engine process starts itself."""
+
+
+#: Exceptions the engine process reports by name, raised again in the API
+_ERRORS: dict[str, type[Exception]] = {
+    "ServiceNotRunningError": ServiceNotRunningError,
+    "TradingNotConfiguredError": TradingNotConfiguredError,
+    "UnknownSymbolError": UnknownSymbolError,
+    "RuntimeError": RuntimeError,
+}
