@@ -34,8 +34,27 @@ A strategy moves research → paper → small live → scaled live only if:
 - Deflated Sharpe ratio ≥ 0.95 and probability of backtest overfitting ≤ 0.20
 - Still profitable at 2–3× assumed slippage; stable across neighbouring parameters
 - Maximum drawdown within the risk limits, with an automatic kill switch
-- ≥ 60 trading days of paper trading tracking the backtest within tolerance
+- ≥ 60 trading days of paper trading tracking the backtest within tolerance (below)
 - Live capital ramp: 10% → 25% → 50% → 100%
+
+### Paper soak tolerance (agreed with the operator)
+
+`flask soak report` compares paper trading with a backtest of the same days, started on the
+bar the engine first acted on, with the same equity, lineup, sizing and risk limits. The
+soak passes when all five hold:
+
+- At least 60 trading days recorded (a day counts when the engine recorded its equity)
+- Every engine error, refused order, unexpected fill, halt and kill-switch trip reviewed
+- Every reconciliation difference with Alpaca explained; a cash difference counts as
+  explained when the account's own entries (dividends, interest, fees) add up to it within
+  a cent
+- Tracking error, the annualised spread of daily return differences, below 2%
+- Total return within 1 percentage point of the backtest
+
+Returns are compared from the first session at whose close both had traded. Expect small
+differences around dividends: the backtest's bars are dividend-adjusted, while Alpaca pays
+the dividend as cash. The report also measures opening-auction fills against the open as
+traded, next to the 5 bps the backtest assumes.
 
 ## Strategy lineup
 
@@ -81,7 +100,7 @@ stock selection needs full-market real-time volume, which requires a $99/month d
 | 6 | Operations: engine as its own service, structured logs, metrics, alerts, health/readiness, Docker/Compose fixes, backups, runbooks | Done: see [RUNBOOK.md](RUNBOOK.md) |
 | 7 | Versioned API with OpenAPI docs; dashboard rebuilt with source and auth | Done: the API under `/api/v1` with an OpenAPI 3.1 document kept true by contract tests; the dashboard (`src/static/`) and Telegram commands |
 | 8 | CI quality gates: strict typing on core, coverage targets, mutation testing on risk, blocking security scans | Done: mypy `--strict` on the trading core, coverage floors (94% overall, 95% per core module), weekly Cosmic Ray mutation testing of `risk.py` and `sizing.py`, blocking bandit and pip-audit, dashboard and Compose-stack jobs; see the README's quality gates |
-| 9 | ≥ 60-day paper soak, then staged live ramp | Planned |
+| 9 | ≥ 60-day paper soak, then staged live ramp | In progress: the soak report (`flask soak report`) checks the tolerance above; the soak starts when the operator starts the engine on the paper account |
 
 ### Sequencing notes
 

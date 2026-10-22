@@ -25,6 +25,7 @@ trading; only the clock, the market-data source and the broker are swapped. See
 | Risk engine: pre-trade gate, drawdown kill switch, daily loss limit, volatility-targeted sizing with a drawdown ladder | `src/trading/risk.py`, `sizing.py` | Working; limits are configurable, defaults below |
 | Backtester (simulated clock and broker, cost model, no look-ahead) | `src/trading/backtest.py` | Working |
 | Validation pipeline: walk-forward traded through the engine, deflated Sharpe, probability of backtest overfitting, purged cross-validation, cost stress, parameter stability, regimes, promotion gates | `src/trading/validation/`, `flask validate` | Working; no candidate has passed the gates yet |
+| Paper soak report: paper trading against a backtest of the same days, the account's dividends and interest, the soak tolerance | `src/trading/soak.py`, `flask soak report` | Working against recorded fakes; the soak has not started |
 | Paper trading on Alpaca (`alpaca-py`): broker adapter, trade-update stream, polling data feed, reconciliation | `src/trading/alpaca.py`, `service.py` | Working against fakes and Alpaca's real request models; not yet run against a live paper account |
 | Strategies | `src/trading/strategies/` | 60/40 benchmark (traded), plus month-end rebalancing flows, ETF time-series momentum, a crypto Donchian ensemble and a blend; none has passed the promotion gates yet |
 | Trading history (orders, fills, equity snapshots) and audit log | `src/models/` | Working |
@@ -168,6 +169,17 @@ Notes: Alpaca's free plan serves equity history from 2016, so the default first 
 cash earns in the engine. A backtest has no operator, so a drawdown kill is followed by a
 simulated resume after `--resume-after-kill-days` (30); every kill is counted in the report.
 Candidates are defined in `src/trading/validation/candidates.py`.
+
+### The paper soak
+
+The last gate is paper trading: at least 60 trading days that track a backtest of the same
+days. `flask --app src.main soak report` reads what the engine recorded, backtests those days
+with the same equity, lineup, sizing and risk limits, reads the paper account's dividends and
+interest from Alpaca, and prints `PASS`, `NOT YET`, `REVIEW` or `FAIL` (exit code 1) with the
+details. It passes when every engine error, halt and reconciliation difference is reviewed or
+explained, the annualised tracking error of daily returns is below 2% and the total return is
+within 1 percentage point. [docs/HOME_SERVER.md](docs/HOME_SERVER.md) shows how to run it on
+the server.
 
 ## API
 
@@ -353,7 +365,7 @@ src/
 | 6 | Operations: engine as its own process, alerts, heartbeat, readiness, metrics, JSON logs, Compose stack, backups, runbook (done) |
 | 7 | Dashboard rebuilt with source and auth, Telegram commands, versioned API with OpenAPI docs (done) |
 | 8 | CI quality gates: strict typing, coverage floors, mutation testing of the risk code, blocking security scans (done) |
-| 9 | Paper-trading soak, then a staged live ramp |
+| 9 | Paper-trading soak, then a staged live ramp (in progress: the soak report is built) |
 
 The full plan, operator decisions, strategy lineup and promotion gates are in
 [docs/ROADMAP.md](docs/ROADMAP.md).

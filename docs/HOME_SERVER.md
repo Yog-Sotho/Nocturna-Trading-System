@@ -224,3 +224,31 @@ sudo ./setup.sh
 
 [RUNBOOK.md](RUNBOOK.md) covers what each alert means, incidents and restores. Its commands
 are written without `sudo`, so add it in front of each `docker` command.
+
+## The paper soak
+
+Before any strategy trades real money, paper trading has to do what the backtest says for at
+least 60 trading days (see the tolerance in [ROADMAP.md](ROADMAP.md)). The soak starts when you
+start trading. Once a week, outside US market hours, run:
+
+```bash
+cd ~/Nocturna-Trading-System
+sudo docker compose exec -T api flask --app src.main soak report > soak-report.md
+cat soak-report.md
+```
+
+It reads what the engine recorded, backtests the same days on Alpaca's bars, and reads the
+paper account's dividends and interest from Alpaca. It places no orders and changes nothing.
+The first line gives the verdict:
+
+| Verdict | Meaning | What to do |
+|---|---|---|
+| `NOT YET` | Fewer than 60 trading days, or too few to compare | Nothing; run it again next week |
+| `REVIEW` | An error, halt, kill-switch trip or unexplained difference with Alpaca is listed | Read the listed entries with RUNBOOK.md; the soak passes only once each one is understood |
+| `FAIL` | Tracking error is 2% or more, or the total return is 1 point or more away from the backtest | Stop and look for the cause before trusting any backtest result |
+| `PASS` | All five checks hold | The soak is done for this lineup |
+
+The report also lists the days without a recorded equity (the engine was stopped or
+unreachable), the worst day against the backtest, and the opening-auction fills against the
+open as traded. `--since 2026-11-02` starts the comparison on a given day, for example after a
+restart from scratch, and `--json` prints the same as JSON.

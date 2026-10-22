@@ -7,6 +7,7 @@ Usage:
     flask --app src.main db current|upgrade|downgrade|check|revision
     flask --app src.main validate benchmark --start 2017-01-01 --output reports/benchmark.md
     flask --app src.main engine run          # the engine as its own process (ENGINE_MODE=external)
+    flask --app src.main soak report         # paper trading against a backtest of the same days (Phase 9)
 """
 
 import json
@@ -162,6 +163,30 @@ def register_cli(app: Flask) -> None:
             click.echo(f"Report written to {output} and {output.with_suffix('.json')}")
         click.echo(f"Verdict: {report.verdict}")
         if not report.passed:
+            raise SystemExit(1)
+
+    @app.cli.group("soak")
+    def soak_group() -> None:
+        """The paper soak (Phase 9): does paper trading do what the backtest says?"""
+
+    @soak_group.command("report")
+    @click.option("--since", type=click.DateTime(["%Y-%m-%d"]), default=None,
+                  help="First day of the soak (default: the first order or snapshot recorded).")
+    @click.option("--json", "as_json", is_flag=True, help="Print JSON instead of Markdown.")
+    def soak_report(since: datetime | None, as_json: bool) -> None:
+        """
+        Compare paper trading with a backtest of the same days, and check the
+        soak's pass criteria. Exit code 1 means FAIL.
+        """
+        from src.trading.runtime import TradingNotConfiguredError
+        from src.trading.soak import FAIL, run_report
+
+        try:
+            report = run_report(current_app.extensions["settings"], since.replace(tzinfo=UTC) if since else None)
+        except TradingNotConfiguredError as e:
+            raise click.ClickException(str(e)) from e
+        click.echo(json.dumps(report.to_dict(), indent=2) if as_json else report.to_markdown())
+        if report.verdict == FAIL:
             raise SystemExit(1)
 
     @app.cli.command("openapi")

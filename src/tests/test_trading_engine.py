@@ -93,6 +93,15 @@ class TestAlpacaBarSource:
         assert [b.start for b in result["SPY"]] == [day1]
         assert result["SPY"][0].end == day2
 
+    def test_raw_equity_bars_are_the_prices_as_traded(self):
+        from alpaca.data.enums import Adjustment
+        day1 = ny(2026, 3, 2)
+        stocks = _FakeBarClient({"SPY": [_vendor(day1)]})
+        source = AlpacaBarSource(SimulatedClock(day1 + timedelta(days=2)), stock_client=stocks,
+                                 crypto_client=_FakeBarClient({}), raw=True)
+        source.bars([SPY], DAILY, day1, day1 + timedelta(days=1))
+        assert stocks.requests[0].adjustment is Adjustment.RAW
+
     def test_crypto_bars_are_utc_days(self):
         start = datetime(2026, 3, 7, tzinfo=UTC)
         crypto = _FakeBarClient({"BTC/USD": [_vendor(start, 60000.0)]})
