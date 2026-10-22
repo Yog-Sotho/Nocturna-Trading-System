@@ -82,11 +82,15 @@ final.
 
 `docker compose up -d --build` runs the API, the engine as its own process, PostgreSQL,
 Redis and daily backups; `--profile proxy` adds HTTPS through Caddy. Setup, alerts, upgrades,
-incidents and restores are in [docs/RUNBOOK.md](docs/RUNBOOK.md). For a home server reached
-through Tailscale, with Telegram and healthchecks.io, follow
-[docs/HOME_SERVER.md](docs/HOME_SERVER.md): `python3 ops/homeserver.py check` reports what the
-machine already has and what is missing, and `python3 ops/homeserver.py env` writes `.env`,
-asking only for the values you must supply.
+incidents and restores are in [docs/RUNBOOK.md](docs/RUNBOOK.md).
+
+On an Ubuntu machine, `sudo ./setup.sh` does all of it. It first checks the machine and lists
+the changes it would make, then asks. It installs what is missing (Docker, Compose, buildx,
+Tailscale), serves the dashboard on a private Tailscale port, and writes `.env`, asking only
+for what you must supply. It then starts the stack, creates your dashboard account and sends
+a test alert. It never adds anyone to the `docker` group, and never changes what Tailscale
+already serves. `sudo ./setup.sh --check` only reports. See
+[docs/HOME_SERVER.md](docs/HOME_SERVER.md).
 
 The API's entry point is `gunicorn -c gunicorn.conf.py 'src.main:create_app()'`, a single,
 never-recycled worker (in development the engine lives in that process); the engine's is
@@ -250,7 +254,7 @@ to start and lists every problem if the configuration is unsafe. The ones that m
 ```bash
 pip install --require-hashes -r requirements-dev.txt   # runtime + dev tools, hashed lockfile
 pytest src/tests                                        # test suite
-ruff check src/ tools/ ops/                             # lint
+ruff check src/ tools/ setup/                           # lint
 mypy                                                    # strict typing of the trading core
 ```
 
@@ -285,7 +289,7 @@ CI (`.github/workflows/ci.yml`) blocks a merge on any of:
 
 | Gate | What it checks |
 |---|---|
-| ruff | lint of `src/`, `tools/` and `ops/` |
+| ruff | lint of `src/`, `tools/` and `setup/` |
 | mypy | `--strict` typing of the trading core (`src/trading/`, `src/models/trading.py`; settings in `pyproject.toml`) |
 | bandit | security findings of medium severity and confidence or higher; a reviewed exception carries `# nosec <id>` with the reason on the line above |
 | pip-audit | known vulnerabilities in both lockfiles |

@@ -1,8 +1,9 @@
 # NOCTURNA operations runbook
 
-Setting up a home server (Ubuntu, Docker, Tailscale, Telegram, healthchecks.io):
-[HOME_SERVER.md](HOME_SERVER.md). `python3 ops/homeserver.py check` reports what the
-machine has and what is missing at any time, and shows no secrets.
+Setting up a home server (Ubuntu, Docker, Tailscale, Telegram, healthchecks.io): run
+`sudo ./setup.sh` ([HOME_SERVER.md](HOME_SERVER.md)). `sudo ./setup.sh --check` reports what
+the machine has and what is missing at any time, and shows no secrets. On a machine set up
+this way Docker runs through `sudo`: put it in front of the `docker` commands below.
 
 How to run the paper-trading stack around the clock on one host with Docker
 Compose, what the alerts mean, and what to do when something goes wrong.
