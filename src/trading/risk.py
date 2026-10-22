@@ -8,7 +8,9 @@ Two layers, both running on the engine's single thread:
   limit-price collar, duplicates, daily order and turnover circuit breakers,
   fat-finger size, and position, asset-class and gross exposure caps. Orders
   that only reduce a position skip the circuit breakers, so the book can
-  always be flattened.
+  always be flattened. A cash equivalent (the engine's T-bill sleeve) is
+  exempt from the position and single-order caps and may be bought during a
+  cool-down; every other check, the halt and the gross cap included, applies.
 * ``RiskGate.on_equity`` runs after every mark-to-market: it keeps the
   equity high-water mark, trips the kill switch when the drawdown from it
   reaches ``max_drawdown``, and starts a cool-down (no new risk for the rest
@@ -97,6 +99,7 @@ class OrderContext:
     equity: Decimal
     last_bar_end: datetime | None  # newest bar of the order's symbol
     price_jump: Decimal | None  # |last close / previous close - 1|
+    cash_equivalent: bool = False  # the order's symbol is the engine's T-bill sleeve
 
 
 @dataclass
@@ -228,7 +231,7 @@ class RiskGate:
         if reducing:
             return RiskDecision(True)
 
-        if self.cooling_down:
+        if self.cooling_down and not ctx.cash_equivalent:
             return RiskDecision(False, f"cool-down: today's loss reached {limits.daily_loss_limit:.0%}")
         if ctx.equity <= 0:
             return RiskDecision(False, "account equity is not positive")
@@ -246,10 +249,10 @@ class RiskGate:
             return RiskDecision(False, f"daily turnover limit of {limits.max_daily_turnover}x equity reached")
         if limits.max_order_notional is not None and notional > limits.max_order_notional:
             return RiskDecision(False, f"order notional {notional:.2f} exceeds {limits.max_order_notional}")
-        if notional > limits.max_order_weight * ctx.equity:
+        if not ctx.cash_equivalent and notional > limits.max_order_weight * ctx.equity:
             return RiskDecision(False, f"order of {notional / ctx.equity:.0%} of equity exceeds the "
                                        f"{limits.max_order_weight:.0%} single-order limit")
-        if abs(after) * ctx.price > limits.max_position_weight * ctx.equity:
+        if not ctx.cash_equivalent and abs(after) * ctx.price > limits.max_position_weight * ctx.equity:
             return RiskDecision(False, f"{request.symbol} position would exceed "
                                        f"{limits.max_position_weight:.0%} of equity")
 

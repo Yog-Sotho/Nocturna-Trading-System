@@ -17,6 +17,7 @@ from ..domain import AssetClass, Instrument
 from ..strategies.benchmark import BuyAndHold
 from ..strategies.blend import Blend
 from ..strategies.crypto_trend import DonchianEnsemble
+from ..strategies.month_end import RULES, MonthEndCycle
 from ..strategies.rebalancing import RebalancingFlows
 from ..strategies.trend import TimeSeriesMomentum
 from ..strategy import Strategy
@@ -78,6 +79,16 @@ def _crypto_trend(instruments: Mapping[str, Instrument]) -> Candidate:
     )
 
 
+def _month_end(instruments: Mapping[str, Instrument]) -> Candidate:
+    spy = instruments["SPY"]
+    return Candidate(
+        "month-end",
+        lambda p: MonthEndCycle(spy, rule=p["rule"]),
+        {"rule": list(RULES)},  # fixed before any backtest (docs/STRATEGY_SHORTLIST.md)
+        regime_symbol="SPY",
+    )
+
+
 #: Lineup mixes (core 60/40, ETF trend, crypto trend), fixed from first principles before
 #: any lineup backtest: the core carries the return, trend diversifies it, crypto is held at
 #: the 15% crypto limit
@@ -122,6 +133,11 @@ CANDIDATES: dict[str, CandidateSpec] = {
         tuple((s, AssetClass.CRYPTO) for s in CRYPTO),
         _crypto_trend,
         warm_up_days=760,
+    ),
+    "month-end": CandidateSpec(
+        "SPY around each month's last session, T-bills otherwise (Etula, Rinne, Suominen and Vaittinen)",
+        (("SPY", AssetClass.EQUITY),),
+        _month_end,
     ),
     "lineup": CandidateSpec(
         "60/40 core + ETF time-series momentum + crypto Donchian ensemble",

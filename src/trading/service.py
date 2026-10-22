@@ -34,7 +34,7 @@ from typing import Any
 from .broker import Broker
 from .clock import Clock
 from .data import BarSource
-from .domain import DAILY, Bar, Order, OrderRequest, OrderUpdate, Timeframe
+from .domain import DAILY, Bar, Instrument, Order, OrderRequest, OrderUpdate, Timeframe
 from .engine import Allocation, Engine, EngineListener, EngineSnapshot
 from .feed import PollingFeed
 from .ledger import Ledger
@@ -63,6 +63,7 @@ class ServiceStatus:
 
 class EngineService:
     def __init__(self, *, clock: Clock, source: BarSource, broker: Broker, allocations: Sequence[Allocation],
+                 cash_sleeve: Instrument | None = None,
                  risk_limits: RiskLimits | None = None, sizing: SizingPolicy | None = None,
                  risk_state: Callable[[], Mapping[str, Any] | None] | None = None,
                  listeners: Sequence[EngineListener] = (),
@@ -72,6 +73,7 @@ class EngineService:
                  quiet_period: timedelta = timedelta(minutes=2)) -> None:
         """
         Args:
+            cash_sleeve: The T-bill ETF that holds idle equity (None: it stays in cash).
             risk_state: Loads the risk state saved by the last run (None if there is none).
             stream: Optional object with start()/stop() that delivers broker updates
                 (e.g. TradeUpdateStream); started and stopped with the service.
@@ -83,6 +85,7 @@ class EngineService:
         self._source = source
         self._broker = broker
         self._allocations = tuple(allocations)
+        self._cash_sleeve = cash_sleeve
         self._risk_limits = risk_limits or RiskLimits()
         self._sizing = sizing
         self._load_risk_state = risk_state
@@ -206,7 +209,8 @@ class EngineService:
             if risk.halted:
                 logger.warning("Trading stays halted after the restart: %s", risk.halt_reason)
         self.engine = Engine(clock=self.clock, broker=self._broker, ledger=ledger, allocations=self._allocations,
-                             risk=risk, sizing=self._sizing, listeners=self._listeners)
+                             risk=risk, sizing=self._sizing, cash_sleeve=self._cash_sleeve,
+                             listeners=self._listeners)
         # Updates (from this thread or the stream's) are queued and applied in order
         self._broker.set_listener(self._enqueue_update)
         if self._stream is not None:

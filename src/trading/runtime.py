@@ -99,7 +99,7 @@ def build_service(app: Flask, settings: Settings) -> EngineService:
     from .alpaca import AlpacaBroker, TradeUpdateStream, load_instruments
     from .clock import SystemClock
     from .data import AlpacaBarSource
-    from .lineup import LINEUP_SYMBOLS, build_lineup
+    from .lineup import CASH_SLEEVE, LINEUP_SYMBOLS, build_lineup
     from .persistence import EngineRecorder
 
     key, secret = _credentials(settings)
@@ -120,6 +120,7 @@ def build_service(app: Flask, settings: Settings) -> EngineService:
         source=AlpacaBarSource(clock, api_key=key, secret_key=secret),
         broker=broker,
         allocations=build_lineup(instruments),
+        cash_sleeve=instruments[CASH_SLEEVE],
         risk_limits=risk_limits(settings),
         sizing=sizing_policy(settings),
         risk_state=recorder.load_risk_state,

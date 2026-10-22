@@ -5,7 +5,9 @@ NOCTURNA Trading System - Validating one candidate.
 the Deflated Sharpe ratio of the best parameter set, the probability of
 backtest overfitting, combinatorial purged cross-validation, the walk-forward
 traded through the engine, cost stress, parameter stability and regimes, and
-returns the report with the promotion gates decided.
+returns the report with the promotion gates decided. With a hurdle (T-bills),
+every Sharpe-based gate is measured in excess of it and the cost-stress gate
+asks for more than the hurdle earned.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import date, timedelta
 
 import numpy as np
 
@@ -56,6 +58,9 @@ class ValidationConfig:
     cv_embargo: int = 5
     stress_multiples: tuple[float, ...] = (2.0, 3.0)
     gates: PromotionGates = field(default_factory=PromotionGates)
+    #: The hurdle's return per day (UTC date the day's mark falls on); None: zero
+    hurdle: Mapping[date, float] | None = None
+    hurdle_label: str = "T-bills"
 
 
 def validate(candidate: Candidate, bars: Mapping[str, Sequence[Bar]], config: ValidationConfig) -> ValidationReport:
@@ -63,8 +68,8 @@ def validate(candidate: Candidate, bars: Mapping[str, Sequence[Bar]], config: Va
     Raises:
         ValueError: If the period is too short for the walk-forward or the statistics.
     """
-    backtest, gates = config.backtest, config.gates
-    trials = run_trials(candidate, bars, backtest)
+    backtest, gates, hurdle = config.backtest, config.gates, config.hurdle
+    trials = run_trials(candidate, bars, backtest, hurdle)
     dates, matrix = returns_matrix(trials)
     if len(dates) < 2 * config.pbo_blocks:
         raise ValueError(f"only {len(dates)} common return days; the period is too short to validate")
@@ -80,9 +85,9 @@ def validate(candidate: Candidate, bars: Mapping[str, Sequence[Bar]], config: Va
     cv = (combinatorial_purged_cv(matrix, config.cv_groups, config.cv_test_groups, embargo=config.cv_embargo)
           if len(trials) > 1 else None)
 
-    walk = walk_forward(candidate, trials, bars, backtest, config.walk_forward)
+    walk = walk_forward(candidate, trials, bars, backtest, config.walk_forward, hurdle)
     oos = summarize(walk.returns)
-    stressed = cost_stress(candidate, walk, bars, backtest, config.stress_multiples)
+    stressed = cost_stress(candidate, walk, bars, backtest, config.stress_multiples, hurdle)
     stressed_summary = {m: summarize(r) for m, r in stressed.items()}
     neighbourhood = neighbours(candidate, sharpes, selected)
     reference = candidate.regime_symbol or next(iter(candidate.factory(params[0]).instruments)).symbol
@@ -103,9 +108,11 @@ def validate(candidate: Candidate, bars: Mapping[str, Sequence[Bar]], config: Va
     stress = stressed_summary.get(gates.stress_multiple)
     results.append(GateResult(
         f"profitable at {gates.stress_multiple:g}x costs",
-        None if stress is None else stress.total_return > 0 and stress.sharpe > 0,
-        None if stress is None else stress.total_return, "> 0 total return",
-        "not run" if stress is None else ""))
+        None if stress is None else stress.total_return > stress.hurdle_return and stress.sharpe > 0,
+        None if stress is None else stress.total_return,
+        f"> {config.hurdle_label} total return" if hurdle is not None else "> 0 total return",
+        "not run" if stress is None else
+        f"{config.hurdle_label} returned {stress.hurdle_return:.2%}" if hurdle is not None else ""))
     ratio = neighbourhood.ratio
     results.append(GateResult(
         "parameter stability", None if ratio is None else ratio >= gates.min_neighbour_ratio, ratio,
@@ -143,6 +150,7 @@ def validate(candidate: Candidate, bars: Mapping[str, Sequence[Bar]], config: Va
         passed=passed,
         verdict=summary,
         settings={
+            "sharpe_in_excess_of": config.hurdle_label if hurdle is not None else "zero",
             "costs": {k.value: {"fee_bps": str(v.fee_bps), "slippage_bps": str(v.slippage_bps)}
                       for k, v in backtest.costs.items()},
             "resume_after_kill_days": (backtest.resume_after_kill / timedelta(days=1)

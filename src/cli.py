@@ -118,17 +118,27 @@ def register_cli(app: Flask) -> None:
     @click.option("--test-months", type=click.IntRange(min=1), default=12, show_default=True)
     @click.option("--min-sharpe", type=float, default=None,
                   help="Out-of-sample Sharpe gate (default 1.0, the portfolio-level gate).")
+    @click.option("--no-tbills", is_flag=True,
+                  help="Keep idle cash in cash and measure Sharpe ratios against zero (the rules before "
+                       "22 October 2026), to compare with earlier reports.")
     def validate_candidate(candidate: str, start: datetime, end: datetime | None, output: Path | None,
                            resume_after_kill_days: int, train_months: int, test_months: int,
-                           min_sharpe: float | None) -> None:
-        """Validate CANDIDATE against the promotion gates on Alpaca data. Exit code 1 means rejected."""
+                           min_sharpe: float | None, no_tbills: bool) -> None:
+        """
+        Validate CANDIDATE against the promotion gates on Alpaca data. Idle cash is held in
+        T-bills (BIL) and Sharpe ratios are measured in excess of them. Exit code 1 means rejected.
+        """
         from src.trading.backtest import BacktestConfig
+        from src.trading.data import DEFAULT_FEED_DELAY
+        from src.trading.domain import AssetClass
+        from src.trading.lineup import CASH_SLEEVE
         from src.trading.runtime import TradingNotConfiguredError, risk_limits, sizing_policy
         from src.trading.validation import market
         from src.trading.validation.candidates import CANDIDATES
         from src.trading.validation.experiment import WalkForwardConfig
         from src.trading.validation.gates import PromotionGates
         from src.trading.validation.pipeline import ValidationConfig, validate
+        from src.trading.validation.stats import hurdle_returns
 
         spec = CANDIDATES.get(candidate)
         if spec is None:
@@ -139,15 +149,19 @@ def register_cli(app: Flask) -> None:
                                                                               microsecond=0)
         if end <= start:
             raise click.ClickException("--end must be after --start")
+        symbols = spec.symbols if no_tbills else (*spec.symbols, (CASH_SLEEVE, AssetClass.EQUITY))
         try:
-            instruments, bars = market.load(settings, spec.symbols, start - timedelta(days=spec.warm_up_days), end)
+            instruments, bars = market.load(settings, symbols, start - timedelta(days=spec.warm_up_days), end)
         except TradingNotConfiguredError as e:
             raise click.ClickException(str(e)) from e
         gates = PromotionGates() if min_sharpe is None else PromotionGates(min_oos_sharpe=min_sharpe)
         config = ValidationConfig(
             BacktestConfig(start=start, end=end, risk_limits=risk_limits(settings), sizing=sizing_policy(settings),
-                           resume_after_kill=timedelta(days=resume_after_kill_days)),
-            walk_forward=WalkForwardConfig(train_months, test_months), gates=gates)
+                           resume_after_kill=timedelta(days=resume_after_kill_days),
+                           cash_sleeve=None if no_tbills else instruments[CASH_SLEEVE]),
+            walk_forward=WalkForwardConfig(train_months, test_months), gates=gates,
+            hurdle=None if no_tbills else hurdle_returns(bars[CASH_SLEEVE], DEFAULT_FEED_DELAY[AssetClass.EQUITY]),
+            hurdle_label=f"T-bills ({CASH_SLEEVE})")
         click.echo(f"Validating {candidate} ({spec.description}) from {start:%Y-%m-%d} to {end:%Y-%m-%d}...")
         try:
             report = validate(spec.build(instruments), bars, config)

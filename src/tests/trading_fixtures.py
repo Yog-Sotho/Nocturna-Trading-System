@@ -14,6 +14,7 @@ from src.trading.domain import DAILY, NEW_YORK, AssetClass, Bar, Instrument
 SPY = Instrument("SPY", AssetClass.EQUITY, qty_increment=Decimal("1"), min_qty=Decimal("1"), shortable=True)
 IEF = Instrument("IEF", AssetClass.EQUITY, qty_increment=Decimal("1"), min_qty=Decimal("1"), shortable=True)
 BTC = Instrument("BTC/USD", AssetClass.CRYPTO, qty_increment=Decimal("0.0001"), min_qty=Decimal("0.0001"))
+BIL = Instrument("BIL", AssetClass.EQUITY, qty_increment=Decimal("1"), min_qty=Decimal("1"))
 
 
 def daily_bars(instrument: Instrument, start: date, end: date, first_price: float = 100.0,

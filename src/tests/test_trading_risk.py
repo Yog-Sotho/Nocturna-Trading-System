@@ -41,13 +41,14 @@ def _req(cid="r", symbol="SPY", side=Side.BUY, qty="10", **kw):
     return OrderRequest(cid, symbol, side, D(qty), **kw)
 
 
-def _ctx(price="100", exposure=None, equity="10000", now=NOW, last_bar_end=_FRESH, jump=None):
+def _ctx(price="100", exposure=None, equity="10000", now=NOW, last_bar_end=_FRESH, jump=None, cash=False):
     return OrderContext(
         now=now, price=D(price) if price else None,
         exposure={k: D(v) for k, v in (exposure or {}).items()},
         prices={"SPY": D("100"), "IEF": D("100"), "BTC/USD": D("100")},
         asset_classes={s: i.asset_class for s, i in INSTRUMENTS.items()}, equity=D(equity),
-        last_bar_end=now - timedelta(hours=12) if last_bar_end is _FRESH else last_bar_end, price_jump=jump)
+        last_bar_end=now - timedelta(hours=12) if last_bar_end is _FRESH else last_bar_end, price_jump=jump,
+        cash_equivalent=cash)
 
 
 def _refused(decision, text):
@@ -155,6 +156,42 @@ class TestExposureLimits:
         gate.halt("drill")
         decision = gate.check(_req(side=side, qty=qty), _ctx(exposure={"SPY": held}))
         assert decision.allowed if reducing else _refused(decision, "halted")
+
+
+class TestCashEquivalent:
+    """The engine's T-bill sleeve (IEF stands in for it here)."""
+
+    def test_exempt_from_the_single_order_limit(self):
+        gate = RiskGate(RiskLimits(max_order_weight=D("0.5")))
+        assert _refused(gate.check(_req(symbol="IEF", qty="60"), _ctx()), "single-order limit")
+        assert gate.check(_req(symbol="IEF", qty="60"), _ctx(cash=True)).allowed
+
+    def test_exempt_from_the_position_cap(self):
+        gate = RiskGate(RiskLimits(max_position_weight=D("0.5"), max_order_weight=D("1")))
+        assert _refused(gate.check(_req(symbol="IEF", qty="10"), _ctx(exposure={"IEF": "45"})), "would exceed")
+        assert gate.check(_req(symbol="IEF", qty="10"), _ctx(exposure={"IEF": "45"}, cash=True)).allowed
+
+    def test_still_within_gross_exposure(self):
+        gate = RiskGate(RiskLimits(max_order_weight=D("1")))
+        assert gate.check(_req(symbol="IEF", qty="50"), _ctx(exposure={"SPY": "50"}, cash=True)).allowed
+        assert _refused(gate.check(_req(symbol="IEF", qty="51"), _ctx(exposure={"SPY": "50"}, cash=True)),
+                        "gross exposure")
+
+    def test_bought_during_a_cool_down_but_never_while_halted(self):
+        gate = RiskGate()
+        gate.on_equity(D("100000"), ny(2026, 3, 2, 9))
+        assert gate.on_equity(D("96000"), ny(2026, 3, 2, 11)) == "cooldown"
+        assert _refused(gate.check(_req(qty="1"), _ctx()), "cool-down")
+        assert gate.check(_req(symbol="IEF", qty="1"), _ctx(cash=True)).allowed
+        gate.halt("drill")
+        assert _refused(gate.check(_req(symbol="IEF", qty="1"), _ctx(cash=True)), "halted")
+
+    def test_every_other_check_applies(self):
+        assert _refused(RiskGate(RiskLimits(max_order_notional=D("500"))).check(
+            _req(symbol="IEF", qty="6"), _ctx(cash=True)), "notional")
+        assert _refused(RiskGate().check(_req(symbol="IEF"), _ctx(last_bar_end=NOW - timedelta(days=6), cash=True)),
+                        "stale")
+        assert _refused(RiskGate().check(_req(symbol="IEF"), _ctx(price=None, cash=True)), "no reference price")
 
 
 class TestOrderSanity:

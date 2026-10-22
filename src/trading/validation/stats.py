@@ -2,7 +2,9 @@
 NOCTURNA Trading System - Performance statistics for validation.
 
 Sharpe ratios here are per period (not annualized) unless a name says
-otherwise, as the Probabilistic and Deflated Sharpe ratios require.
+otherwise, as the Probabilistic and Deflated Sharpe ratios require. They are
+computed on returns in excess of a hurdle (T-bills) when the returns carry
+one, and on the returns themselves otherwise.
 
 * Probabilistic Sharpe Ratio (Bailey and López de Prado, "The Sharpe Ratio
   Efficient Frontier", Journal of Risk, 2012): the probability that the true
@@ -23,13 +25,15 @@ otherwise, as the Probabilistic and Deflated Sharpe ratios require.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from statistics import NormalDist
 
 import numpy as np
+
+from ..domain import Bar
 
 EULER_GAMMA = 0.5772156649015329
 _NORMAL = NormalDist()
@@ -37,14 +41,29 @@ _NORMAL = NormalDist()
 
 @dataclass(frozen=True)
 class Returns:
-    """Simple returns per period, labelled by the UTC date the period ended."""
+    """
+    Simple returns per period, labelled by the UTC date the period ended, and
+    optionally the hurdle's (T-bills') return over each period.
+    """
 
     dates: tuple[date, ...]
     values: np.ndarray
+    hurdle: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         if len(self.dates) != len(self.values):
             raise ValueError("dates and values must have the same length")
+        if self.hurdle is not None and len(self.hurdle) != len(self.values):
+            raise ValueError("the hurdle must have a return for every period")
+
+    @property
+    def excess(self) -> np.ndarray:
+        """Returns in excess of the hurdle (the returns themselves without one): Sharpe ratios use these."""
+        return self.values if self.hurdle is None else self.values - self.hurdle
+
+    def over(self, hurdle: Mapping[date, float]) -> Returns:
+        """The same returns against a hurdle, given as its return per period end date (zero where it has none)."""
+        return Returns(self.dates, self.values, np.array([hurdle.get(d, 0.0) for d in self.dates], dtype=float))
 
     def __len__(self) -> int:
         return len(self.values)
@@ -60,7 +79,8 @@ class Returns:
     def between(self, start: date, end: date) -> Returns:
         """The periods ending in [start, end)."""
         keep = [i for i, d in enumerate(self.dates) if start <= d < end]
-        return Returns(tuple(self.dates[i] for i in keep), self.values[keep])
+        return Returns(tuple(self.dates[i] for i in keep), self.values[keep],
+                       None if self.hurdle is None else self.hurdle[keep])
 
 
 def daily_returns(curve: Sequence[tuple[datetime, Decimal | float]]) -> Returns:
@@ -79,6 +99,19 @@ def daily_returns(curve: Sequence[tuple[datetime, Decimal | float]]) -> Returns:
     with np.errstate(divide="ignore", invalid="ignore"):
         returns = np.where(values[:-1] > 0, values[1:] / values[:-1] - 1, 0.0)
     return Returns(tuple(days[1:]), returns)
+
+
+def hurdle_returns(bars: Sequence[Bar], delay: timedelta) -> dict[date, float]:
+    """
+    A hurdle's (a T-bill ETF's) return per period, from its adjusted bars,
+    labelled as ``daily_returns`` labels an equity curve: by the UTC date its
+    bar became known (bar end plus the feed delay).
+    """
+    out = {}
+    for previous, bar in zip(bars, bars[1:], strict=False):
+        if previous.close > 0:
+            out[(bar.end + delay).astimezone(UTC).date()] = bar.close / previous.close - 1
+    return out
 
 
 # -- moments and ratios ------------------------------------------------------------------
@@ -189,6 +222,8 @@ def max_drawdown(returns: np.ndarray) -> float:
 
 @dataclass(frozen=True)
 class Summary:
+    """Returns, volatility and drawdown of the returns; Sharpe and Sortino in excess of the hurdle."""
+
     total_return: float
     cagr: float
     volatility: float  # annualized
@@ -196,27 +231,29 @@ class Summary:
     sortino: float  # annualized
     max_drawdown: float
     periods: int
+    hurdle_return: float = 0.0  # the hurdle's total return over the same periods
 
     def as_dict(self) -> dict[str, float]:
         return {"total_return": self.total_return, "cagr": self.cagr, "volatility": self.volatility,
                 "sharpe": self.sharpe, "sortino": self.sortino, "max_drawdown": self.max_drawdown,
-                "periods": float(self.periods)}
+                "periods": float(self.periods), "hurdle_return": self.hurdle_return}
 
 
 def summarize(returns: Returns) -> Summary:
-    r = returns.values
+    r, x = returns.values, returns.excess
     if len(r) < 2:
         return Summary(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, len(r))
     per_year = returns.periods_per_year
     growth = float(np.prod(1 + r))
     years = len(r) / per_year
-    downside = np.sqrt(np.mean(np.minimum(r, 0.0) ** 2))
+    downside = np.sqrt(np.mean(np.minimum(x, 0.0) ** 2))
     return Summary(
         total_return=growth - 1,
         cagr=growth ** (1 / years) - 1 if growth > 0 and years > 0 else -1.0,
         volatility=float(r.std(ddof=1) * math.sqrt(per_year)),
-        sharpe=sharpe_ratio(r) * math.sqrt(per_year),
-        sortino=float(r.mean() / downside * math.sqrt(per_year)) if downside > 0 else 0.0,
+        sharpe=sharpe_ratio(x) * math.sqrt(per_year),
+        sortino=float(x.mean() / downside * math.sqrt(per_year)) if downside > 0 else 0.0,
         max_drawdown=max_drawdown(r),
         periods=len(r),
+        hurdle_return=float(np.prod(1 + returns.hurdle) - 1) if returns.hurdle is not None else 0.0,
     )

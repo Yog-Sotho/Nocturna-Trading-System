@@ -1,7 +1,7 @@
 """
-Tests for the Phase 5 candidate strategies against hand-computed cases from
-their papers' rules: month-end rebalancing flows, the crypto Donchian
-ensemble and time-series momentum.
+Tests for the candidate strategies against hand-computed cases from their
+papers' rules: month-end rebalancing flows, the crypto Donchian ensemble,
+time-series momentum and the month-end payment cycle.
 """
 
 import math
@@ -11,10 +11,11 @@ from decimal import Decimal
 import numpy as np
 import pytest
 
-from src.tests.trading_fixtures import BTC, IEF, SPY, bar, daily_bars, ny
+from src.tests.trading_fixtures import BIL, BTC, IEF, SPY, bar, daily_bars, ny
 from src.trading.calendar import TradingCalendar
-from src.trading.domain import AssetClass
+from src.trading.domain import NEW_YORK, AssetClass
 from src.trading.strategies.crypto_trend import LOOKBACKS, DonchianEnsemble, ensemble_exposure, in_position
+from src.trading.strategies.month_end import MonthEndCycle, held_at_close, settlement_days
 from src.trading.strategies.rebalancing import (
     THRESHOLDS,
     RebalancingFlows,
@@ -22,7 +23,7 @@ from src.trading.strategies.rebalancing import (
     strategy_weight,
 )
 from src.trading.strategies.trend import TimeSeriesMomentum, ewma_volatility, trend_signal
-from src.trading.strategy import StrategyContext
+from src.trading.strategy import CLOSE, StrategyContext
 
 D = Decimal
 SESSIONS = TradingCalendar(AssetClass.EQUITY)
@@ -200,6 +201,70 @@ def test_strategies_run_in_a_backtest():
         assert result.fills and result.final.equity > 0
 
 
+# -- the month-end payment cycle ------------------------------------------------------------
+
+def _held(rule, days):
+    return [d.isoformat()[5:] for d in days if held_at_close(d, rule)]
+
+
+OCTOBER_2026 = [date(2026, 10, d) for d in (23, 26, 27, 28, 29, 30)] + [date(2026, 11, d) for d in (2, 3, 4, 5)]
+
+
+class TestMonthEndCycle:
+    def test_settlement_shortened_to_two_days_then_one(self):
+        assert [settlement_days(d) for d in (date(2017, 9, 1), date(2017, 9, 5), date(2024, 5, 24),
+                                             date(2024, 5, 28))] == [3, 2, 2, 1]
+
+    @pytest.mark.parametrize("rule, held", [
+        # T = Friday 30 October 2026; T+3 = Wednesday 4 November is sold at the close
+        ("paper", ["10-26", "10-27", "10-28", "10-29", "10-30", "11-02", "11-03"]),  # from T-4
+        ("settlement", ["10-28", "10-29", "10-30", "11-02", "11-03"]),  # T+1 settlement: from T-2
+        ("turn", ["10-29", "10-30", "11-02", "11-03"]),  # from T-1
+    ])
+    def test_held_from_the_close_of_t_minus_k_to_the_close_of_t_plus_3(self, rule, held):
+        assert _held(rule, OCTOBER_2026) == held
+
+    def test_the_settlement_rule_on_the_entry_day_decides(self):
+        # August 2017 (T+3): from T-4, 25 August. September 2017 (T+2 since the 5th): from T-3, 26 September
+        assert _held("settlement", [date(2017, 8, d) for d in (24, 25, 28)]) == ["08-25", "08-28"]
+        assert _held("settlement", [date(2017, 9, d) for d in (25, 26)]) == ["09-26"]
+        # May 2024: T+1 from Tuesday the 28th (after Memorial Day), so from T-2, 29 May, to T+2, 4 June
+        may = [date(2024, 5, d) for d in (24, 28, 29, 31)] + [date(2024, 6, d) for d in (3, 4, 5)]
+        assert _held("settlement", may) == ["05-29", "05-31", "06-03", "06-04"]
+
+    def test_targets_the_close_of_the_session_after_the_newest_bar(self):
+        strategy = MonthEndCycle(SPY)
+        assert strategy.execution == CLOSE
+        for newest, weight in ((date(2026, 10, 27), 1.0), (date(2026, 11, 3), 0.0), (date(2026, 10, 26), 0.0)):
+            history = {"SPY": (bar(SPY, ny(newest.year, newest.month, newest.day), 100, 100, 100, 100),)}
+            assert strategy.target_weights(_ctx(history)) == {"SPY": weight}
+
+    def test_unknown_rule(self):
+        with pytest.raises(ValueError, match="rule"):
+            MonthEndCycle(SPY, rule="halloween")
+
+    def test_trades_in_the_closing_auctions_of_the_window(self):
+        from src.trading.backtest import BacktestConfig, run_backtest
+        from src.trading.broker import CostModel
+        from src.trading.engine import Allocation
+        bars = {"SPY": daily_bars(SPY, date(2025, 1, 2), date(2026, 12, 31), 600.0, seed=1),
+                "BIL": daily_bars(BIL, date(2025, 1, 2), date(2026, 12, 31), 91.0, seed=5, vol=0.0001)}
+        config = BacktestConfig(start=ny(2026, 10, 1), end=ny(2026, 11, 30), cash_sleeve=BIL,
+                                costs={k: CostModel() for k in AssetClass})
+        result = run_backtest([Allocation(MonthEndCycle(SPY), D("1"))], bars, config)
+        closes = {b.start.astimezone(NEW_YORK).date(): b.close for b in bars["SPY"]}
+        spy = [f for f in result.fills if f.symbol == "SPY"]
+        sessions = [SESSIONS.previous_session(f.timestamp.astimezone(NEW_YORK).date()) for f in spy]
+        assert [(d.isoformat(), f.side.value) for d, f in zip(sessions, spy, strict=True)] == [
+            ("2026-10-01", "buy"), ("2026-10-05", "sell"),  # the end of September's window: T+1 to T+3
+            ("2026-10-28", "buy"),  # T-2 of October (T+1 settlement)
+            ("2026-11-03", "buy"),  # the volatility target topping up past the rebalance band
+            ("2026-11-04", "sell"),  # T+3
+            ("2026-11-25", "buy")]  # T-2 of November (Thanksgiving on the 26th)
+        assert all(float(f.price) == pytest.approx(closes[d]) for d, f in zip(sessions, spy, strict=True))
+        assert {f.symbol for f in result.fills} == {"SPY", "BIL"}
+
+
 class TestBlend:
     def test_weights_add_up_and_components_warm_up_separately(self):
         from src.trading.strategies.benchmark import BuyAndHold
@@ -233,7 +298,7 @@ class TestBlend:
 
 
 class TestCandidateRegistry:
-    @pytest.mark.parametrize("name", ["benchmark", "rebalancing", "tsmom", "crypto-trend", "lineup"])
+    @pytest.mark.parametrize("name", ["benchmark", "rebalancing", "tsmom", "crypto-trend", "month-end", "lineup"])
     def test_every_candidate_builds_from_its_own_symbols(self, name):
         from src.trading.domain import Instrument
         from src.trading.validation.candidates import CANDIDATES

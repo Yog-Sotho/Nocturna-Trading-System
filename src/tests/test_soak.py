@@ -13,7 +13,7 @@ import pytest
 
 from src.models.trading import EquitySnapshot, TradingFill, TradingOrder
 from src.models.user import AuditLog
-from src.tests.trading_fixtures import IEF, SPY, daily_bars, ny
+from src.tests.trading_fixtures import BIL, IEF, SPY, daily_bars, ny
 from src.trading import soak
 from src.trading.backtest import BacktestConfig, run_backtest
 from src.trading.calendar import TradingCalendar
@@ -30,7 +30,8 @@ def lineup():
 
 
 BARS = {"SPY": daily_bars(SPY, date(2024, 6, 3), date(2026, 6, 30), 500.0, seed=3),
-        "IEF": daily_bars(IEF, date(2024, 6, 3), date(2026, 6, 30), 95.0, seed=4, vol=0.004)}
+        "IEF": daily_bars(IEF, date(2024, 6, 3), date(2026, 6, 30), 95.0, seed=4, vol=0.004),
+        "BIL": daily_bars(BIL, date(2024, 6, 3), date(2026, 6, 30), 91.0, seed=5, drift=0.00015, vol=0.0001)}
 
 
 def paper_run(start=ny(2026, 1, 5, 15), end=ny(2026, 5, 1, 1)):
@@ -301,7 +302,7 @@ def test_the_command_fails_on_a_failed_soak(app, monkeypatch):
 def test_the_report_runs_a_backtest_of_the_recorded_days(app, monkeypatch):
     from pydantic import SecretStr
 
-    from src.trading import data
+    from src.trading import backtest, data
     from src.trading.validation import market
 
     record = paper_run()
@@ -309,7 +310,7 @@ def test_the_report_runs_a_backtest_of_the_recorded_days(app, monkeypatch):
 
     def load(settings, symbols, start, end):
         loads.append((symbols, start, end))
-        return {"SPY": SPY, "IEF": IEF}, BARS
+        return {"SPY": SPY, "IEF": IEF, "BIL": BIL}, BARS
 
     class RawBars:
         def __init__(self, clock, api_key, secret_key, raw=False):
@@ -325,15 +326,24 @@ def test_the_report_runs_a_backtest_of_the_recorded_days(app, monkeypatch):
     monkeypatch.setattr(market, "load", load)
     monkeypatch.setattr(data, "AlpacaBarSource", RawBars)
     monkeypatch.setattr(soak, "broker_activities", unreachable)
+    results = []
+
+    def recording(*args, **kwargs):
+        results.append(run_backtest(*args, **kwargs))
+        return results[-1]
+
+    monkeypatch.setattr(backtest, "run_backtest", recording)
     settings = app.extensions["settings"].model_copy(
         update={"alpaca_api_key": SecretStr("key"), "alpaca_secret_key": SecretStr("secret")})
     report = soak.run_report(settings)
     [(symbols, start, end)] = loads
-    assert [s for s, _ in symbols] == ["SPY", "IEF"]
+    assert [s for s, _ in symbols] == ["SPY", "IEF", "BIL"]
     assert start == soak.backtest_start(record.started, CALENDAR) - soak.WARM_UP
     assert end == record.snapshots[-1].timestamp + timedelta(minutes=1)
     assert sources == [("key", "secret", True)]
     assert report.backtest_fills > 0 and report.tracking.returns > 0
+    [result] = results
+    assert any(f.symbol == "BIL" for f in result.fills)  # the T-bill sleeve, as the live engine holds it
     assert any("could not read the account's dividends" in n for n in report.notes)
 
 

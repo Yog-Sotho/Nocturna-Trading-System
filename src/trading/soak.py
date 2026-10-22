@@ -505,7 +505,7 @@ def run_report(settings: Any, since: datetime | None = None) -> SoakReport:
     from .clock import SystemClock
     from .data import AlpacaBarSource
     from .domain import DAILY
-    from .lineup import LINEUP_SYMBOLS, build_lineup
+    from .lineup import CASH_SLEEVE, LINEUP_SYMBOLS, build_lineup
     from .runtime import risk_limits, sizing_policy
     from .validation import market
 
@@ -518,7 +518,7 @@ def run_report(settings: Any, since: datetime | None = None) -> SoakReport:
     instruments, bars = market.load(settings, LINEUP_SYMBOLS, start - WARM_UP, end)
     backtest = run_backtest(build_lineup(instruments), bars, BacktestConfig(
         start=start, end=end, starting_cash=record.snapshots[0].equity, risk_limits=risk_limits(settings),
-        sizing=sizing_policy(settings)))
+        sizing=sizing_policy(settings), cash_sleeve=instruments[CASH_SLEEVE]))
     key, secret = settings.alpaca_api_key.get_secret_value(), settings.alpaca_secret_key.get_secret_value()
     raw = AlpacaBarSource(SystemClock(), api_key=key, secret_key=secret, raw=True).bars(
         list(instruments.values()), DAILY, record.started - timedelta(days=1), end)

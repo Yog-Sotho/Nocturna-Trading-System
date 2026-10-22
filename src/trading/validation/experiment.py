@@ -19,6 +19,10 @@ gate and sizing as paper trading:
 
 Candidate strategies must decide from bar history alone (not from the
 positions they are shown), so a parameter set can be switched in at any time.
+
+With a ``hurdle`` (T-bills' return per day), every return series carries it,
+and Sharpe ratios, the walk-forward's choices and the overfitting statistics
+are computed in excess of it.
 """
 
 from __future__ import annotations
@@ -38,7 +42,7 @@ import numpy as np
 from ..backtest import BacktestConfig, BacktestResult, run_backtest
 from ..domain import Bar, Instrument
 from ..engine import Allocation
-from ..strategy import Strategy, StrategyContext, consult, needed_history
+from ..strategy import Strategy, StrategyContext, common_execution, consult, needed_history
 from .stats import Returns, daily_returns, sharpe_ratio, summarize
 
 _NAME = re.compile(r"[a-z0-9-]{1,16}")
@@ -76,21 +80,27 @@ def _run(strategy: Strategy, bars: Mapping[str, Sequence[Bar]], config: Backtest
     return run_backtest([Allocation(strategy, Decimal("1"))], bars, config)
 
 
-def run_trials(candidate: Candidate, bars: Mapping[str, Sequence[Bar]], config: BacktestConfig) -> list[Trial]:
+def _returns(result: BacktestResult, hurdle: Mapping[date, float] | None) -> Returns:
+    returns = daily_returns(result.equity_curve)
+    return returns if hurdle is None else returns.over(hurdle)
+
+
+def run_trials(candidate: Candidate, bars: Mapping[str, Sequence[Bar]], config: BacktestConfig,
+               hurdle: Mapping[date, float] | None = None) -> list[Trial]:
     trials = []
     for params in candidate.parameter_sets():
         result = _run(candidate.factory(params), bars, config)
-        trials.append(Trial(params, result, daily_returns(result.equity_curve)))
+        trials.append(Trial(params, result, _returns(result, hurdle)))
     return trials
 
 
 def returns_matrix(trials: Sequence[Trial]) -> tuple[tuple[date, ...], np.ndarray]:
-    """Trials' returns on the dates all of them have (rows: dates, columns: trials)."""
+    """Trials' returns in excess of the hurdle on the dates all of them have (rows: dates, columns: trials)."""
     common = sorted(set.intersection(*(set(t.returns.dates) for t in trials)))
     columns = []
     for t in trials:
         index = {d: i for i, d in enumerate(t.returns.dates)}
-        columns.append(t.returns.values[[index[d] for d in common]])
+        columns.append(t.returns.excess[[index[d] for d in common]])
     return tuple(common), np.column_stack(columns) if columns else np.empty((0, 0))
 
 
@@ -145,7 +155,7 @@ def select(trials: Sequence[Trial], start: datetime, end: datetime) -> tuple[int
     best, best_sharpe = 0, -math.inf
     for i, trial in enumerate(trials):
         window = trial.returns.between(start.astimezone(UTC).date(), end.astimezone(UTC).date())
-        sr = sharpe_ratio(window.values) * math.sqrt(trial.returns.periods_per_year)
+        sr = sharpe_ratio(window.excess) * math.sqrt(trial.returns.periods_per_year)
         if sr > best_sharpe:
             best, best_sharpe = i, sr
     return best, best_sharpe
@@ -169,6 +179,7 @@ class SwitchingStrategy(Strategy):
             for instrument in strategy.instruments:
                 instruments.setdefault(instrument.symbol, instrument)
         self.instruments = tuple(instruments.values())
+        self.execution = common_execution(self._strategies)
         self.lookback = max(s.lookback for s in self._strategies)
         # Each set waits for its own history (a blend may trade before its slowest component)
         self.min_history = min(needed_history(s) for s in self._strategies)
@@ -199,7 +210,8 @@ class WalkForward:
 
 
 def walk_forward(candidate: Candidate, trials: Sequence[Trial], bars: Mapping[str, Sequence[Bar]],
-                 config: BacktestConfig, wf: WalkForwardConfig) -> WalkForward:
+                 config: BacktestConfig, wf: WalkForwardConfig,
+                 hurdle: Mapping[date, float] | None = None) -> WalkForward:
     """
     Raises:
         ValueError: If the period is too short for one training window and a test window.
@@ -216,11 +228,12 @@ def walk_forward(candidate: Candidate, trials: Sequence[Trial], bars: Mapping[st
                                  [candidate.factory(p) for p in params],
                                  [(w.test_start, w.choice) for w in chosen])
     result = _run(strategy, bars, replace(config, start=chosen[0].test_start))
-    return WalkForward(tuple(chosen), result, daily_returns(result.equity_curve), strategy)
+    return WalkForward(tuple(chosen), result, _returns(result, hurdle), strategy)
 
 
 def cost_stress(candidate: Candidate, walk: WalkForward, bars: Mapping[str, Sequence[Bar]],
-                config: BacktestConfig, multiples: Sequence[float] = (2.0, 3.0)) -> dict[float, Returns]:
+                config: BacktestConfig, multiples: Sequence[float] = (2.0, 3.0),
+                hurdle: Mapping[date, float] | None = None) -> dict[float, Returns]:
     """The walk-forward's out-of-sample returns with every cost multiplied."""
     out = {}
     params = candidate.parameter_sets()
@@ -229,7 +242,7 @@ def cost_stress(candidate: Candidate, walk: WalkForward, bars: Mapping[str, Sequ
                            costs={k: v.scaled(Decimal(repr(multiple))) for k, v in config.costs.items()})
         strategy = SwitchingStrategy(walk.strategy.name, [candidate.factory(p) for p in params],
                                      [(w.test_start, w.choice) for w in walk.windows])
-        out[multiple] = daily_returns(_run(strategy, bars, stressed).equity_curve)
+        out[multiple] = _returns(_run(strategy, bars, stressed), hurdle)
     return out
 
 
@@ -274,13 +287,13 @@ class RegimeStats:
     label: str
     periods: int
     total_return: float
-    sharpe: float  # annualized
+    sharpe: float  # annualized, in excess of the hurdle
 
 
 def _stats(label: str, returns: Returns, mask: Sequence[bool]) -> RegimeStats:
     keep = [i for i, m in enumerate(mask) if m]
     values = returns.values[keep]
-    sr = sharpe_ratio(values) * math.sqrt(returns.periods_per_year) if len(values) > 1 else 0.0
+    sr = sharpe_ratio(returns.excess[keep]) * math.sqrt(returns.periods_per_year) if len(values) > 1 else 0.0
     return RegimeStats(label, len(values), float(np.prod(1 + values) - 1) if len(values) else 0.0, sr)
 
 

@@ -3,6 +3,7 @@ Tests for the trading core: market data, simulated broker, risk gate, engine,
 backtest runner, and parity between the backtest and live (polling) paths.
 """
 
+import dataclasses
 from collections.abc import Mapping
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -10,13 +11,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.tests.trading_fixtures import BTC, IEF, SPY, bar, daily_bars, ny
+from src.tests.trading_fixtures import BIL, BTC, IEF, SPY, bar, daily_bars, ny
 from src.trading.backtest import BacktestConfig, run_backtest
 from src.trading.broker import DEFAULT_COSTS, CostModel, SimulatedBroker
 from src.trading.clock import SimulatedClock
 from src.trading.data import AlpacaBarSource, DataQualityError, InMemoryBarSource, to_bar
 from src.trading.domain import (
     DAILY,
+    NEW_YORK,
     AssetClass,
     OrderRequest,
     OrderStatus,
@@ -29,7 +31,7 @@ from src.trading.feed import PollingFeed
 from src.trading.ledger import Ledger
 from src.trading.risk import RiskGate, RiskLimits
 from src.trading.strategies.benchmark import BuyAndHold
-from src.trading.strategy import Strategy, StrategyContext
+from src.trading.strategy import CLOSE, Strategy, StrategyContext
 
 D = Decimal
 NO_COSTS = {AssetClass.EQUITY: CostModel(), AssetClass.CRYPTO: CostModel()}
@@ -476,6 +478,137 @@ class TestTimeInForce:
     def test_crypto_is_gtc(self):
         _, _, engine, _ = _engine(_Fixed({}, (BTC,)))
         assert engine._time_in_force(BTC, ny(2026, 3, 3)) is TimeInForce.GTC
+
+
+# -- the cash sleeve and the closing auction -------------------------------------------
+
+class _AtClose(_Fixed):
+    name = "at-close"
+    execution = CLOSE
+
+
+def _sleeved(strategy, now=None, cash="100000"):
+    clock = SimulatedClock(now or ny(2026, 3, 2))
+    instruments = {i.symbol: i for i in (*strategy.instruments, BIL)}
+    broker = SimulatedBroker(clock, instruments, D(cash), costs=NO_COSTS)
+    events = []
+    engine = Engine(clock=clock, broker=broker, ledger=Ledger(D(cash)), allocations=[Allocation(strategy, D("1"))],
+                    cash_sleeve=BIL, listeners=[events.append])
+    return clock, broker, engine, events
+
+
+def _feed_sleeved(clock, engine, day, spy=100.0, bil=91.5):
+    bars = {"SPY": bar(SPY, ny(2026, 3, day), spy, spy, spy, spy),
+            "BIL": bar(BIL, ny(2026, 3, day), bil, bil, bil, bil)}
+    clock.advance_to(bars["SPY"].end + timedelta(minutes=15))
+    return {(r.symbol, r.side): r for r in engine.on_bars(bars)}
+
+
+class TestCashSleeve:
+    def test_idle_equity_goes_into_the_sleeve_after_the_strategy(self):
+        clock, _, engine, _ = _sleeved(_Fixed({"SPY": 0.5}, (SPY,)))
+        sent = _feed_sleeved(clock, engine, 2)
+        # $99,500 to spend after the 0.5% buffer: $50,000 of SPY, the rest in BIL
+        assert sent[("SPY", Side.BUY)].qty == D("500") and sent[("BIL", Side.BUY)].qty == D("540")
+
+    def test_the_sleeve_may_hold_more_than_the_position_cap(self):
+        clock, _, engine, _ = _sleeved(_Fixed({"SPY": 0.0}, (SPY,)))
+        assert _feed_sleeved(clock, engine, 2)[("BIL", Side.BUY)].qty == D("1087")  # 99.5% of equity
+
+    def test_the_sleeve_is_sold_first_to_fund_a_position(self):
+        weights = {"SPY": 0.0}
+        clock, _, engine, _ = _sleeved(_Fixed(lambda: dict(weights), (SPY,)))
+        _feed_sleeved(clock, engine, 2)
+        _feed_sleeved(clock, engine, 3)
+        assert engine.ledger.position("BIL").qty == D("1087")
+        weights["SPY"] = 0.5
+        sent = list(_feed_sleeved(clock, engine, 4).values())
+        assert [(r.symbol, r.side) for r in sent] == [("BIL", Side.SELL), ("SPY", Side.BUY)]
+        assert sent[0].qty == D("547") and sent[1].qty == D("500")  # BIL down to 49.5%, SPY at 50% of equity
+
+    def test_short_of_cash_the_strategy_is_scaled_and_the_sleeve_stays_empty(self):
+        clock, _, engine, _ = _sleeved(_Fixed({"SPY": 0.5}, (SPY,)), cash="10000")
+        engine.cash_buffer = D("0.6")  # $4,000 to spend against the $5,000 the strategy wants
+        sent = _feed_sleeved(clock, engine, 2)
+        assert sent[("SPY", Side.BUY)].qty == D("40") and ("BIL", Side.BUY) not in sent
+
+    def test_bought_during_a_cool_down_but_not_while_halted(self):
+        clock, _, engine, _ = _sleeved(_Fixed({"SPY": 0.5}, (SPY,)))
+        engine.risk.state.cooling_down = True
+        engine.risk.state.day = ny(2026, 3, 3).astimezone(NEW_YORK).date()
+        sent = _feed_sleeved(clock, engine, 2)
+        assert list(sent) == [("BIL", Side.BUY)]
+        clock2, _, halted, _ = _sleeved(_Fixed({"SPY": 0.5}, (SPY,)))
+        halted.halt("drill")
+        assert _feed_sleeved(clock2, halted, 2) == {}
+
+    def test_the_kill_switch_sells_it_too(self):
+        clock, _, engine, _ = _sleeved(_Fixed({"SPY": 0.5}, (SPY,)))
+        _feed_sleeved(clock, engine, 2)
+        _feed_sleeved(clock, engine, 3)
+        engine.halt("drill", flatten=True)
+        _feed_sleeved(clock, engine, 4)
+        assert engine.ledger.positions == {}
+
+    def test_a_sleeve_must_be_an_equity_no_strategy_trades(self):
+        clock = SimulatedClock(ny(2026, 3, 2))
+        broker = SimulatedBroker(clock, {"SPY": SPY, "BTC/USD": BTC}, D("1"))
+        for sleeve in (SPY, BTC):
+            with pytest.raises(ValueError, match="cash sleeve"):
+                Engine(clock=clock, broker=broker, ledger=Ledger(D("1")),
+                       allocations=[Allocation(_Fixed({}, (SPY,)), D("1"))], cash_sleeve=sleeve)
+
+    def test_a_backtest_earns_the_sleeve(self):
+        history = _history()
+        history["BIL"] = daily_bars(BIL, date(2025, 1, 2), date(2026, 6, 30), 91.0, seed=5, drift=0.00015,
+                                    vol=0.0001)
+        plain = run_backtest([Allocation(BuyAndHold({SPY: 0.3}), D("1"))], history, CONFIG)
+        sleeved = run_backtest([Allocation(BuyAndHold({SPY: 0.3}), D("1"))], history,
+                               dataclasses.replace(CONFIG, cash_sleeve=BIL))
+        held = {p.symbol: p.market_value for p in sleeved.final.positions}
+        assert set(held) == {"SPY", "BIL"} and held["BIL"] > sleeved.final.equity * D("0.6")
+        assert sleeved.final.equity > plain.final.equity
+
+
+class TestClosingAuction:
+    @pytest.mark.parametrize("when,expected", [
+        (ny(2026, 3, 3, 0, 15), TimeInForce.CLS),    # the bar of 03-02 is final: trade at today's close
+        (ny(2026, 3, 3, 15, 49), TimeInForce.CLS),
+        (ny(2026, 3, 3, 15, 50), None),              # Alpaca rejects CLS from 15:50
+        (ny(2026, 3, 3, 18, 59), None),
+        (ny(2026, 3, 3, 19, 0), TimeInForce.CLS),    # queued for the next session's close
+        (ny(2026, 3, 7, 0, 15), TimeInForce.CLS),    # Saturday: Monday's close
+        (ny(2026, 11, 27, 12, 49), TimeInForce.CLS),  # the Friday after Thanksgiving closes at 13:00
+        (ny(2026, 11, 27, 12, 50), None),
+    ])
+    def test_orders_go_to_the_next_closing_auction(self, when, expected):
+        _, _, engine, _ = _engine(_AtClose({}, (SPY,)), now=when)
+        assert engine._time_in_force(SPY, when) is expected
+        assert engine._time_in_force(BTC, when) is TimeInForce.GTC
+
+    def test_a_close_strategy_fills_at_the_close_of_the_next_session(self):
+        clock, broker, engine, _ = _engine(_AtClose({"SPY": 0.5}, (SPY,)))
+        [order] = _feed_day(clock, engine, 2)
+        assert order.time_in_force is TimeInForce.CLS
+        bars = {"SPY": bar(SPY, ny(2026, 3, 3), 100, 104, 99, 102), "IEF": bar(IEF, ny(2026, 3, 3), 50, 50, 50, 50)}
+        clock.advance_to(bars["SPY"].end + timedelta(minutes=15))
+        engine.on_bars(bars)
+        [fill] = [o for o in engine.orders.values() if o.filled_qty]
+        assert fill.avg_fill_price == D("102")  # the close, not the open
+
+    def test_no_orders_while_the_closing_auction_refuses_them(self):
+        clock, _, engine, _ = _engine(_AtClose({"SPY": 0.5}, (SPY,)), now=ny(2026, 3, 3, 16))
+        b = bar(SPY, ny(2026, 3, 2), 100, 100, 100, 100)
+        assert engine.on_bars({"SPY": b}) == []
+        clock.advance_to(ny(2026, 3, 4, 0, 15))  # the next bar: the orders go out
+        assert len(engine.on_bars({"SPY": bar(SPY, ny(2026, 3, 3), 100, 100, 100, 100)})) == 1
+
+    def test_open_and_close_strategies_cannot_share_an_engine(self):
+        clock = SimulatedClock(ny(2026, 3, 2))
+        broker = SimulatedBroker(clock, {"SPY": SPY}, D("1"))
+        with pytest.raises(ValueError, match="open and at the close"):
+            Engine(clock=clock, broker=broker, ledger=Ledger(D("1")),
+                   allocations=[Allocation(_Fixed({}, (SPY,)), D("0.5")), Allocation(_AtClose({}, (SPY,)), D("0.5"))])
 
 
 # -- backtest and parity -------------------------------------------------------------
