@@ -540,6 +540,14 @@ class TestCreateAdminCommand:
         assert result.exit_code != 0
         assert "already exists" in result.output
 
+    def test_lists_admins_only(self, app, db, admin_user, test_user):
+        result = app.test_cli_runner().invoke(args=["list-admins"])
+        assert result.exit_code == 0 and result.output.split() == ["adminuser"]  # not the trader
+
+    def test_lists_nothing_before_the_first_admin(self, app, db):
+        result = app.test_cli_runner().invoke(args=["list-admins"])
+        assert result.exit_code == 0 and result.output == ""
+
 
 class TestLoginLockout:
     """Regression tests for the naive/aware datetime crash and account enumeration."""
