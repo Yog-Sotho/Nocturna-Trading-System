@@ -230,6 +230,17 @@ class AlertDispatcher:
     def flush(self, timeout: float = 30.0) -> bool:
         return self._background.flush(timeout)
 
+    def deliver_now(self, alert: Alert) -> list[tuple[str, str | None]]:
+        """Send once to every sink on this thread: each sink's name and why it failed (None if sent)."""
+        results: list[tuple[str, str | None]] = []
+        for sink in self._sinks:
+            try:
+                sink.send(alert)
+                results.append((sink.name, None))
+            except Exception as e:
+                results.append((sink.name, _describe_failure(e)))
+        return results
+
 
 def build_alerts(settings: Settings) -> AlertDispatcher:
     sinks: list[Sink] = []

@@ -155,6 +155,22 @@ def register_cli(app: Flask) -> None:
         if not report.passed:
             raise SystemExit(1)
 
+    @app.cli.command("send-test-alert")
+    def send_test_alert() -> None:
+        """Send an urgent test alert to every configured channel and report each result."""
+        from src.trading.alerts import Alert
+
+        alerts = current_app.extensions["alerts"]
+        if not alerts.enabled:
+            raise click.ClickException(
+                "No alert channel is configured: set ALERT_TELEGRAM_BOT_TOKEN and ALERT_TELEGRAM_CHAT_ID, "
+                "ALERT_NTFY_URL or ALERT_WEBHOOK_URL")
+        results = alerts.deliver_now(Alert("NOCTURNA test alert", "Alerts reach you.", urgent=True))
+        for name, error in results:
+            click.echo(f"{name}: " + ("sent" if error is None else f"FAILED ({error})"))
+        if any(error is not None for _, error in results):
+            raise SystemExit(1)
+
     @app.cli.group("engine")
     def engine_group() -> None:
         """The trading engine as its own process (ENGINE_MODE=external)."""

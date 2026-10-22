@@ -160,6 +160,27 @@ class TestDispatcher:
         assert dispatcher.enabled is False and "Alert: Kill switch. drawdown" in caplog.text
 
 
+class TestSendTestAlert:
+    def _invoke(self, app):
+        with app.app_context():
+            return app.test_cli_runner().invoke(args=["send-test-alert"])
+
+    def test_reports_each_channel(self, app, monkeypatch):
+        sink = Collect()
+        failing = TelegramSink("SECRET-TOKEN", "1", post=Posts(_http_error(401)))
+        monkeypatch.setitem(app.extensions, "alerts", _dispatcher(sink, failing))
+        result = self._invoke(app)
+        assert result.exit_code == 1
+        assert result.output == "collect: sent\ntelegram: FAILED (HTTP 401)\n"
+        assert sink.alerts[0].urgent and "SECRET-TOKEN" not in result.output
+        monkeypatch.setitem(app.extensions, "alerts", _dispatcher(Collect()))
+        assert self._invoke(app).exit_code == 0
+
+    def test_without_channels(self, app):
+        result = self._invoke(app)
+        assert result.exit_code != 0 and "No alert channel is configured" in result.output
+
+
 class TestEventAlerts:
     def _event(self, kind, **fields):
         return EngineEvent(kind, T0, **fields)
