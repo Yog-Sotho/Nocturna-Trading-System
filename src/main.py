@@ -23,6 +23,8 @@ from src.config import ensure_sqlite_directory, load_settings
 from src.db_migrations import upgrade as upgrade_database
 from src.middleware.security import configure_proxy, setup_rate_limiting, setup_security_headers
 from src.models.user import db
+from src.routes import schemas
+from src.routes.openapi import documented
 from src.routes.ops import ops_bp
 from src.routes.trading import trading_bp
 from src.routes.user import user_bp
@@ -209,8 +211,9 @@ def create_app(config_override=None):
     # =============================================================================
     # REGISTER BLUEPRINTS
     # =============================================================================
-    app.register_blueprint(user_bp, url_prefix='/api')
-    app.register_blueprint(trading_bp, url_prefix='/api/trading')
+    # Version 1 of the API; /api/version (unversioned) says which versions exist
+    app.register_blueprint(user_bp, url_prefix='/api/v1')
+    app.register_blueprint(trading_bp, url_prefix='/api/v1/trading')
 
     # Live (paper) trading engine: in this process (built and started on demand, never at
     # import), or a separate engine process reached through the database
@@ -329,6 +332,9 @@ def create_app(config_override=None):
     # HEALTH CHECK ENDPOINT
     # =============================================================================
     @app.route('/health', methods=['GET'])
+    @documented("Liveness", tag="system", access="public", envelope=False, rate_limited=False,
+                description="Answers while the API process runs; /ready also needs the database.",
+                responses={200: ("Alive", schemas.Health)})
     def health_check():
         """Public health check endpoint for load balancers."""
         return jsonify({
@@ -373,11 +379,15 @@ def create_app(config_override=None):
     # API VERSION ENDPOINT
     # =============================================================================
     @app.route('/api/version', methods=['GET'])
+    @documented("API versions", tag="system", access="public", envelope=False,
+                description="Unversioned on purpose: it says which versions exist.",
+                responses={200: ("Versions", schemas.Version)})
     def api_version():
-        """Return API version and status."""
         return jsonify({
             'version': '2.0.0',
             'api_version': 'v1',
+            'versions': ['v1'],
+            'openapi': '/api/v1/openapi.json',
             'environment': settings.flask_env,
             'timestamp': datetime.now(UTC).isoformat()
         })

@@ -52,7 +52,7 @@ Every container restarts on failure (`restart: unless-stopped`), logs to
    - `ENGINE_AUTOSTART=true` if a restart (a crash, a host reboot, an
      upgrade) should resume trading by itself. Without it the engine waits
      to be started after every restart: **Start engine** in the dashboard,
-     `/start_engine` in Telegram, or `POST /api/trading/control/start`.
+     `/start_engine` in Telegram, or `POST /api/v1/trading/control/start`.
 
    `DATABASE_URL`, `REDIS_URL`, `FLASK_ENV`, `ENGINE_MODE`, `TRADING_MODE`
    and the log settings are fixed by `docker-compose.yml`; values for them
@@ -175,7 +175,7 @@ Alerts come from the stack itself, so they cannot report a dead host. A
 
 ## Daily operation
 
-- **State:** `GET /api/trading/status` shows the engine's state, equity,
+- **State:** `GET /api/v1/trading/status` shows the engine's state, equity,
   drawdown, whether it is halted or cooling down, and the last
   reconciliation. `docker compose ps` shows each container's health.
 - **Logs:** `docker compose logs -f engine` (or `api`); one JSON object per
@@ -218,7 +218,7 @@ starts first.
 ### Emergency stop
 
 ```bash
-curl -X POST https://trading.example.com/api/trading/emergency-stop \
+curl -X POST https://trading.example.com/api/v1/trading/emergency-stop \
   -H "Authorization: Bearer <token>" -H 'Content-Type: application/json' \
   -d '{"reason": "what happened", "close_all_positions": true}'
 ```
@@ -236,9 +236,9 @@ running engine would buy its targets back on the next bar.
 ### Kill switch fired
 
 Trading is halted and, with `RISK_FLATTEN_ON_KILL`, every position is being
-closed. Check `GET /api/trading/status` (`halted`, `halt_reason`, `risk`) and
+closed. Check `GET /api/v1/trading/status` (`halted`, `halt_reason`, `risk`) and
 the Alpaca dashboard. Understand the loss before resuming: `POST
-/api/trading/control/resume` lifts the halt and restarts the high-water mark
+/api/v1/trading/control/resume` lifts the halt and restarts the high-water mark
 at the current equity.
 
 ### Daily loss limit reached

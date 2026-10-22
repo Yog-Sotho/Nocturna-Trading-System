@@ -155,6 +155,20 @@ def register_cli(app: Flask) -> None:
         if not report.passed:
             raise SystemExit(1)
 
+    @app.cli.command("openapi")
+    @click.option("--output", type=click.Path(dir_okay=False, path_type=Path), default=None,
+                  help="Write the document to this file instead of printing it.")
+    def openapi_command(output: Path | None) -> None:
+        """The API's OpenAPI 3.1 document (also served at /api/v1/openapi.json)."""
+        from src.routes.openapi import build_spec
+
+        text = json.dumps(build_spec(current_app._get_current_object()), indent=2) + "\n"
+        if output is None:
+            click.echo(text, nl=False)
+        else:
+            output.write_text(text)
+            click.echo(f"Wrote {output}")
+
     @app.cli.command("send-test-alert")
     def send_test_alert() -> None:
         """Send an urgent test alert to every configured channel and report each result."""

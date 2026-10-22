@@ -41,9 +41,10 @@ def test_the_page_never_inserts_markup():
 
 def test_the_dashboard_uses_endpoints_that_exist(app):
     source = (STATIC / "app.js").read_text()
-    used = set(re.findall(r'"(/api/[a-z/-]+)', source))
+    used = set(re.findall(r'"(/api/[a-z0-9/-]+)', source))
     rules = {rule.rule for rule in app.url_map.iter_rules()}
-    assert used and used <= rules | {"/api/trading/orders/"}, used - rules
+    # The cancel path is built from the order's id
+    assert used and used <= rules | {"/api/v1/trading/orders/"}, used - rules
 
 
 def test_the_compiled_bundle_is_gone():

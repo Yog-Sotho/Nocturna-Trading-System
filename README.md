@@ -68,12 +68,12 @@ python main.py
 Log in to get a token, then pass it as `Authorization: Bearer <token>`:
 
 ```bash
-curl -s -X POST http://localhost:5000/api/auth/login \
+curl -s -X POST http://localhost:5000/api/v1/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"username": "admin", "password": "<your password>"}'
 ```
 
-Start the engine with `POST /api/trading/control/start` (admin), or set `ENGINE_AUTOSTART=true`.
+Start the engine with `POST /api/v1/trading/control/start` (admin), or set `ENGINE_AUTOSTART=true`.
 On start it loads the paper account from Alpaca (cash, positions, working orders), warms up
 history, and acts on the latest closed bars; after that it wakes each time a new bar becomes
 final.
@@ -114,7 +114,7 @@ account equity and configurable through `RISK_*` / `SIZING_*` variables:
 Orders that only reduce a position skip the daily breakers and data checks, so the book can
 always be reduced. The gate's state (high-water mark, halt, daily counters) is stored in the
 database and restored on restart, so a halt survives a redeploy. After a drawdown halt,
-`POST /api/trading/control/resume` restarts the high-water mark at the current equity.
+`POST /api/v1/trading/control/resume` restarts the high-water mark at the current equity.
 Strategies with protective stops size positions with `stop_risk_weight` (0.5% of equity at
 risk per trade by default).
 
@@ -165,13 +165,21 @@ Candidates are defined in `src/trading/validation/candidates.py`.
 
 ## API
 
-All endpoints except `/health`, `/api/version`, `/api/trading/health` and the login and
-refresh endpoints require a bearer token or an API key (`X-API-Key` header). Roles and account
+Version 1 of the API is served under `/api/v1`; `GET /api/version` lists the versions. The
+OpenAPI 3.1 document is at `GET /api/v1/openapi.json` (or `flask --app src.main openapi
+--output openapi.json`), generated from each route's declaration (`src/routes/openapi.py`,
+response models in `src/routes/schemas.py`); contract tests check that every route is declared,
+that its declared access holds and that real responses match its models. Money and quantities
+are decimal strings.
+
+All endpoints except `/health`, `/ready`, `/api/version`, `/api/v1/openapi.json`,
+`/api/v1/trading/health` and the login and refresh endpoints require a bearer token or an API key (`X-API-Key` header). Roles and account
 status are read from the database on every request, so changes apply immediately. Endpoints marked
 *admin* also require the admin role; order and control endpoints require the trader role and
 an account whose trading is not disabled.
 
-**System:** `GET /health`, `GET /api/version`
+**System:** `GET /health` (liveness), `GET /ready` (database), `GET /metrics` (Prometheus, with
+`METRICS_TOKEN`), `GET /api/version`, `GET /api/v1/openapi.json`
 
 Requests are rate limited per client IP: 300 per minute by default, with tighter limits on
 login (10/min), token refresh (30/min), password changes (5/min), user creation (5/min) and
@@ -180,7 +188,7 @@ API key creation (10/hour); see `ROUTE_RATE_LIMITS` in `src/middleware/security.
 within 15 minutes block logins from it until the failures are 15 minutes old. Request bodies
 are limited to 1 MB.
 
-**Auth and users** (`/api`)
+**Auth and users** (`/api/v1`)
 
 | Method | Path | Notes |
 |---|---|---|
@@ -196,7 +204,7 @@ are limited to 1 MB.
 | DELETE | `/api-keys/<id>` | revokes one of your keys |
 | GET | `/audit-logs` | admin; logins, logouts, password, user and API key changes, operator orders, engine start/stop/halt, emergency stops, risk rejections, reconciliations and engine errors. Filters: `event_type`, `user_id`, `page`, `per_page` |
 
-**Trading** (`/api/trading`)
+**Trading** (`/api/v1/trading`)
 
 | Method | Path | Notes |
 |---|---|---|

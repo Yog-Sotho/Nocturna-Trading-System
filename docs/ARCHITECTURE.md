@@ -240,6 +240,19 @@ Telegram commands (`src/trading/telegram.py`) are a second front end on the same
 long-polling bot in the API's serving process, answering only the operator's private chat,
 with every change confirmed by a one-time code.
 
+## API contract
+
+The API is versioned under `/api/v1`. Each route declares its contract with `@documented`
+(`src/routes/openapi.py`): a summary, who may call it, the request body and query parameters,
+and the `data` of each response as a pydantic model (`src/routes/schemas.py`, unknown fields
+forbidden). 500 and, unless exempt, 429 are implied, as are 401 for signed-in access and 403
+for trader and admin access. `build_spec` walks the URL map, so an undeclared route cannot
+reach the document: it fails the build. `src/tests/test_openapi.py` keeps the declarations
+true: every signed-in route answers 401 without credentials, admin routes refuse a trader and
+trader routes a reader, and a tour of the whole API checks every response against the
+declared model for its status (an undeclared status fails) and that every operation was
+exercised.
+
 ## What comes next
 
-Phase 7 still versions the API with OpenAPI docs; see [ROADMAP.md](ROADMAP.md).
+Phase 8 adds CI quality gates; see [ROADMAP.md](ROADMAP.md).

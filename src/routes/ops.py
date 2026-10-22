@@ -7,6 +7,7 @@ NOCTURNA Trading System - Operations endpoints.
   straight to the broker.
 * ``GET /metrics``: Prometheus metrics, only with ``Authorization: Bearer
   <METRICS_TOKEN>``; without METRICS_TOKEN the endpoint does not exist.
+* ``GET /api/v1/openapi.json``: the OpenAPI description of the API.
 """
 
 import hmac
@@ -16,6 +17,8 @@ import sqlalchemy as sa
 from flask import Blueprint, Response, abort, current_app, jsonify, request
 
 from src.models.user import db
+from src.routes import schemas
+from src.routes.openapi import build_spec, documented
 from src.trading import metrics
 
 ops_bp = Blueprint('ops', __name__)
@@ -23,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 
 @ops_bp.route('/ready', methods=['GET'])
+@documented("Readiness", tag="system", access="public", envelope=False, rate_limited=False,
+            description="Needs the database; the engine's state does not count.",
+            responses={200: ("Ready", schemas.Ready), 503: ("The database is unreachable", schemas.Ready)})
 def ready():
     try:
         db.session.execute(sa.text('SELECT 1'))
@@ -35,6 +41,9 @@ def ready():
 
 
 @ops_bp.route('/metrics', methods=['GET'])
+@documented("Prometheus metrics", tag="system", access="metrics", media_type=metrics.CONTENT_TYPE,
+            responses={200: "Metrics in the text exposition format", 401: "Wrong or missing token",
+                       404: "METRICS_TOKEN is not set"})
 def prometheus_metrics():
     token = current_app.extensions['settings'].metrics_token
     if token is None:
@@ -44,3 +53,13 @@ def prometheus_metrics():
     if not hmac.compare_digest(supplied.encode(), expected.encode()):
         abort(401)
     return Response(metrics.render(current_app.extensions['trading'].views()), content_type=metrics.CONTENT_TYPE)
+
+
+@ops_bp.route('/api/v1/openapi.json', methods=['GET'])
+@documented("This OpenAPI document", tag="system", access="public", envelope=False,
+            responses={200: "OpenAPI 3.1"})
+def openapi_document():
+    spec = current_app.extensions.get('openapi')
+    if spec is None:
+        spec = current_app.extensions['openapi'] = build_spec(current_app)
+    return jsonify(spec)

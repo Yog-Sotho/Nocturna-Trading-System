@@ -215,14 +215,14 @@ class TestExternalModeRoutes:
         previous = app.extensions["trading"]
         app.extensions["trading"] = remote
         try:
-            assert client.get("/api/trading/health").get_json()["data"]["engine"] == "stopped"
-            assert client.post("/api/trading/control/start", headers=admin_headers).status_code == 202
-            _wait(lambda: client.get("/api/trading/status", headers=auth_headers)
+            assert client.get("/api/v1/trading/health").get_json()["data"]["engine"] == "stopped"
+            assert client.post("/api/v1/trading/control/start", headers=admin_headers).status_code == 202
+            _wait(lambda: client.get("/api/v1/trading/status", headers=auth_headers)
                   .get_json()["data"]["state"] == "running")
-            placed = client.post("/api/trading/orders", headers=auth_headers,
+            placed = client.post("/api/v1/trading/orders", headers=auth_headers,
                                  json={"symbol": "SPY", "side": "buy", "qty": "1"})
             assert placed.status_code == 201 and placed.get_json()["data"]["order"]["symbol"] == "SPY"
-            assert client.get("/api/trading/positions", headers=auth_headers).status_code == 200
+            assert client.get("/api/v1/trading/positions", headers=auth_headers).status_code == 200
         finally:
             app.extensions["trading"] = previous
 
@@ -230,8 +230,8 @@ class TestExternalModeRoutes:
         previous = app.extensions["trading"]
         app.extensions["trading"] = RemoteRuntime(app, settings, timeout=0.2)
         try:
-            assert client.get("/api/trading/health").get_json()["data"]["engine"] == "unreachable"
-            assert client.post("/api/trading/control/start", headers=admin_headers).status_code == 503
+            assert client.get("/api/v1/trading/health").get_json()["data"]["engine"] == "unreachable"
+            assert client.post("/api/v1/trading/control/start", headers=admin_headers).status_code == 503
         finally:
             app.extensions["trading"] = previous
 

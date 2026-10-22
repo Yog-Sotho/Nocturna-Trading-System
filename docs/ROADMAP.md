@@ -79,7 +79,7 @@ stock selection needs full-market real-time volume, which requires a $99/month d
 | 4 | Validation pipeline: walk-forward, combinatorial purged cross-validation, deflated Sharpe, overfitting probability, cost stress, regime splits, tear sheets | Done |
 | 5 | Strategy rebuild per the lineup above, each gated by Phase 4 | Done: four candidates built and validated on Alpaca data; none passed, so the engine keeps the 60/40 benchmark |
 | 6 | Operations: engine as its own service, structured logs, metrics, alerts, health/readiness, Docker/Compose fixes, backups, runbooks | Done: see [RUNBOOK.md](RUNBOOK.md) |
-| 7 | Versioned API with OpenAPI docs; dashboard rebuilt with source and auth | Dashboard done (`src/static/`, plus Telegram commands); versioned API and OpenAPI docs planned |
+| 7 | Versioned API with OpenAPI docs; dashboard rebuilt with source and auth | Done: the API under `/api/v1` with an OpenAPI 3.1 document kept true by contract tests; the dashboard (`src/static/`) and Telegram commands |
 | 8 | CI quality gates: strict typing on core, coverage targets, mutation testing on risk, blocking security scans | Planned |
 | 9 | ≥ 60-day paper soak, then staged live ramp | Planned |
 

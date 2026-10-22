@@ -20,8 +20,10 @@ from src.middleware.auth import (
 )
 from src.middleware.security import ip_manager
 from src.models.user import ASSIGNABLE_ROLES, APIKey, AuditLog, User, db
+from src.routes import schemas
+from src.routes.openapi import documented
 from src.utils.audit import record_audit_event
-from src.utils.validators import validate_login, validate_registration
+from src.utils.validators import LoginSchema, RegisterSchema, validate_login, validate_registration
 
 user_bp = Blueprint('user', __name__)
 logger = logging.getLogger(__name__)
@@ -64,6 +66,9 @@ def format_response(success: bool, data=None, error: str = None,
 # =============================================================================
 
 @user_bp.route('/auth/login', methods=['POST'])
+@documented("Sign in", tag="auth", access="public", body=LoginSchema, responses={
+    200: ("Signed in", schemas.Login), 400: ("Invalid body", schemas.ValidationErrors, False),
+    401: "Invalid credentials (also for locked or inactive accounts)", 403: "This address is blocked"})
 def login():
     """
     User login endpoint.
@@ -135,6 +140,10 @@ def login():
 
 
 @user_bp.route('/auth/refresh', methods=['POST'])
+@documented("Exchange a refresh token for a new pair", tag="auth", access="public",
+            body=schemas.RefreshRequest, responses={
+                200: ("New tokens; the presented refresh token is revoked", schemas.TokenPair),
+                400: "No refresh token", 401: "Invalid, expired or reused refresh token"})
 def refresh_token():
     """
     Exchange a refresh token for a new access and refresh token pair.
@@ -178,6 +187,9 @@ def refresh_token():
 
 
 @user_bp.route('/auth/logout', methods=['POST'])
+@documented("Sign out", tag="auth", access="user", body=schemas.LogoutRequest, body_required=False,
+            description="Revokes this bearer token, and the refresh token if one is sent.",
+            responses={200: "Signed out", 400: "Called with an API key instead of a bearer token"})
 @require_auth
 def logout():
     """
@@ -211,6 +223,9 @@ def logout():
 
 
 @user_bp.route('/auth/logout-all', methods=['POST'])
+@documented("Revoke every session of the caller", tag="auth", access="user",
+            description="Every access and refresh token; API keys are not affected.",
+            responses={200: "Every token revoked", 404: "User not found"})
 @require_auth
 def logout_all():
     """Revoke every access and refresh token of the caller (API keys are unaffected)."""
@@ -232,6 +247,8 @@ def logout_all():
 
 
 @user_bp.route('/auth/me', methods=['GET'])
+@documented("The caller", tag="auth", access="user",
+            responses={200: ("The signed-in user", schemas.UserData), 404: "User not found"})
 @require_auth
 def get_current_user():
     """Get current user information."""
@@ -254,6 +271,9 @@ def get_current_user():
 # =============================================================================
 
 @user_bp.route('/users', methods=['GET'])
+@documented("List users", tag="users", access="admin",
+            query={"page": ("integer", "From 1"), "per_page": ("integer", "At most 100 (default 20)")},
+            responses={200: ("A page of users", schemas.UserPage)})
 @require_auth
 @require_admin
 def list_users():
@@ -279,6 +299,8 @@ def list_users():
 
 
 @user_bp.route('/users/<int:user_id>', methods=['GET'])
+@documented("A user", tag="users", access="admin",
+            responses={200: ("The user, with settings", schemas.UserDetailData), 404: "User not found"})
 @require_auth
 @require_admin
 def get_user(user_id):
@@ -296,6 +318,9 @@ def get_user(user_id):
 
 
 @user_bp.route('/users', methods=['POST'])
+@documented("Create a user", tag="users", access="admin", body=RegisterSchema, responses={
+    201: ("Created", schemas.UserData), 400: ("Invalid body", schemas.ValidationErrors, False),
+    409: "Username or email already taken"})
 @require_auth
 @require_admin
 def create_user():
@@ -363,6 +388,9 @@ def _user_update_error(data: dict, is_self: bool) -> str | None:
 
 
 @user_bp.route('/users/<int:user_id>', methods=['PUT'])
+@documented("Change a user's access", tag="users", access="admin", body=schemas.UserUpdate, responses={
+    200: ("Updated", schemas.UserData), 400: "Invalid change (you cannot remove your own admin or active flag)",
+    404: "User not found"})
 @require_auth
 @require_admin
 def update_user(user_id):
@@ -407,6 +435,12 @@ def update_user(user_id):
 
 
 @user_bp.route('/users/<int:user_id>/password', methods=['PUT'])
+@documented("Change a password", tag="users", access="user", body=schemas.PasswordChange,
+            description="Your own, or anyone's as an admin. Changing your own revokes your other "
+                        "sessions and returns new tokens.",
+            responses={200: ("Changed; new tokens when it is your own", schemas.TokenPair, False),
+                       400: "Missing, wrong or weak password", 403: "Another user's password, without admin",
+                       404: "User not found"})
 @require_auth
 def change_password(user_id):
     """Change user password."""
@@ -480,6 +514,8 @@ def change_password(user_id):
 # =============================================================================
 
 @user_bp.route('/api-keys', methods=['GET'])
+@documented("The caller's API keys", tag="api keys", access="user",
+            responses={200: ("Keys (never the keys themselves)", schemas.ApiKeyList)})
 @require_auth
 def list_api_keys():
     """List the caller's API keys (metadata only)."""
@@ -494,6 +530,10 @@ def list_api_keys():
 
 
 @user_bp.route('/api-keys', methods=['POST'])
+@documented("Create an API key", tag="api keys", access="user", body=schemas.ApiKeyCreate,
+            body_required=False, responses={
+                201: ("Created; the key is shown once", schemas.NewApiKey), 400: "Invalid permissions or expiry",
+                404: "User not found"})
 @require_auth
 def create_api_key():
     """
@@ -565,6 +605,8 @@ def create_api_key():
 
 
 @user_bp.route('/api-keys/<int:key_id>', methods=['DELETE'])
+@documented("Revoke an API key", tag="api keys", access="user",
+            responses={200: "Revoked", 404: "No active key of the caller with that id"})
 @require_auth
 def revoke_api_key(key_id):
     """Revoke one of the caller's API keys."""
@@ -592,6 +634,10 @@ def revoke_api_key(key_id):
 # =============================================================================
 
 @user_bp.route('/audit-logs', methods=['GET'])
+@documented("The audit log", tag="audit", access="admin", query={
+    "page": ("integer", "From 1"), "per_page": ("integer", "At most 100 (default 50)"),
+    "event_type": ("string", "Only this event, e.g. EMERGENCY_STOP"), "user_id": ("integer", "Only this user")},
+    responses={200: ("A page of events, newest first", schemas.AuditPage)})
 @require_auth
 @require_admin
 def get_audit_logs():

@@ -67,7 +67,7 @@ async function rotateTokens() {
   const rotate = async () => {
     const token = readRefreshToken();
     if (!token) throw new AuthError("signed out");
-    const response = await fetch("/api/auth/refresh", {
+    const response = await fetch("/api/v1/auth/refresh", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: token }),
@@ -279,17 +279,17 @@ function renderEquity(points) {
 
 async function load() {
   try {
-    const status = await api("GET", "/api/trading/status");
+    const status = await api("GET", "/api/v1/trading/status");
     if (!status.ok) throw new Error(status.error);
     // Positions and targets exist only while the engine has a snapshot
     const live = status.data.state === "running";
     const none = Promise.resolve({ ok: false });
     const [positions, targets, orders, fills, equity] = await Promise.all([
-      live ? api("GET", "/api/trading/positions") : none,
-      live ? api("GET", "/api/trading/targets") : none,
-      api("GET", "/api/trading/orders?limit=20"),
-      api("GET", "/api/trading/fills?limit=20"),
-      api("GET", "/api/trading/equity-curve?limit=500"),
+      live ? api("GET", "/api/v1/trading/positions") : none,
+      live ? api("GET", "/api/v1/trading/targets") : none,
+      api("GET", "/api/v1/trading/orders?limit=20"),
+      api("GET", "/api/v1/trading/fills?limit=20"),
+      api("GET", "/api/v1/trading/equity-curve?limit=500"),
     ]);
     renderStatus(status.data);
     renderPositions(positions.ok ? positions.data : null, targets.ok ? targets.data.targets : null);
@@ -312,17 +312,17 @@ const ACTIONS = {
   start: {
     title: "Start the engine?",
     text: "It loads the account from Alpaca, then trades on the latest closed bars.",
-    path: "/api/trading/control/start",
+    path: "/api/v1/trading/control/start",
   },
   stop: {
     title: "Stop the engine?",
     text: "Trading stops. Positions and working orders stay at Alpaca.",
-    path: "/api/trading/control/stop",
+    path: "/api/v1/trading/control/stop",
   },
   resume: {
     title: "Lift the halt?",
     text: "Trading resumes and the high-water mark restarts at the current equity.",
-    path: "/api/trading/control/resume",
+    path: "/api/v1/trading/control/resume",
   },
 };
 
@@ -376,7 +376,7 @@ async function confirmEmergencyStop() {
     () => keep.checked || close.checked,
   );
   if (!confirmed) return;
-  await run("/api/trading/emergency-stop", {
+  await run("/api/v1/trading/emergency-stop", {
     reason: reason.value.trim() || "Emergency stop from the dashboard",
     close_all_positions: close.checked,
   });
@@ -386,7 +386,7 @@ async function confirmCancel(order) {
   try {
     const text = `${order.side} ${qty(order.qty)} ${order.symbol} (${order.client_order_id})`;
     if (await ask("Cancel this order?", text)) {
-      await run(`/api/trading/orders/${encodeURIComponent(order.client_order_id)}/cancel`);
+      await run(`/api/v1/trading/orders/${encodeURIComponent(order.client_order_id)}/cancel`);
     }
   } catch (error) {
     if (error instanceof AuthError) return showLogin();
@@ -434,7 +434,7 @@ async function onLogin(event) {
   const button = form.querySelector("button");
   button.disabled = true;
   try {
-    const response = await fetch("/api/auth/login", {
+    const response = await fetch("/api/v1/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: form.username.value.trim(), password: form.password.value }),
@@ -462,7 +462,7 @@ async function onLogout() {
   const refreshToken = readRefreshToken();
   try {
     if (session.access) {
-      await fetch("/api/auth/logout", {
+      await fetch("/api/v1/auth/logout", {
         method: "POST",
         headers: { Authorization: `Bearer ${session.access}`, "Content-Type": "application/json" },
         body: JSON.stringify({ refresh_token: refreshToken }),
