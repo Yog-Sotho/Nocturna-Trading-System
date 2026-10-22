@@ -183,3 +183,4 @@ def test_gunicorn_runs_one_worker_that_is_never_recycled():
     config = runpy.run_path(str(REPO_ROOT / "gunicorn.conf.py"))
     assert config["workers"] == 1
     assert config["max_requests"] == 0
+    assert config["control_socket_disable"] is True

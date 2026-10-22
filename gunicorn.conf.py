@@ -61,6 +61,10 @@ daemon = False
 # PID file for daemonized master
 pidfile = '/var/run/nocturna/gunicorn.pid'
 
+# Gunicorn's control socket (gunicornc) is not used; it would also need a writable
+# $HOME, which the image's read-only /app is not
+control_socket_disable = True
+
 # User/Group for worker processes
 # user = 'nocturna'
 # group = 'nocturna'
