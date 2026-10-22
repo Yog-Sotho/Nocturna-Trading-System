@@ -89,11 +89,14 @@ def test_a_fresh_gate_is_neither_halted_nor_cooling_down():
     assert gate.state.orders_today == 0 and gate.state.turnover_today == 0
 
 
-@pytest.mark.parametrize("settings", [RiskLimits(), SizingPolicy()])
-def test_limits_cannot_be_changed_once_validated(settings):
-    name = dataclasses.fields(settings)[0].name
+@pytest.mark.parametrize("value", [
+    RiskLimits(), SizingPolicy(), _ctx(),
+    PortfolioSizer(SizingPolicy.unscaled(), RiskLimits()).size({"SPY": D("0.5")}, {}, INSTRUMENTS, D(0))],
+    ids=["limits", "policy", "order context", "sizing result"])
+def test_limits_and_what_is_judged_cannot_change_once_made(value):
+    name = dataclasses.fields(value)[0].name
     with pytest.raises(dataclasses.FrozenInstanceError):
-        setattr(settings, name, D("5"))
+        setattr(value, name, D("5"))
 
 
 def test_a_decision_cannot_be_changed_after_the_fact():
@@ -159,6 +162,7 @@ class TestOrderSanity:
         assert _refused(RiskGate().check(_req(), _ctx(price="0")), "reference price")
         assert _refused(RiskGate().check(_req(), _ctx(price="-0.5")), "reference price")
         assert _refused(RiskGate().check(_req(), _ctx(equity="0")), "account equity is not positive")
+        assert _refused(RiskGate().check(_req(), _ctx(equity="-100")), "account equity is not positive")
 
     def test_tiny_accounts_and_penny_prices_are_judged_like_any_other(self):
         assert RiskGate().check(_req(qty="1"), _ctx(price="0.5", equity="1")).allowed
