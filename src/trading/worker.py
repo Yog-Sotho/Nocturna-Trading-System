@@ -25,6 +25,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from .alerts import Alert, AlertDispatcher
 from .channel import EngineChannel
 from .operator import OperatorOrder
 from .runtime import STALE_AFTER, TradingRuntime
@@ -38,16 +39,19 @@ class AnotherWorkerRunningError(RuntimeError):
 
 class EngineWorker:
     def __init__(self, runtime: TradingRuntime, channel: EngineChannel, interval: float = 1.0,
-                 instance: str | None = None, on_step: Callable[[dict[str, Any]], None] | None = None) -> None:
+                 instance: str | None = None, on_step: Callable[[dict[str, Any]], None] | None = None,
+                 alerts: AlertDispatcher | None = None) -> None:
         """
         Args:
-            on_step: Called with the published views after every step (heartbeat pings).
+            on_step: Called with the published views after every step (monitoring, heartbeat).
+            alerts: Told when the worker starts and stops; a start without a stop before it was a crash.
         """
         self.runtime = runtime
         self.channel = channel
         self.interval = interval
         self.instance = instance or f"{socket.gethostname()}:{os.getpid()}"
         self._on_step = on_step
+        self._alerts = alerts
         self._handlers: dict[str, Callable[[dict[str, Any]], Any]] = {
             "start": lambda p: self.runtime.start(),
             "stop": lambda p: self.runtime.stop(),
@@ -99,6 +103,7 @@ class EngineWorker:
         """Run until ``stop`` is set; starts the engine first when ENGINE_AUTOSTART is set."""
         self.ensure_alone()
         logger.info("Engine worker %s started", self.instance)
+        self._notify("Engine process started")
         self.runtime.autostart()
         try:
             while not stop.is_set():
@@ -114,3 +119,8 @@ class EngineWorker:
             except Exception:
                 logger.exception("Publishing the final engine status failed")
             logger.info("Engine worker %s stopped", self.instance)
+            self._notify("Engine process stopped")
+
+    def _notify(self, title: str) -> None:
+        if self._alerts is not None:
+            self._alerts.notify(Alert(title, f"instance {self.instance}"))

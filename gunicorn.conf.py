@@ -138,12 +138,16 @@ def child_exit(server, worker):
 
 def post_worker_init(worker):
     """
-    Start the trading engine inside the worker. With preload_app the app is
-    built in the master, and a thread started there would not survive the fork.
+    Start the trading engine and the engine monitor inside the worker. With
+    preload_app the app is built in the master, and a thread started there
+    would not survive the fork.
     """
-    runtime = getattr(getattr(worker, "wsgi", None), "extensions", {}).get("trading")
+    app = getattr(worker, "wsgi", None)
+    runtime = getattr(app, "extensions", {}).get("trading")
     if runtime is not None:
+        from src.trading.alerts import start_monitoring
         runtime.autostart()
+        start_monitoring(app)
 
 
 def worker_int(worker):

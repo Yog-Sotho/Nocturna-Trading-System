@@ -23,6 +23,7 @@ from src.config import ensure_sqlite_directory, load_settings
 from src.db_migrations import upgrade as upgrade_database
 from src.middleware.security import configure_proxy, setup_rate_limiting, setup_security_headers
 from src.models.user import db
+from src.routes.ops import ops_bp
 from src.routes.trading import trading_bp
 from src.routes.user import user_bp
 from src.trading.safety import assert_paper_only
@@ -192,9 +193,12 @@ def create_app(config_override=None):
 
     # Live (paper) trading engine: in this process (built and started on demand, never at
     # import), or a separate engine process reached through the database
+    from src.trading.alerts import build_alerts
     from src.trading.runtime import RemoteRuntime, TradingRuntime
+    app.extensions['alerts'] = build_alerts(settings)
     app.extensions['trading'] = (RemoteRuntime(app, settings) if settings.engine_mode == "external"
                                  else TradingRuntime(app, settings))
+    app.register_blueprint(ops_bp)
 
     # =============================================================================
     # REQUEST ID TRACKING
@@ -372,7 +376,9 @@ if __name__ == '__main__':
     app = create_app()
     # Only the reloader's serving child may start the engine (see main.py)
     if not app.config['DEBUG'] or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+        from src.trading.alerts import start_monitoring
         app.extensions['trading'].autostart()
+        start_monitoring(app)
 
     # =============================================================================
     # PRODUCTION WARNING

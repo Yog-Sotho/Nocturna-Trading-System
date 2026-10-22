@@ -66,6 +66,37 @@ class SecureLogFormatter(logging.Formatter):
         return ""
 
 
+class JsonLogFormatter(SecureLogFormatter):
+    """
+    One JSON object per line (LOG_JSON=true), for log collectors. Secrets are
+    redacted as in the text format, from the message with its arguments filled in.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        entry = {
+            'timestamp': datetime.fromtimestamp(record.created, UTC).isoformat(timespec='milliseconds'),
+            'level': record.levelname,
+            'logger': record.name,
+            'message': self._sanitize_message(record.getMessage()),
+            'location': self._get_caller_info(record),
+        }
+        try:
+            from flask import g, has_request_context
+            if has_request_context() and g.get('request_id'):
+                entry['request_id'] = g.request_id
+        except ImportError:
+            pass
+        if record.exc_info:
+            entry['exception'] = self._sanitize_message(self.formatException(record.exc_info))
+        if record.stack_info:
+            entry['stack'] = self._sanitize_message(self.formatStack(record.stack_info))
+        return json.dumps(entry, default=str)
+
+
+def _enabled(name: str, default: str) -> bool:
+    return os.environ.get(name, default).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
 class AuditLogger:
     """
     Audit logger for tracking security-relevant events.
@@ -87,6 +118,11 @@ class AuditLogger:
         self.audit_logger = logging.getLogger('nocturna.audit')
         self.audit_logger.setLevel(logging.INFO)
         self.audit_logger.propagate = False
+
+        if not _enabled('LOG_TO_FILE', 'true'):
+            # No log files (containers log to stdout): audit events join the main log
+            self.audit_logger.propagate = True
+            return
 
         # Audit log file path
         audit_log_path = os.environ.get(
@@ -199,8 +235,11 @@ def setup_secure_logging(app):
         '[%(asctime)s] %(levelname)s [%(name)s:%(caller_info)s] %(message)s'
     )
 
-    # Create secure formatter
-    secure_formatter = SecureLogFormatter(fmt=log_format, include_caller_info=True)
+    # Create secure formatter: JSON lines (LOG_JSON=true) or the LOG_FORMAT text
+    if _enabled('LOG_JSON', 'false'):
+        secure_formatter = JsonLogFormatter()
+    else:
+        secure_formatter = SecureLogFormatter(fmt=log_format, include_caller_info=True)
 
     # Configure root logger
     root_logger = logging.getLogger()
@@ -216,30 +255,31 @@ def setup_secure_logging(app):
         console_handler.setFormatter(secure_formatter)
         root_logger.addHandler(console_handler)
 
-    # File handler with rotation
-    log_file_path = os.environ.get(
-        'LOG_FILE',
-        os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'nocturna.log')
-    )
-
-    # Create log directory
-    log_dir = os.path.dirname(log_file_path)
-    if log_dir:
-        os.makedirs(log_dir, exist_ok=True)
-
-    # Rotating file handler
-    try:
-        file_handler = logging.handlers.RotatingFileHandler(
-            log_file_path,
-            maxBytes=50 * 1024 * 1024,  # 50MB
-            backupCount=5,
-            encoding='utf-8'
+    # File handler with rotation (LOG_TO_FILE=false in containers, which log to stdout)
+    if _enabled('LOG_TO_FILE', 'true'):
+        log_file_path = os.environ.get(
+            'LOG_FILE',
+            os.path.join(os.path.dirname(__file__), '..', '..', 'logs', 'nocturna.log')
         )
-        file_handler.setLevel(log_level)
-        file_handler.setFormatter(secure_formatter)
-        root_logger.addHandler(file_handler)
-    except Exception as e:
-        app.logger.warning(f"Failed to create file handler: {e}")
+
+        # Create log directory
+        log_dir = os.path.dirname(log_file_path)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+
+        # Rotating file handler
+        try:
+            file_handler = logging.handlers.RotatingFileHandler(
+                log_file_path,
+                maxBytes=50 * 1024 * 1024,  # 50MB
+                backupCount=5,
+                encoding='utf-8'
+            )
+            file_handler.setLevel(log_level)
+            file_handler.setFormatter(secure_formatter)
+            root_logger.addHandler(file_handler)
+        except Exception as e:
+            app.logger.warning(f"Failed to create file handler: {e}")
 
     # Security logger
     security_logger = logging.getLogger('nocturna.security')

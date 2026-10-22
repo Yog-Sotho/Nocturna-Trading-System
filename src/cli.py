@@ -162,6 +162,7 @@ def register_cli(app: Flask) -> None:
     @engine_group.command("run")
     def engine_run() -> None:
         """Run the engine until SIGTERM or SIGINT; the API reaches it through the database."""
+        from src.trading.alerts import EngineMonitor, build_heartbeat
         from src.trading.channel import EngineChannel
         from src.trading.runtime import TradingRuntime
         from src.trading.worker import AnotherWorkerRunningError, EngineWorker
@@ -172,7 +173,17 @@ def register_cli(app: Flask) -> None:
                 "Set ENGINE_MODE=external for the API and the engine process alike; in embedded mode "
                 "the API runs an engine of its own, and two engines must never trade one account.")
         flask_app = current_app._get_current_object()
-        worker = EngineWorker(TradingRuntime(flask_app, settings), EngineChannel(flask_app))
+        alerts = flask_app.extensions["alerts"]
+        monitor = EngineMonitor(alerts, build_heartbeat(settings))
+        alive_file = settings.engine_alive_file
+
+        def on_step(views) -> None:
+            if alive_file is not None:
+                alive_file.touch()  # the container health check reads its age
+            monitor(views)
+
+        worker = EngineWorker(TradingRuntime(flask_app, settings), EngineChannel(flask_app), on_step=on_step,
+                              alerts=alerts)
         stop = threading.Event()
         for signum in (signal.SIGTERM, signal.SIGINT):
             signal.signal(signum, lambda *_: stop.set())
@@ -180,3 +191,5 @@ def register_cli(app: Flask) -> None:
             worker.run(stop)
         except AnotherWorkerRunningError as e:
             raise click.ClickException(str(e)) from e
+        finally:
+            alerts.flush(timeout=15)

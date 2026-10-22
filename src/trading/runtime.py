@@ -94,6 +94,7 @@ def build_broker(settings: Settings) -> Broker:
 
 def build_service(app: Flask, settings: Settings) -> EngineService:
     """Wire the paper-trading engine to Alpaca."""
+    from .alerts import EngineAlerts
     from .alpaca import AlpacaBroker, TradeUpdateStream, load_instruments
     from .clock import SystemClock
     from .data import AlpacaBarSource
@@ -110,6 +111,9 @@ def build_service(app: Flask, settings: Settings) -> EngineService:
     broker = AlpacaBroker(api_key=key, secret_key=secret, instruments=instruments, clock=clock,
                           trading_client=client)
     recorder = EngineRecorder(app)
+    listeners = [recorder]
+    if "alerts" in app.extensions:
+        listeners.append(EngineAlerts(app.extensions["alerts"]))
     return EngineService(
         clock=clock,
         source=AlpacaBarSource(clock, api_key=key, secret_key=secret),
@@ -118,7 +122,7 @@ def build_service(app: Flask, settings: Settings) -> EngineService:
         risk_limits=risk_limits(settings),
         sizing=sizing_policy(settings),
         risk_state=recorder.load_risk_state,
-        listeners=[recorder],
+        listeners=listeners,
         snapshot_recorder=recorder.record_snapshot,
         stream=TradeUpdateStream(api_key=key, secret_key=secret, on_update=broker.handle_trade_update),
     )
