@@ -1,0 +1,47 @@
+# Only the application goes into the image: no secrets, history, local
+# databases, logs, reports, caches or tests.
+
+# Secrets and local configuration
+.env
+.env.*
+*.pem
+*.key
+*.crt
+
+# Version control and CI
+.git
+.gitignore
+.github
+
+# Local state
+logs/
+reports/
+backups/
+database/
+*.db
+*.sqlite
+*.sqlite3
+
+# Python caches and tooling
+**/__pycache__
+*.py[cod]
+.venv/
+venv/
+.coverage
+htmlcov/
+.pytest_cache/
+.hypothesis/
+.ruff_cache/
+.mypy_cache/
+
+# Not needed to run
+src/tests/
+src/assets/
+docs/
+*.md
+docker-compose*.yml
+Dockerfile
+.dockerignore
+
+# Mounted from the host by the backup and caddy services
+ops/

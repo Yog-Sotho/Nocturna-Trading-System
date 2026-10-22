@@ -78,12 +78,14 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Copy application code
-COPY --chown=nocturna:nocturna . .
+# Copy application code (.dockerignore keeps out secrets, history, local data and tests).
+# Owned by root: the app user can read its code but not change it.
+COPY . .
 
-# Create required runtime directories
-RUN mkdir -p /var/log/nocturna /var/run/nocturna /app/src/database && \
-    chown -R nocturna:nocturna /var/log/nocturna /var/run/nocturna /app/src/database
+# The only places the app user writes: gunicorn's pid file, and the log and SQLite
+# directories, used only without LOG_TO_FILE=false and a PostgreSQL DATABASE_URL
+RUN mkdir -p /var/run/nocturna /app/logs /app/src/database && \
+    chown -R nocturna:nocturna /var/run/nocturna /app/logs /app/src/database
 
 # Switch to non-root user
 USER nocturna
@@ -100,5 +102,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 
 EXPOSE 5000
 
-# Production entrypoint: strictly follows config file for worker count, preload, and timeouts
+# Production entrypoint: strictly follows config file for worker count, preload, and timeouts.
+# The engine process uses the same image: flask --app src.main engine run (docker-compose.yml)
 CMD ["gunicorn", "-c", "/app/gunicorn.conf.py", "src.main:create_app()"]

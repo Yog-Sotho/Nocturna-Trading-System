@@ -1,0 +1,8 @@
+# NOCTURNA Trading System - HTTPS reverse proxy (docker compose --profile proxy).
+# Caddy obtains and renews the certificate for DOMAIN by itself; DOMAIN's DNS
+# record must point at this host, with ports 80 and 443 open to the internet.
+# Caddy sets X-Forwarded-For itself: run the API with TRUSTED_PROXY_COUNT=1.
+{$DOMAIN}
+
+encode gzip
+reverse_proxy api:5000

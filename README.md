@@ -24,19 +24,21 @@ trading; only the clock, the market-data source and the broker are swapped. See
 | Trading core: domain model, ledger, engine, strategy interface | `src/trading/` | Working; property-tested accounting |
 | Risk engine: pre-trade gate, drawdown kill switch, daily loss limit, volatility-targeted sizing with a drawdown ladder | `src/trading/risk.py`, `sizing.py` | Working; limits are configurable, defaults below |
 | Backtester (simulated clock and broker, cost model, no look-ahead) | `src/trading/backtest.py` | Working |
-| Validation pipeline: walk-forward traded through the engine, deflated Sharpe, probability of backtest overfitting, purged cross-validation, cost stress, parameter stability, regimes, promotion gates | `src/trading/validation/`, `flask validate` | Working; no candidate strategy yet (Phase 5) |
+| Validation pipeline: walk-forward traded through the engine, deflated Sharpe, probability of backtest overfitting, purged cross-validation, cost stress, parameter stability, regimes, promotion gates | `src/trading/validation/`, `flask validate` | Working; no candidate has passed the gates yet |
 | Paper trading on Alpaca (`alpaca-py`): broker adapter, trade-update stream, polling data feed, reconciliation | `src/trading/alpaca.py`, `service.py` | Working against fakes and Alpaca's real request models; not yet run against a live paper account |
 | Strategies | `src/trading/strategies/` | 60/40 benchmark (traded), plus month-end rebalancing flows, ETF time-series momentum, a crypto Donchian ensemble and a blend; none has passed the promotion gates yet |
 | Trading history (orders, fills, equity snapshots) and audit log | `src/models/` | Working |
 | REST API with JWT and API-key auth (single operator) | `src/main.py`, `src/routes/` | Working; public registration is disabled |
 | Dashboard | `src/static/` | Compiled bundle only (no source); it targets the old API and does not send auth headers. Rebuilt in Phase 7 |
+| Operations: the engine as its own process, alerts (Telegram, ntfy, webhook), a dead man's switch, readiness and Prometheus endpoints, JSON logs, a Compose stack with backups and an HTTPS proxy | `src/trading/worker.py`, `alerts.py`, `docker-compose.yml`, [docs/RUNBOOK.md](docs/RUNBOOK.md) | Working; verified as a full stack without Alpaca keys |
 
 ### Known limitations
 
 - No strategy has a validated edge: on Alpaca data from 2017 to 2026 none of the Phase 5
   candidates, alone or combined, beat the 60/40 benchmark out of sample (see
   [docs/ROADMAP.md](docs/ROADMAP.md)), so the engine trades the benchmark.
-- The engine runs inside the web worker; Phase 6 moves it into its own service.
+- The Compose stack has not yet run against the paper account (see the runbook before the
+  first run).
 
 ## Quick start (local, paper only)
 
@@ -75,9 +77,15 @@ On start it loads the paper account from Alpaca (cash, positions, working orders
 history, and acts on the latest closed bars; after that it wakes each time a new bar becomes
 final.
 
-In the Docker image the production entry point is
-`gunicorn -c gunicorn.conf.py 'src.main:create_app()'`. It runs a single, never-recycled
-worker because the engine lives in that process.
+## Running it 24/7
+
+`docker compose up -d --build` runs the API, the engine as its own process, PostgreSQL,
+Redis and daily backups; `--profile proxy` adds HTTPS through Caddy. Setup, alerts, upgrades,
+incidents and restores are in [docs/RUNBOOK.md](docs/RUNBOOK.md).
+
+The API's entry point is `gunicorn -c gunicorn.conf.py 'src.main:create_app()'`, a single,
+never-recycled worker (in development the engine lives in that process); the engine's is
+`flask --app src.main engine run` with `ENGINE_MODE=external` for both.
 
 ## Risk controls
 
@@ -213,6 +221,10 @@ to start and lists every problem if the configuration is unsafe. The ones that m
 | `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` | Alpaca paper account; without them the API works but the engine cannot start |
 | `ALPACA_BASE_URL` | Optional; must be the paper endpoint |
 | `ENGINE_AUTOSTART` | Start the engine with the server (default false) |
+| `ENGINE_MODE` | `embedded` (default: the engine runs in the web worker) or `external` (its own process, `flask engine run`; set it for both) |
+| `ALERT_*`, `HEARTBEAT_URL` | Alert channels and the healthchecks.io dead man's switch; see [docs/RUNBOOK.md](docs/RUNBOOK.md) |
+| `METRICS_TOKEN` | Bearer token for `GET /metrics`; unset, the endpoint does not exist |
+| `LOG_JSON`, `LOG_TO_FILE` | JSON log lines; no log files (stdout only) |
 | `RISK_*`, `SIZING_*` | Risk limits and sizing; see [Risk controls](#risk-controls) and `.env.example` |
 | `DATABASE_URL` | Defaults to SQLite at `src/database/nocturna.db`; PostgreSQL is required in production (`postgresql://...` URLs use the psycopg 3 driver) |
 | `ALLOWED_ORIGINS` | Required in production (CORS allowlist) |
@@ -291,8 +303,9 @@ src/
 | 2 | Event-driven core with identical backtest / paper / live code paths and broker reconciliation |
 | 3 | Risk engine: pre-trade controls, equity-based loss limits, kill switch, volatility-targeted sizing (done) |
 | 4 | Validation pipeline: walk-forward, purged cross-validation, deflated Sharpe ratio, overfitting tests (done) |
-| 5 | Strategy rebuild (trend, month-end rebalancing flows, crypto breakout, reversal), each admitted only if it passes the validation gates |
-| 6–8 | Operations, API and dashboard, CI quality gates |
+| 5 | Strategy rebuild: four candidates built and validated; none passed, the engine keeps the 60/40 benchmark (done) |
+| 6 | Operations: engine as its own process, alerts, heartbeat, readiness, metrics, JSON logs, Compose stack, backups, runbook (done) |
+| 7–8 | API and dashboard, CI quality gates |
 | 9 | Paper-trading soak, then a staged live ramp |
 
 The full plan, operator decisions, strategy lineup and promotion gates are in

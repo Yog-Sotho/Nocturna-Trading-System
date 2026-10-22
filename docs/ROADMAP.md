@@ -78,7 +78,7 @@ stock selection needs full-market real-time volume, which requires a $99/month d
 | 3 | Risk engine: pre-trade controls (price collar, size/exposure caps, duplicate detection, kill switch), equity-based loss limits, volatility-targeted sizing, PDT logic removed | Done |
 | 4 | Validation pipeline: walk-forward, combinatorial purged cross-validation, deflated Sharpe, overfitting probability, cost stress, regime splits, tear sheets | Done |
 | 5 | Strategy rebuild per the lineup above, each gated by Phase 4 | Done: four candidates built and validated on Alpaca data; none passed, so the engine keeps the 60/40 benchmark |
-| 6 | Operations: engine as its own service, structured logs, metrics, alerts, health/readiness, Docker/Compose fixes, backups, runbooks | Planned |
+| 6 | Operations: engine as its own service, structured logs, metrics, alerts, health/readiness, Docker/Compose fixes, backups, runbooks | Done: see [RUNBOOK.md](RUNBOOK.md) |
 | 7 | Versioned API with OpenAPI docs; dashboard rebuilt with source and auth | Planned |
 | 8 | CI quality gates: strict typing on core, coverage targets, mutation testing on risk, blocking security scans | Planned |
 | 9 | ≥ 60-day paper soak, then staged live ramp | Planned |
@@ -119,5 +119,9 @@ stock selection needs full-market real-time volume, which requires a $99/month d
 - The Alpaca adapter is tested against fakes with alpaca-py's real request models; its first
   run against a live paper account should be watched (order acknowledgements, fill events,
   crypto fee postings, position symbol formats).
-- The engine runs inside the single web worker; a crash or redeploy restarts it from the
-  broker's state. Phase 6 moves it into its own service.
+- In the Compose stack the engine runs as its own process (`ENGINE_MODE=external`), so an API
+  redeploy never restarts it; an engine restart rebuilds from the broker's state and the
+  persisted risk state. The stack was verified end to end without Alpaca keys (commands
+  across processes, crash restart, alerts when the engine stops answering, the emergency
+  stop's broker fallback, backup and in-place restore, the HTTPS proxy); its first run
+  against the paper account should be watched.

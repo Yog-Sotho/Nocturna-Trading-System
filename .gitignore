@@ -75,3 +75,6 @@ progress.md
 
 # Validation reports (flask validate --output reports/...)
 reports/
+
+# Database dumps (docker compose backup service)
+backups/
