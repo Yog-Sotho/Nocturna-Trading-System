@@ -2,8 +2,9 @@
 
 Phase 5 built four candidates (60/40 benchmark, month-end rebalancing flows, ETF time-series
 momentum, crypto Donchian ensemble) and none passed the promotion gates. This file lists what
-could come next. Nothing here has been backtested: the operator picks, the rules are fixed in
-this file, and only then is a candidate built and run through `flask validate`.
+could come next. The operator picks, the rules are fixed in this file, and only then is a
+candidate built and run through `flask validate`. The pick and its fixed rules are under
+[Decisions](#decisions-22-october-2026).
 
 What a candidate had to be:
 
@@ -177,20 +178,74 @@ code (`crypto_trend.py`). Trades at the next open, so no engine change.
 | Factor momentum with factor ETFs | Ehsani and Linnainmaa, *Journal of Finance* 2022 | Shown for long-short factors; no evidence found for long-only factor ETFs |
 | Dual momentum | Antonacci, working paper 2013 | Little independent evidence after publication; overlaps the ETF trend candidate that failed |
 
-## Decisions for the operator
+## Decisions (22 October 2026)
 
-1. **Which candidates to fix and test.** A and B need closing-auction orders in the engine; C
-   does not.
-2. **For A: may a checked-in calendar of official release dates be used?** It is free, but it
-   is not Alpaca data.
-3. **Idle cash.** A and B hold no stocks on most days, and the 60/40 also leaves cash idle when
-   its volatility target or drawdown ladder cuts exposure. Cash earns nothing in the backtest.
-   The 3-month T-bill rate was 3.86% in late August 2026 (FRED, as reported by
-   [MarketXLS](https://marketxls.com/indicators/3-month-treasury-bill-rate)). Holding a T-bill ETF
-   instead (for example BIL, once confirmed in Alpaca's asset list) would add that income with
-   little risk. But the Sharpe gate measures returns against zero, so T-bill income alone would
-   raise every Sharpe ratio. If a T-bill ETF is allowed, the gate should measure returns in
-   excess of T-bills.
-4. **The cost of auction orders.** The backtest charges 5 bps for every equity fill. A depends on
-   that figure. The soak report measures real opening-auction fills; any change to the cost model
-   should come from those measurements, not from an assumption.
+The operator left the pick to me, allowed any free data source, and allowed T-bills.
+
+**The pick: B, the month-end payment cycle.** These rules were fixed and committed before any
+backtest of it.
+
+- **C is out on its own paper's numbers.** The authors' ETF test (31 SPDR ETFs, January 2005 to
+  March 2024, with costs) returned 7.7% a year at 13.7% volatility. Its Sharpe ratio was 0.61
+  against 0.59 for SPY, with a 24% maximum drawdown and exposure up to 200%. The authors note the
+  strategy weakened over the last 20 years.
+- **A loses money under our cost model.** Each announcement means moving between T-bills and SPY
+  and back. That is four fills, or 20 bps at 5 bps a fill, against an average gain of 10.7 bps
+  per announcement. It cannot pass the 3× cost gate even if the premium holds.
+- **B pays its costs in the paper's sample.** It needs one round trip a month, 20 bps at the
+  modelled cost, against +48 bps above the average day in 1995–2013 (+77 bps raw).
+  - It has a mechanism with a causal test: when 13 European markets moved from three-day to
+    two-day settlement in 2014, the reversal moved closer to month-end, as the mechanism predicts.
+  - All of 2017–2026 is after the paper's sample.
+  - It needs nothing beyond the NYSE calendar.
+- **Expectation, stated before the test.** The paper's magnitudes imply a Sharpe ratio of about
+  0.6 in excess of T-bills, below the 1.0 gate, and the classic turn of the month has faded. B
+  is the cheapest honest test of the three, not a likely pass.
+
+### Fixed rules: `month-end`
+
+- **Instruments.** SPY in the window; the T-bill sleeve (below) at all other times.
+- **Days.** T is the last NYSE session of a month. T−k and T+k count NYSE sessions.
+- **Window.** Buy SPY in the closing auction of T−k and sell it in the closing auction of T+3.
+  The position is held at the closes of T−k through T+2, so it earns the returns of T−k+1
+  through T+3.
+- **k, three variants (the whole grid):**
+  - `settlement`, the paper's mechanism. An institution that needs cash on T must sell by the
+    close of T−(s+1), where s is the settlement period. So k = 4 before 5 September 2017
+    (T+3), 3 from 5 September 2017 (T+2) and 2 from 28 May 2024 (T+1). The rule in force on the
+    entry day applies.
+  - `paper`: k = 4 throughout, the paper's US window as published.
+  - `turn`: k = 1, the classic turn of the month from T to T+3 (McConnell and Xu 2008).
+- **Size.** The strategy targets 100% SPY in the window. The engine's standard sizing applies
+  unchanged: the 60% position cap, the 8% volatility target and the drawdown ladder. So the SPY
+  weight actually held is lower, and the rest sits in the T-bill sleeve.
+- **Orders.** Market-on-close orders, sent when the previous session's bar is final (00:15 New
+  York). Alpaca queues a closing-auction order sent after 19:00 ET for the next session's close.
+  It rejects one sent after 15:50 and before 19:00, so the engine sends nothing in that window.
+- **Costs.** The standard model: 5 bps per equity fill, closing-auction and BIL fills included.
+- **Test.** `flask validate month-end --start 2017-01-01`. It uses the standard walk-forward
+  (36-month training, 12-month test) and the ROADMAP gates, measured in excess of T-bills as
+  below.
+- **No other variant is tested on this data.** If B fails, it is recorded as rejected.
+
+### T-bills
+
+- **The sleeve.** The engine holds the T-bill ETF BIL (SPDR Bloomberg 1-3 Month T-Bill ETF,
+  listed May 2007, expense ratio 0.1356%). It takes the equity not allocated to positions, minus
+  the 0.5% cash buffer, for every strategy, the live 60/40 included.
+- **How the risk rules treat it.**
+  - It is exempt from the 60% position cap and the single-order size limit.
+  - It counts toward gross exposure.
+  - It may be bought during a daily-loss cool-down, since it adds no market risk.
+  - It is never bought while trading is halted, and the kill switch sells it like any position.
+- **The gates.** Every Sharpe-based number is computed on daily returns minus BIL's daily total
+  return: the walk-forward Sharpe, its selection of parameter sets, the deflated and
+  probabilistic Sharpe, the overfitting test, the cross-validation, the neighbours and the
+  regimes. The cost-stress gate needs a total return above BIL's over the same days. Drawdown
+  stays on total returns.
+
+### Other decisions
+
+- **Free data.** Any free source is allowed. B needs none beyond the NYSE calendar.
+- **Auction costs.** These stay at the modelled 5 bps until the soak report's measurements of
+  real auction fills justify a change.

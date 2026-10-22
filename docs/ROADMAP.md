@@ -30,7 +30,9 @@ limits. No strategy trades live unless it passes the promotion gates below.
 
 A strategy moves research → paper → small live → scaled live only if:
 
-- Out-of-sample Sharpe ≥ 1.0 net of costs (portfolio level)
+- Out-of-sample Sharpe ≥ 1.0 net of costs (portfolio level), in excess of T-bills (BIL) since
+  22 October 2026: every Sharpe-based gate uses daily returns minus BIL's, and idle cash is held
+  in BIL (see [STRATEGY_SHORTLIST.md](STRATEGY_SHORTLIST.md#t-bills))
 - Deflated Sharpe ratio ≥ 0.95 and probability of backtest overfitting ≤ 0.20
 - Still profitable at 2–3× assumed slippage; stable across neighbouring parameters
 - Maximum drawdown within the risk limits, with an automatic kill switch
@@ -63,6 +65,7 @@ traded, next to the 5 bps the backtest assumes.
 | SENTINEL | Time-series momentum on 12 liquid ETFs across asset classes (`tsmom`): sign of the 12-month return, or the clipped t-statistic of daily returns (statistically significant trends), each sized 40% / EWMA volatility, monthly (Moskowitz, Ooi & Pedersen 2012) | Daily bars (free) | Built; alone 2017–2026: walk-forward Sharpe 0.32, long-only full period 0.71; a lineup component |
 | LUCIFER | **Replaced.** Month-end pension-rebalancing flows (Harvey, Mazzoleni & Melone, NBER w33554, 2025): simulate a 60/40 SPY/IEF portfolio; Threshold signal (drift > ~2 pp) and Calendar signal (last week of month, reversal on the first business day); trade the equity-vs-bond spread against the expected flows. Two variants to test: long/short spread scaled to ~4–5% vol, and long-only SPY/IEF switch | Daily bars (free) | Built (`rebalancing`); rejected for now: the signal works close-to-close (Sharpe 0.64 on 2017–2026 SPY/IEF, before costs) but only 0.24 at the next open, and it turns over about 43 times a year. Needs close-of-day execution |
 | CRYPTO BREAKOUT | Donchian ensemble (Zarattini, Pagani & Barbon 2025): 9 lookbacks 5–360 days, trailing stop at channel midpoint, volatility-targeted; long-only, no leverage, BTC/ETH/SOL; the engine trades the stops at the next bar | Alpaca crypto data (free, from 2021) | Built (`crypto-trend`); alone 2023–2026: Sharpe 0.85, walk-forward 2024–2026 0.45; a lineup component at the 15% crypto limit |
+| MONTH-END | Month-end payment cycle (Etula, Rinne, Suominen & Vaittinen, RFS 2020): SPY from the close of T−k to the close of T+3 around each month's last session, T-bills otherwise; k follows the settlement cycle | Daily bars (free) | Picked 22 October 2026; rules fixed in [STRATEGY_SHORTLIST.md](STRATEGY_SHORTLIST.md#fixed-rules-month-end) before any backtest |
 | REAPER | Large-cap/ETF short-term reversal with a trend filter, low-turnover construction | Daily bars (free) | Deferred: net-of-cost reversal evidence is for individual large-cap stocks (residual reversal), whose honest test needs point-in-time index membership (not free); no peer-reviewed ETF evidence was found |
 | EVE | Grid trading — expected return ≈ 0 and ruin risk in trends | — | Retired from live; research only |
 | Overlays | Regime model used only to scale exposure; crypto Fear & Greed and x70 signals removed from equity decisions | — | Planned |
