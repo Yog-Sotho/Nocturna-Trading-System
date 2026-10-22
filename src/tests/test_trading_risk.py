@@ -122,6 +122,7 @@ class TestExposureLimits:
         capped = RiskGate(RiskLimits(max_order_notional=D("500")))
         assert capped.check(_req(qty="4"), _ctx()).allowed and capped.check(_req(qty="5"), _ctx()).allowed
         assert RiskGate().check(_req(), _ctx(jump=RiskLimits().max_price_jump[AssetClass.EQUITY])).allowed
+        assert RiskGate().check(_req(qty="50"), _ctx(exposure={"IEF": "50"})).allowed  # gross exactly 100%
 
     def test_single_order_limits(self):
         assert _refused(RiskGate(RiskLimits(max_order_notional=D("500"))).check(_req(qty="6"), _ctx()), "notional")
@@ -426,7 +427,7 @@ class TestStopRiskWeight:
         assert stop_risk_weight(0.5, 0.25) == pytest.approx(0.01)
         assert stop_risk_weight(0.25, 0.5) == pytest.approx(-0.005)
 
-    @pytest.mark.parametrize("price, stop, risk", [(0, 1, 0.005), (-100, 95, 0.005), (100, 0, 0.005),
+    @pytest.mark.parametrize("price, stop, risk", [(0, 1, 0.005), (-100, 95, 0.005), (100, 0, 0.005), (100, -5, 0.005),
                                                    (100, 100, 0.005), (100, 95, 0), (100, 95, 1),
                                                    (100, 95, -0.01), (100, 95, 1.5)])
     def test_invalid_inputs(self, price, stop, risk):
