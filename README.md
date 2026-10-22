@@ -29,7 +29,8 @@ trading; only the clock, the market-data source and the broker are swapped. See
 | Strategies | `src/trading/strategies/` | 60/40 benchmark (traded), plus month-end rebalancing flows, ETF time-series momentum, a crypto Donchian ensemble and a blend; none has passed the promotion gates yet |
 | Trading history (orders, fills, equity snapshots) and audit log | `src/models/` | Working |
 | REST API with JWT and API-key auth (single operator) | `src/main.py`, `src/routes/` | Working; public registration is disabled |
-| Dashboard | `src/static/` | Compiled bundle only (no source); it targets the old API and does not send auth headers. Rebuilt in Phase 7 |
+| Dashboard: sign-in, account and risk figures, equity curve, positions and targets, working orders (cancel), fills and order history, start / stop / resume, emergency stop; phone-first, light and dark | `src/static/` (plain HTML, CSS and JavaScript; no build step) | Working; checked in Chromium at phone size by `tools/dashboard/e2e.cjs` |
+| Telegram commands: `/status`, `/positions`, `/start_engine`, `/stop_engine`, `/resume`, `/halt`, `/flatten`, each change confirmed with a code | `src/trading/telegram.py` | Working against a fake Bot API; not yet run against Telegram |
 | Operations: the engine as its own process, alerts (Telegram, ntfy, webhook), a dead man's switch, readiness and Prometheus endpoints, JSON logs, a Compose stack with backups and an HTTPS proxy | `src/trading/worker.py`, `alerts.py`, `docker-compose.yml`, [docs/RUNBOOK.md](docs/RUNBOOK.md) | Working; verified as a full stack without Alpaca keys |
 
 ### Known limitations
@@ -290,7 +291,7 @@ src/
 ├── models/          # SQLAlchemy models (users, keys, audit, trading history)
 ├── migrations/      # Alembic revisions
 ├── utils/           # validators, logging, audit
-├── static/          # compiled dashboard bundle
+├── static/          # the dashboard (index.html, app.js, app.css)
 └── tests/
 ```
 
@@ -305,7 +306,8 @@ src/
 | 4 | Validation pipeline: walk-forward, purged cross-validation, deflated Sharpe ratio, overfitting tests (done) |
 | 5 | Strategy rebuild: four candidates built and validated; none passed, the engine keeps the 60/40 benchmark (done) |
 | 6 | Operations: engine as its own process, alerts, heartbeat, readiness, metrics, JSON logs, Compose stack, backups, runbook (done) |
-| 7–8 | API and dashboard, CI quality gates |
+| 7 | Dashboard rebuilt with source and auth (done); versioned API with OpenAPI docs |
+| 8 | CI quality gates |
 | 9 | Paper-trading soak, then a staged live ramp |
 
 The full plan, operator decisions, strategy lineup and promotion gates are in

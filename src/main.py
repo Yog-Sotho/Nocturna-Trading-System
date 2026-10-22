@@ -32,6 +32,12 @@ from src.utils.logger import setup_secure_logging
 _REQUEST_ID_PATTERN = re.compile(r'[A-Za-z0-9._-]{1,64}')
 
 
+def _revalidated(response):
+    """The dashboard's files keep their names across upgrades: browsers must check for a new version."""
+    response.headers['Cache-Control'] = 'no-cache'
+    return response
+
+
 def start_serving(app):
     """
     Start what runs beside the web server: the engine (when ENGINE_AUTOSTART is
@@ -352,11 +358,11 @@ def create_app(config_override=None):
         # check cannot be used to probe for files elsewhere on the server
         static_file = safe_join(static_folder, path) if path else None
         if static_file is not None and os.path.isfile(static_file):
-            return send_from_directory(static_folder, path)
+            return _revalidated(send_from_directory(static_folder, path))
         else:
             index_path = os.path.join(static_folder, 'index.html')
             if os.path.exists(index_path):
-                return send_from_directory(static_folder, 'index.html')
+                return _revalidated(send_from_directory(static_folder, 'index.html'))
             else:
                 return jsonify({
                     'success': False,

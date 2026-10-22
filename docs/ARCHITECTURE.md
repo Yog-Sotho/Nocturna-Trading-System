@@ -224,6 +224,22 @@ history begins in 2021) does not hold back the others.
 `TRADING_MODE=PAPER` and `ALPACA_BASE_URL` (if set) is the paper endpoint. The adapter only
 connects to Alpaca's paper API.
 
+## Dashboard and Telegram
+
+The dashboard (`src/static/`) is plain HTML, CSS and one JavaScript module, served by the API
+with no build step, so the source is what runs. It signs in with the JWT endpoints, keeps the
+access token in memory and the single-use refresh token in `sessionStorage` (or
+`localStorage` with "Stay signed in"), and rotates it one request at a time per tab, under a
+Web Lock across tabs, since presenting a used refresh token revokes every session. It reads
+the same endpoints as any API client and builds every element with DOM calls, never
+`innerHTML`, under the API's `script-src 'self'` policy. Its files are served with
+`Cache-Control: no-cache`, so an upgrade reaches phones at once. `tools/dashboard/` runs the
+app with a simulated engine and drives it in Chromium at phone size.
+
+Telegram commands (`src/trading/telegram.py`) are a second front end on the same runtime: a
+long-polling bot in the API's serving process, answering only the operator's private chat,
+with every change confirmed by a one-time code.
+
 ## What comes next
 
-Phase 7 versions the API and rebuilds the dashboard; see [ROADMAP.md](ROADMAP.md).
+Phase 7 still versions the API with OpenAPI docs; see [ROADMAP.md](ROADMAP.md).
