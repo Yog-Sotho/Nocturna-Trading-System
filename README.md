@@ -82,7 +82,9 @@ final.
 
 `docker compose up -d --build` runs the API, the engine as its own process, PostgreSQL,
 Redis and daily backups; `--profile proxy` adds HTTPS through Caddy. Setup, alerts, upgrades,
-incidents and restores are in [docs/RUNBOOK.md](docs/RUNBOOK.md).
+incidents and restores are in [docs/RUNBOOK.md](docs/RUNBOOK.md); a home server reached through
+Tailscale, with Telegram and healthchecks.io, step by step in
+[docs/HOME_SERVER.md](docs/HOME_SERVER.md).
 
 The API's entry point is `gunicorn -c gunicorn.conf.py 'src.main:create_app()'`, a single,
 never-recycled worker (in development the engine lives in that process); the engine's is

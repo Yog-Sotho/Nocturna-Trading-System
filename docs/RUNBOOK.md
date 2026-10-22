@@ -1,5 +1,8 @@
 # NOCTURNA operations runbook
 
+Setting up a home server from scratch (Ubuntu, Docker, Tailscale, Telegram,
+healthchecks.io): [HOME_SERVER.md](HOME_SERVER.md).
+
 How to run the paper-trading stack around the clock on one host with Docker
 Compose, what the alerts mean, and what to do when something goes wrong.
 Everything here is paper trading on Alpaca; the app refuses any live
@@ -48,7 +51,8 @@ Every container restarts on failure (`restart: unless-stopped`), logs to
    - alerts and the heartbeat ([below](#alerts-and-the-dead-mans-switch));
    - `ENGINE_AUTOSTART=true` if a restart (a crash, a host reboot, an
      upgrade) should resume trading by itself. Without it the engine waits
-     for `POST /api/trading/control/start` after every restart.
+     to be started after every restart: **Start engine** in the dashboard,
+     `/start_engine` in Telegram, or `POST /api/trading/control/start`.
 
    `DATABASE_URL`, `REDIS_URL`, `FLASK_ENV`, `ENGINE_MODE`, `TRADING_MODE`
    and the log settings are fixed by `docker-compose.yml`; values for them
@@ -73,6 +77,9 @@ Every container restarts on failure (`restart: unless-stopped`), logs to
 
 The API listens on `127.0.0.1:5000` of the host only. Either:
 
+- reach it through [Tailscale](https://tailscale.com) from your own devices,
+  with no port opened to the internet: `sudo tailscale serve --bg 5000` and
+  `TRUSTED_PROXY_COUNT=1` (step by step in [HOME_SERVER.md](HOME_SERVER.md));
 - tunnel to it: `ssh -L 5000:127.0.0.1:5000 you@host`, then use
   `http://localhost:5000`; or
 - serve it over HTTPS with the `caddy` proxy. Point a DNS record for your
