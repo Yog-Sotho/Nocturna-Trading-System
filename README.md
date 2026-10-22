@@ -248,7 +248,8 @@ to start and lists every problem if the configuration is unsafe. The ones that m
 ```bash
 pip install --require-hashes -r requirements-dev.txt   # runtime + dev tools, hashed lockfile
 pytest src/tests                                        # test suite
-ruff check src/                                         # lint
+ruff check src/ tools/                                  # lint
+mypy                                                    # strict typing of the trading core
 ```
 
 ### Database migrations
@@ -274,8 +275,36 @@ startup. It holds only the operator account, so back it up, delete `src/database
 
 Dependencies are declared in `requirements.in` / `requirements-dev.in` and compiled into
 hashed lockfiles with `uv pip compile ... --generate-hashes` (commands are in the `.in`
-headers). CI (`.github/workflows/ci.yml`) runs ruff, bandit (report only), a dependency
-audit with pip-audit, and pytest.
+headers).
+
+### Quality gates
+
+CI (`.github/workflows/ci.yml`) blocks a merge on any of:
+
+| Gate | What it checks |
+|---|---|
+| ruff | lint of `src/` and `tools/` |
+| mypy | `--strict` typing of the trading core (`src/trading/`, `src/models/trading.py`; settings in `pyproject.toml`) |
+| bandit | security findings of medium severity and confidence or higher; a reviewed exception carries `# nosec <id>` with the reason on the line above |
+| pip-audit | known vulnerabilities in both lockfiles |
+| pytest | the suite on SQLite and PostgreSQL; at least 94% line coverage overall and 95% for each core module (`tools/coverage_gate.py`) |
+| dashboard | the dashboard against a simulated engine in Chromium at phone size (`tools/dashboard/`) |
+| image | the Docker image builds and the Compose stack starts healthy with a throwaway `.env` |
+
+Mutation testing (`.github/workflows/mutation.yml`, weekly, on demand, and on pull requests
+that touch the risk code) changes `risk.py` and `sizing.py` one operator at a time with
+[Cosmic Ray](https://github.com/sixty-north/cosmic-ray) and runs the risk tests against each
+change; a change no test notices survives, and the job fails when more than 3% of the tested
+changes survive. To run it locally (it takes a while):
+
+```bash
+pip install --require-hashes -r requirements-mutation.txt
+cosmic-ray init tools/mutation/cosmic-ray.toml mutation.sqlite
+cr-filter-operators mutation.sqlite tools/mutation/cosmic-ray.toml
+cr-filter-pragma mutation.sqlite
+cosmic-ray exec tools/mutation/cosmic-ray.toml mutation.sqlite
+cosmic-ray dump mutation.sqlite | python tools/mutation/gate.py --max-survival 3
+```
 
 ```
 src/
@@ -316,8 +345,8 @@ src/
 | 4 | Validation pipeline: walk-forward, purged cross-validation, deflated Sharpe ratio, overfitting tests (done) |
 | 5 | Strategy rebuild: four candidates built and validated; none passed, the engine keeps the 60/40 benchmark (done) |
 | 6 | Operations: engine as its own process, alerts, heartbeat, readiness, metrics, JSON logs, Compose stack, backups, runbook (done) |
-| 7 | Dashboard rebuilt with source and auth (done); versioned API with OpenAPI docs |
-| 8 | CI quality gates |
+| 7 | Dashboard rebuilt with source and auth, Telegram commands, versioned API with OpenAPI docs (done) |
+| 8 | CI quality gates: strict typing, coverage floors, mutation testing of the risk code, blocking security scans (done) |
 | 9 | Paper-trading soak, then a staged live ramp |
 
 The full plan, operator decisions, strategy lineup and promotion gates are in

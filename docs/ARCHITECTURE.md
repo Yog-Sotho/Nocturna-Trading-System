@@ -255,4 +255,6 @@ exercised.
 
 ## What comes next
 
-Phase 8 adds CI quality gates; see [ROADMAP.md](ROADMAP.md).
+Phase 9 is the paper soak: at least 60 trading days of the engine trading the Alpaca paper account
+unattended, then a staged live ramp only if the promotion gates hold; see
+[ROADMAP.md](ROADMAP.md).
