@@ -5,9 +5,34 @@ The dashboard's behaviour is checked in a browser: tools/dashboard/e2e.cjs.
 """
 
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 STATIC = Path(__file__).resolve().parents[1] / "static"
+
+
+class _Scripts(HTMLParser):
+    """The page's script tags, inline code and event-handler attributes, as a browser reads them (any case)."""
+
+    def __init__(self, page):
+        super().__init__()
+        self.scripts, self.inline, self.handlers, self._in_script = [], [], [], False
+        self.feed(page)
+        self.close()
+
+    def handle_starttag(self, tag, attrs):
+        self.handlers += [name for name, _ in attrs if name.startswith("on")]
+        if tag == "script":
+            self.scripts.append(dict(attrs))
+            self._in_script = True
+
+    def handle_endtag(self, tag):
+        if tag == "script":
+            self._in_script = False
+
+    def handle_data(self, data):
+        if self._in_script and data.strip():
+            self.inline.append(data)
 
 
 def test_index_is_served_for_the_root_and_unknown_pages(client):
@@ -22,8 +47,9 @@ def test_scripts_and_styles_load_under_the_csp(client):
     csp = client.get("/").headers["Content-Security-Policy"]
     assert "script-src 'self'" in csp and "unsafe-inline" not in csp.split("script-src")[1].split(";")[0]
     # No inline script or handler: the CSP would block it
-    assert re.findall(r"<script[^>]*>", page) == ['<script type="module" src="/app.js">']
-    assert not re.search(r"\son[a-z]+=", page)
+    found = _Scripts(page)
+    assert found.scripts == [{"type": "module", "src": "/app.js"}]
+    assert found.inline == [] and found.handlers == []
     script = client.get("/app.js")
     assert script.status_code == 200 and script.mimetype == "text/javascript"
     assert script.headers["Cache-Control"] == "no-cache" and script.headers["X-Content-Type-Options"] == "nosniff"
