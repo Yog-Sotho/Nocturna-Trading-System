@@ -20,11 +20,10 @@ ENV/
 *.swo
 *~
 
-# Environment files
+# Environment files, and the backups ops/homeserver.py makes of .env
 .env
-.env.local
-.env.production
-.env.staging
+.env.*
+!.env.example
 
 # Database files — NEVER commit database files
 *.db

@@ -1,7 +1,8 @@
 # NOCTURNA operations runbook
 
-Setting up a home server from scratch (Ubuntu, Docker, Tailscale, Telegram,
-healthchecks.io): [HOME_SERVER.md](HOME_SERVER.md).
+Setting up a home server (Ubuntu, Docker, Tailscale, Telegram, healthchecks.io):
+[HOME_SERVER.md](HOME_SERVER.md). `python3 ops/homeserver.py check` reports what the
+machine has and what is missing at any time, and shows no secrets.
 
 How to run the paper-trading stack around the clock on one host with Docker
 Compose, what the alerts mean, and what to do when something goes wrong.
