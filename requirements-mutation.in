@@ -1,0 +1,6 @@
+# Mutation testing (the mutation CI job; tools/mutation/). Compile with:
+#   uv pip compile requirements-mutation.in --constraint requirements-dev.txt --python-version 3.13 \
+#     --generate-hashes -o requirements-mutation.txt
+-r requirements-dev.in
+
+cosmic-ray>=8.7,<9

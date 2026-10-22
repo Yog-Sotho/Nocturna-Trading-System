@@ -25,6 +25,7 @@ Sharpe ratio in sample".
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import combinations
 from math import comb
@@ -45,21 +46,22 @@ class OverfittingResult:
     splits: int
 
 
-def _block_sharpes(sums: np.ndarray, squares: np.ndarray, counts: np.ndarray, blocks) -> np.ndarray:
+def _block_sharpes(sums: np.ndarray, squares: np.ndarray, counts: np.ndarray, blocks: Iterable[int]) -> np.ndarray:
     """Per-column Sharpe ratio of the rows in ``blocks``, from per-block sums."""
     n = counts[list(blocks)].sum()
     total = sums[list(blocks)].sum(axis=0)
     mean = total / n
     var = (squares[list(blocks)].sum(axis=0) - n * mean ** 2) / (n - 1)
     sd = np.sqrt(np.maximum(var, 0.0))
-    return np.divide(mean, sd, out=np.zeros_like(mean), where=sd > 1e-15)
+    sharpe: np.ndarray = np.divide(mean, sd, out=np.zeros_like(mean), where=sd > 1e-15)
+    return sharpe
 
 
 def _relative_rank(values: np.ndarray, index: int) -> float:
     """Rank of ``values[index]`` from 1 (worst) to N (best), ties averaged, over N + 1."""
     value = values[index]
     rank = (values < value).sum() + ((values == value).sum() + 1) / 2
-    return rank / (len(values) + 1)
+    return float(rank / (len(values) + 1))
 
 
 def probability_of_backtest_overfitting(matrix: np.ndarray, blocks: int = 16) -> OverfittingResult:

@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from flask import Flask
+from sqlalchemy import select
 
 from src.models.trading import EquitySnapshot, RiskStateRecord, TradingFill, TradingOrder
 from src.models.user import db
@@ -85,7 +86,8 @@ class EngineRecorder:
     @staticmethod
     def _save_order(order: Order) -> None:
         request = order.request
-        row = TradingOrder.query.filter_by(client_order_id=order.client_order_id).first()
+        row = db.session.scalars(
+            select(TradingOrder).where(TradingOrder.client_order_id == order.client_order_id)).first()
         if row is None:
             row = TradingOrder(client_order_id=order.client_order_id, symbol=request.symbol,
                                side=request.side.value, qty=request.qty, order_type=request.order_type.value,
@@ -111,7 +113,7 @@ class EngineRecorder:
 
     @staticmethod
     def _save_fill(fill: Fill) -> None:
-        if TradingFill.query.filter_by(fill_id=fill.fill_id).first() is not None:
+        if db.session.scalars(select(TradingFill).where(TradingFill.fill_id == fill.fill_id)).first() is not None:
             return
         db.session.add(TradingFill(fill_id=fill.fill_id, client_order_id=fill.client_order_id,
                                    symbol=fill.symbol, side=fill.side.value, qty=fill.qty, price=fill.price,

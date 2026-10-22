@@ -36,11 +36,21 @@ ignore = [
 exclude_dirs = ["src/tests", "venv", ".venv"]
 skips = ["B101"]  # assert used in non-test code for guards
 
+# The trading core is checked strictly; the modules it imports (models, config,
+# Flask glue) are type-checked only where the core uses them.
 [tool.mypy]
 python_version = "3.13"
-warn_return_any = true
+files = ["src/trading", "src/models/trading.py"]
 warn_unused_configs = true
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["src.trading.*", "src.models.trading"]
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["src.models.user", "src.utils.*", "src.config"]
+ignore_errors = true
 
 [tool.black]
 line-length = 120

@@ -36,8 +36,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
+from flask import Flask
+
 from src.config import Settings
 
+from .clock import Clock
 from .engine import EngineEvent
 from .runtime import STALE_AFTER
 
@@ -184,7 +187,7 @@ class _Background:
 
 
 class AlertDispatcher:
-    def __init__(self, sinks: list[Sink], clock=None, dedup_window: timedelta = DEDUP_WINDOW,
+    def __init__(self, sinks: list[Sink], clock: Clock | None = None, dedup_window: timedelta = DEDUP_WINDOW,
                  retry_delays: tuple[float, ...] = (2.0, 10.0)) -> None:
         """
         Args:
@@ -407,7 +410,7 @@ class ReachabilityMonitor:
             self._state = state
 
 
-def start_monitoring(app, interval: float = 5.0) -> threading.Thread | None:
+def start_monitoring(app: Flask, interval: float = 5.0) -> threading.Thread | None:
     """
     Watch the engine from the web process: all of it when the engine runs
     here (embedded), only that it answers when it runs as its own process.

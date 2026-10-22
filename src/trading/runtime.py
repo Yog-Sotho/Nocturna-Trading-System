@@ -30,6 +30,7 @@ from src.config import Settings
 from .broker import Broker
 from .channel import CommandFailedError, CommandTimeoutError, EngineChannel
 from .domain import AssetClass
+from .engine import EngineListener
 from .operator import OperatorOrder, UnknownSymbolError
 from .risk import RiskDecision, RiskLimits
 from .service import EngineService, ServiceNotRunningError, ServiceStatus
@@ -111,7 +112,7 @@ def build_service(app: Flask, settings: Settings) -> EngineService:
     broker = AlpacaBroker(api_key=key, secret_key=secret, instruments=instruments, clock=clock,
                           trading_client=client)
     recorder = EngineRecorder(app)
-    listeners = [recorder]
+    listeners: list[EngineListener] = [recorder]
     if "alerts" in app.extensions:
         listeners.append(EngineAlerts(app.extensions["alerts"]))
     return EngineService(
@@ -285,7 +286,8 @@ class RemoteRuntime:
         if self._published() is not None:
             command = self._channel.send("halt", {"reason": reason, "flatten": flatten})
             try:
-                return self._channel.wait(command, self._timeout)
+                result: dict[str, Any] = self._channel.wait(command, self._timeout)
+                return result
             except CommandTimeoutError:
                 logger.error("The engine process did not answer the emergency stop; using the broker directly")
         broker = self._broker_factory(self._settings)

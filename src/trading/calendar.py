@@ -46,21 +46,25 @@ class TradingCalendar:
         """The first session strictly after ``day``."""
         if self.asset_class is AssetClass.CRYPTO:
             return day + timedelta(days=1)
-        return _nyse().date_to_session((day + timedelta(days=1)).isoformat(), direction="next").date()
+        session: date = _nyse().date_to_session((day + timedelta(days=1)).isoformat(), direction="next").date()
+        return session
 
     def previous_session(self, day: date) -> date:
         """The last session strictly before ``day``."""
         if self.asset_class is AssetClass.CRYPTO:
             return day - timedelta(days=1)
-        return _nyse().date_to_session((day - timedelta(days=1)).isoformat(), direction="previous").date()
+        session: date = _nyse().date_to_session((day - timedelta(days=1)).isoformat(), direction="previous").date()
+        return session
 
     def session_close(self, day: date) -> datetime:
         """When the session on ``day`` ends (UTC); early closes included."""
         if self.asset_class is AssetClass.CRYPTO:
             return datetime(day.year, day.month, day.day, tzinfo=UTC) + timedelta(days=1)
-        return _nyse().session_close(day.isoformat()).to_pydatetime()
+        close: datetime = _nyse().session_close(day.isoformat()).to_pydatetime()
+        return close
 
     def session_open(self, day: date) -> datetime:
         if self.asset_class is AssetClass.CRYPTO:
             return datetime(day.year, day.month, day.day, tzinfo=UTC)
-        return _nyse().session_open(day.isoformat()).to_pydatetime()
+        opening: datetime = _nyse().session_open(day.isoformat()).to_pydatetime()
+        return opening

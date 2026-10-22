@@ -47,7 +47,7 @@ class ValidationReport:
 
     def to_dict(self) -> dict[str, Any]:
         cv = self.cross_validation
-        return _plain({
+        plain: dict[str, Any] = _plain({
             "candidate": self.candidate, "start": self.start, "end": self.end,
             "verdict": self.verdict, "passed": self.passed,
             "gates": [g.__dict__ for g in self.gates],
@@ -70,6 +70,7 @@ class ValidationReport:
             "trials": self.trials,
             "settings": self.settings,
         })
+        return plain
 
     # -- Markdown -----------------------------------------------------------------------------
 

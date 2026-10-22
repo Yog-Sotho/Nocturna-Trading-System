@@ -32,6 +32,10 @@ jobs:
       - name: Ruff lint
         run: ruff check src/ tools/ --output-format=github
 
+      # Strict on the trading core and its models (pyproject.toml [tool.mypy])
+      - name: Type check
+        run: mypy
+
       # Blocking: any finding of medium severity and confidence or above fails the build
       - name: Bandit security scan
         run: bandit -r src/ -c pyproject.toml --severity-level medium --confidence-level medium
@@ -55,6 +59,7 @@ jobs:
       - name: Audit locked dependencies
         run: |
           pip-audit -r requirements-dev.txt --disable-pip --no-deps --progress-spinner off
+          pip-audit -r requirements-mutation.txt --disable-pip --no-deps --progress-spinner off
 
   test:
     runs-on: ubuntu-latest

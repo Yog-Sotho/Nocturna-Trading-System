@@ -78,11 +78,11 @@ def rebalancing_signals(days: list[date], equity: np.ndarray, bond: np.ndarray) 
     calendar = np.empty(len(days))
     threshold = 0.0
     for i, day in enumerate(days):
-        drifted = _drift(w_threshold, equity[i], bond[i])
+        drifted = np.asarray(_drift(w_threshold, equity[i], bond[i]))
         deviation = drifted - TARGET
         threshold = float(deviation.mean())
         w_threshold = np.where(np.abs(deviation) >= THRESHOLDS, TARGET, drifted)
-        drifted_calendar = _drift(w_calendar, equity[i], bond[i])
+        drifted_calendar = float(_drift(w_calendar, equity[i], bond[i]))
         calendar[i] = drifted_calendar - TARGET
         w_calendar = TARGET if _sessions_left_in_month(day) == 0 else drifted_calendar
     return threshold, calendar

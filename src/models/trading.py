@@ -9,37 +9,48 @@ on restart, so a halt or a drawdown high-water mark survives it.
 """
 
 from datetime import UTC, datetime
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import JSON, Boolean, Column, Integer, Numeric, String, Text
+from sqlalchemy import JSON, Boolean, Integer, Numeric, String, Text
+from sqlalchemy.orm import Mapped, mapped_column
 
 from .user import UTCDateTime, db
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import DeclarativeBase
+
+    class Model(DeclarativeBase):
+        """db.Model as the type checker sees it: it cannot use an attribute of ``db`` as a base."""
+else:
+    Model = db.Model
 
 #: Exact on PostgreSQL; wide enough for crypto quantities and share prices.
 MONEY = Numeric(38, 18)
 
 
-class TradingOrder(db.Model):
+class TradingOrder(Model):
     __tablename__ = 'trading_orders'
 
-    id = Column(Integer, primary_key=True)
-    client_order_id = Column(String(48), nullable=False, unique=True, index=True)
-    broker_order_id = Column(String(64))
-    symbol = Column(String(20), nullable=False, index=True)
-    side = Column(String(4), nullable=False)
-    qty = Column(MONEY, nullable=False)
-    order_type = Column(String(12), nullable=False)
-    time_in_force = Column(String(4), nullable=False)
-    limit_price = Column(MONEY)
-    stop_price = Column(MONEY)
-    status = Column(String(20), nullable=False, index=True)
-    filled_qty = Column(MONEY, nullable=False, default=0)
-    avg_fill_price = Column(MONEY)
-    tag = Column(String(32))
-    reason = Column(Text)
-    created_at = Column(UTCDateTime, nullable=False, index=True)
-    updated_at = Column(UTCDateTime, nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    client_order_id: Mapped[str] = mapped_column(String(48), nullable=False, unique=True, index=True)
+    broker_order_id: Mapped[str | None] = mapped_column(String(64))
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    side: Mapped[str] = mapped_column(String(4), nullable=False)
+    qty: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    order_type: Mapped[str] = mapped_column(String(12), nullable=False)
+    time_in_force: Mapped[str] = mapped_column(String(4), nullable=False)
+    limit_price: Mapped[Decimal | None] = mapped_column(MONEY)
+    stop_price: Mapped[Decimal | None] = mapped_column(MONEY)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    filled_qty: Mapped[Decimal] = mapped_column(MONEY, nullable=False, default=0)
+    avg_fill_price: Mapped[Decimal | None] = mapped_column(MONEY)
+    tag: Mapped[str | None] = mapped_column(String(32))
+    reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             'client_order_id': self.client_order_id,
             'broker_order_id': self.broker_order_id,
@@ -60,21 +71,21 @@ class TradingOrder(db.Model):
         }
 
 
-class TradingFill(db.Model):
+class TradingFill(Model):
     __tablename__ = 'trading_fills'
 
-    id = Column(Integer, primary_key=True)
-    fill_id = Column(String(80), nullable=False, unique=True, index=True)
-    client_order_id = Column(String(48), nullable=False, index=True)
-    symbol = Column(String(20), nullable=False, index=True)
-    side = Column(String(4), nullable=False)
-    qty = Column(MONEY, nullable=False)
-    price = Column(MONEY, nullable=False)
-    fee = Column(MONEY, nullable=False, default=0)
-    fee_qty = Column(MONEY, nullable=False, default=0)
-    timestamp = Column(UTCDateTime, nullable=False, index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fill_id: Mapped[str] = mapped_column(String(80), nullable=False, unique=True, index=True)
+    client_order_id: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    side: Mapped[str] = mapped_column(String(4), nullable=False)
+    qty: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    price: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    fee: Mapped[Decimal] = mapped_column(MONEY, nullable=False, default=0)
+    fee_qty: Mapped[Decimal] = mapped_column(MONEY, nullable=False, default=0)
+    timestamp: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, index=True)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             'fill_id': self.fill_id,
             'client_order_id': self.client_order_id,
@@ -88,19 +99,20 @@ class TradingFill(db.Model):
         }
 
 
-class EquitySnapshot(db.Model):
+class EquitySnapshot(Model):
     __tablename__ = 'equity_snapshots'
 
-    id = Column(Integer, primary_key=True)
-    timestamp = Column(UTCDateTime, nullable=False, index=True, default=lambda: datetime.now(UTC))
-    equity = Column(MONEY, nullable=False)
-    cash = Column(MONEY, nullable=False)
-    gross_exposure = Column(MONEY, nullable=False)
-    realized_pnl = Column(MONEY, nullable=False)
-    fees = Column(MONEY, nullable=False)
-    halted = Column(Boolean, nullable=False, default=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    timestamp: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False, index=True,
+                                                default=lambda: datetime.now(UTC))
+    equity: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    cash: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    gross_exposure: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    realized_pnl: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    fees: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    halted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             'timestamp': self.timestamp.isoformat(),
             'equity': str(self.equity),
@@ -112,17 +124,17 @@ class EquitySnapshot(db.Model):
         }
 
 
-class RiskStateRecord(db.Model):
+class RiskStateRecord(Model):
     """The risk gate's state (``RiskGate.state_dict``); a single row with id 1."""
 
     __tablename__ = 'risk_state'
 
-    id = Column(Integer, primary_key=True)
-    state = Column(JSON, nullable=False)
-    updated_at = Column(UTCDateTime, nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    state: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
 
 
-class EngineStatusRecord(db.Model):
+class EngineStatusRecord(Model):
     """
     What the separate engine process publishes (``views.engine_views``) and
     when it last did; a single row with id 1. The API treats an old
@@ -131,24 +143,24 @@ class EngineStatusRecord(db.Model):
 
     __tablename__ = 'engine_status'
 
-    id = Column(Integer, primary_key=True)
-    instance = Column(String(64), nullable=False)
-    document = Column(JSON, nullable=False)
-    heartbeat_at = Column(UTCDateTime, nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    instance: Mapped[str] = mapped_column(String(64), nullable=False)
+    document: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    heartbeat_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
 
 
-class EngineCommand(db.Model):
+class EngineCommand(Model):
     """A command from the API to the separate engine process, and its result."""
 
     __tablename__ = 'engine_commands'
 
-    id = Column(Integer, primary_key=True)
-    kind = Column(String(32), nullable=False)
-    payload = Column(JSON, nullable=False)
-    status = Column(String(16), nullable=False, index=True)  # pending, done, failed, expired
-    result = Column(JSON)
-    error = Column(Text)
-    requested_by = Column(String(64))
-    created_at = Column(UTCDateTime, nullable=False)
-    expires_at = Column(UTCDateTime)  # None: never (emergency halts)
-    completed_at = Column(UTCDateTime)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)  # pending, done, failed, expired
+    result: Mapped[Any] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text)
+    requested_by: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime)  # None: never (emergency halts)
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
