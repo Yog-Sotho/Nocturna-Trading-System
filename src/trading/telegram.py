@@ -84,7 +84,8 @@ def telegram_call(token: str) -> Call:
         request = urllib.request.Request(
             API.format(token=token, method=method), data=json.dumps(params).encode(),
             headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310 - fixed https URL
+        # A fixed https URL, so B310 (file:// and custom schemes) does not apply
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
             body = json.loads(response.read())
         if not body.get("ok"):
             raise RuntimeError(f"Telegram {method}: {body.get('description', 'not ok')}")

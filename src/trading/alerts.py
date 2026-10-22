@@ -74,7 +74,8 @@ def http_post(url: str, body: bytes, headers: Mapping[str, str]) -> None:
     if urlsplit(url).scheme not in ("http", "https"):
         raise ValueError("only http(s) URLs are allowed")
     request = urllib.request.Request(url, data=body, headers=dict(headers), method="POST")
-    with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT):  # nosec B310 - scheme checked above
+    # The scheme is checked above, so B310 (file:// and custom schemes) does not apply
+    with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT):  # nosec B310
         pass
 
 

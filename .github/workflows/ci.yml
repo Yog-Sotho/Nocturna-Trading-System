@@ -30,10 +30,11 @@ jobs:
           pip install --require-hashes -r requirements-dev.txt
 
       - name: Ruff lint
-        run: ruff check src/ --output-format=github
+        run: ruff check src/ tools/ --output-format=github
 
+      # Blocking: any finding of medium severity and confidence or above fails the build
       - name: Bandit security scan
-        run: bandit -r src/ -c pyproject.toml --severity-level medium -f json || true
+        run: bandit -r src/ -c pyproject.toml --severity-level medium --confidence-level medium
 
   audit:
     runs-on: ubuntu-latest
@@ -107,4 +108,9 @@ jobs:
           TEST_POSTGRES_URL: postgresql+psycopg://nocturna:nocturna-ci@localhost:5432/nocturna_test
           TRADING_MODE: PAPER
         run: |
-          pytest src/tests/ -v --tb=short --cov=src --cov-report=term-missing --cov-fail-under=85
+          pytest src/tests/ -v --tb=short --cov=src --cov-report=term-missing \
+            --cov-report=json:coverage.json --cov-fail-under=94
+
+      # The modules that move money or decide risk keep a higher floor
+      - name: Core coverage gate
+        run: python tools/coverage_gate.py coverage.json
