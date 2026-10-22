@@ -19,7 +19,8 @@ inst = importlib.util.module_from_spec(_spec)
 sys.modules["installer"] = inst
 _spec.loader.exec_module(inst)
 
-TOKEN = "123456789:AAFD39kkdpWt3ywyRZergyOLMaJhac60qc"
+# Has the shape setup checks (digits, a colon, 20+ characters), not a real token's
+TOKEN = "123:fake-token-for-tests-only"
 NAME = "gibliz.taile5d4a8.ts.net"
 GOOD = {
     "FLASK_SECRET_KEY": "a" * 64, "JWT_SECRET_KEY": "b" * 64, "API_KEY_PEPPER": "c" * 64,
