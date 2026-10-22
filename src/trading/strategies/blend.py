@@ -13,7 +13,7 @@ import re
 from collections.abc import Mapping, Sequence
 
 from ..domain import Instrument
-from ..strategy import Strategy, StrategyContext, consult
+from ..strategy import Strategy, StrategyContext, common_execution, consult
 
 _NAME = re.compile(r"[a-z0-9-]{1,16}")
 
@@ -33,6 +33,7 @@ class Blend(Strategy):
                 if known != instrument:
                     raise ValueError(f"conflicting definitions for {instrument.symbol}")
         self.instruments = tuple(instruments.values())
+        self.execution = common_execution([s for s, _ in self._components])
         self.lookback = max(s.lookback for s, _ in self._components)
         # Called on every new bar; each component waits for its own history, so a component
         # whose data starts later (crypto) does not hold back the others

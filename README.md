@@ -25,8 +25,9 @@ trading; only the clock, the market-data source and the broker are swapped. See
 | Risk engine: pre-trade gate, drawdown kill switch, daily loss limit, volatility-targeted sizing with a drawdown ladder | `src/trading/risk.py`, `sizing.py` | Working; limits are configurable, defaults below |
 | Backtester (simulated clock and broker, cost model, no look-ahead) | `src/trading/backtest.py` | Working |
 | Validation pipeline: walk-forward traded through the engine, deflated Sharpe, probability of backtest overfitting, purged cross-validation, cost stress, parameter stability, regimes, promotion gates | `src/trading/validation/`, `flask validate` | Working; no candidate has passed the gates yet |
+| Paper soak report: paper trading against a backtest of the same days, the account's dividends and interest, the soak tolerance | `src/trading/soak.py`, `flask soak report` | Working against recorded fakes; the soak has not started |
 | Paper trading on Alpaca (`alpaca-py`): broker adapter, trade-update stream, polling data feed, reconciliation | `src/trading/alpaca.py`, `service.py` | Working against fakes and Alpaca's real request models; not yet run against a live paper account |
-| Strategies | `src/trading/strategies/` | 60/40 benchmark (traded), plus month-end rebalancing flows, ETF time-series momentum, a crypto Donchian ensemble and a blend; none has passed the promotion gates yet |
+| Strategies | `src/trading/strategies/` | 60/40 benchmark (traded, idle cash in T-bills), plus month-end rebalancing flows, ETF time-series momentum, a crypto Donchian ensemble, the month-end payment cycle and a blend; none has passed the promotion gates yet |
 | Trading history (orders, fills, equity snapshots) and audit log | `src/models/` | Working |
 | REST API with JWT and API-key auth (single operator) | `src/main.py`, `src/routes/` | Working; public registration is disabled |
 | Dashboard: sign-in, account and risk figures, equity curve, positions and targets, working orders (cancel), fills and order history, start / stop / resume, emergency stop; phone-first, light and dark | `src/static/` (plain HTML, CSS and JavaScript; no build step) | Working; checked in Chromium at phone size by `tools/dashboard/e2e.cjs` |
@@ -36,8 +37,9 @@ trading; only the clock, the market-data source and the broker are swapped. See
 ### Known limitations
 
 - No strategy has a validated edge: on Alpaca data from 2017 to 2026 none of the Phase 5
-  candidates, alone or combined, beat the 60/40 benchmark out of sample (see
-  [docs/ROADMAP.md](docs/ROADMAP.md)), so the engine trades the benchmark.
+  candidates, alone or combined, beat the 60/40 benchmark out of sample, and neither did the
+  month-end payment cycle (see [docs/ROADMAP.md](docs/ROADMAP.md)). The engine trades the
+  benchmark, with its idle cash in T-bills.
 - The Compose stack has not yet run against the paper account (see the runbook before the
   first run).
 
@@ -116,9 +118,12 @@ account equity and configurable through `RISK_*` / `SIZING_*` variables:
 | Orders / turnover per New York day | 50 / 2x equity |
 | Market data: newest bar older than / one-bar move larger than | equities 5 days / 25%, crypto 2 days / 50% |
 | Rebalance band: positions are adjusted only when this far from target | 2% |
+| Idle cash: the equity the sized targets leave unused is held in T-bills (BIL) | all of it, less a 0.5% cash buffer |
 
-Orders that only reduce a position skip the daily breakers and data checks, so the book can
-always be reduced. The gate's state (high-water mark, halt, daily counters) is stored in the
+The T-bill sleeve is exempt from the position and single-order caps and may be bought during
+a cool-down; it counts toward gross exposure, is never bought while trading is halted, and is
+sold by the kill switch like everything else. Orders that only reduce a position skip the
+daily breakers and data checks, so the book can always be reduced. The gate's state (high-water mark, halt, daily counters) is stored in the
 database and restored on restart, so a halt survives a redeploy. After a drawdown halt,
 `POST /api/v1/trading/control/resume` restarts the high-water mark at the current equity.
 Strategies with protective stops size positions with `stop_risk_weight` (0.5% of equity at
@@ -135,7 +140,10 @@ flask --app src.main validate benchmark --start 2017-01-01 --output reports/benc
 ```
 
 It writes a Markdown tear sheet and a JSON report, prints the verdict, and exits with code 1
-when the candidate is rejected. For each candidate (a strategy family and its parameter grid):
+when the candidate is rejected. Idle cash is held in T-bills (BIL), as in paper trading, and
+every Sharpe ratio is measured in excess of BIL's return; `--no-tbills` runs the earlier rules
+(cash earns nothing, Sharpe against zero). For each candidate (a strategy family and its
+parameter grid):
 
 1. Every parameter set is backtested over the whole period.
 2. **Walk-forward:** at the start of each test year the parameter set with the best Sharpe ratio
@@ -152,22 +160,33 @@ when the candidate is rejected. For each candidate (a strategy family and its pa
 
 | Gate (backtest) | Threshold |
 |---|---|
-| Walk-forward Sharpe ratio, net of costs | ≥ 1.0 (portfolio level; `--min-sharpe` for a component) |
+| Walk-forward Sharpe ratio, net of costs, in excess of T-bills | ≥ 1.0 (portfolio level; `--min-sharpe` for a component) |
 | Deflated Sharpe ratio | ≥ 0.95 |
 | Probability of backtest overfitting | ≤ 0.20 |
-| At 3x costs | still a positive return |
+| At 3x costs | a total return above T-bills' |
 | Median neighbouring parameter set's Sharpe / selected Sharpe | ≥ 0.5 |
 | Out-of-sample maximum drawdown | ≤ 12% (the 10% kill switch plus gaps) |
 
 Registered candidates: `benchmark`, `rebalancing`, `tsmom`, `crypto-trend` (use
 `--start 2023-01-01 --train-months 12`: crypto data starts in 2021 and the longest channel needs
-two years) and `lineup`.
+two years), `month-end` and `lineup`.
 
 Notes: Alpaca's free plan serves equity history from 2016, so the default first trading day is
 2017-01-01 (2016 warms up indicators). Sharpe ratios use a zero risk-free rate, the same as idle
 cash earns in the engine. A backtest has no operator, so a drawdown kill is followed by a
 simulated resume after `--resume-after-kill-days` (30); every kill is counted in the report.
 Candidates are defined in `src/trading/validation/candidates.py`.
+
+### The paper soak
+
+The last gate is paper trading: at least 60 trading days that track a backtest of the same
+days. `flask --app src.main soak report` reads what the engine recorded, backtests those days
+with the same equity, lineup, sizing and risk limits, reads the paper account's dividends and
+interest from Alpaca, and prints `PASS`, `NOT YET`, `REVIEW` or `FAIL` (exit code 1) with the
+details. It passes when every engine error, halt and reconciliation difference is reviewed or
+explained, the annualised tracking error of daily returns is below 2% and the total return is
+within 1 percentage point. [docs/HOME_SERVER.md](docs/HOME_SERVER.md) shows how to run it on
+the server.
 
 ## API
 
@@ -353,7 +372,7 @@ src/
 | 6 | Operations: engine as its own process, alerts, heartbeat, readiness, metrics, JSON logs, Compose stack, backups, runbook (done) |
 | 7 | Dashboard rebuilt with source and auth, Telegram commands, versioned API with OpenAPI docs (done) |
 | 8 | CI quality gates: strict typing, coverage floors, mutation testing of the risk code, blocking security scans (done) |
-| 9 | Paper-trading soak, then a staged live ramp |
+| 9 | Paper-trading soak, then a staged live ramp (in progress: the soak report is built) |
 
 The full plan, operator decisions, strategy lineup and promotion gates are in
 [docs/ROADMAP.md](docs/ROADMAP.md).

@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.tests.trading_fixtures import BTC, IEF, SPY, daily_bars, ny
+from src.tests.trading_fixtures import BIL, BTC, IEF, SPY, daily_bars, ny
 from src.trading.alpaca import AlpacaBroker, TradeUpdateStream, load_instruments
 from src.trading.broker import SimulatedBroker
 from src.trading.clock import SimulatedClock
@@ -309,6 +309,19 @@ class TestEngineService:
         assert status.state == "running"
         assert {o.request.symbol for o in status.snapshot.open_orders} == {"SPY", "IEF"}
         assert status.next_poll == ny(2026, 3, 3, 0, 15) + timedelta(seconds=5)
+
+    def test_holds_idle_equity_in_the_cash_sleeve(self):
+        clock = SimulatedClock(ny(2026, 3, 2, 12))
+        history = {"SPY": daily_bars(SPY, date(2025, 1, 2), date(2026, 6, 30), 500.0, seed=1),
+                   "BIL": daily_bars(BIL, date(2025, 1, 2), date(2026, 6, 30), 91.0, seed=5, vol=0.0001)}
+        broker = SimulatedBroker(clock, {"SPY": SPY, "BIL": BIL}, D("100000"))
+        service = EngineService(clock=clock, source=InMemoryBarSource(history, clock), broker=broker,
+                                allocations=[Allocation(BuyAndHold({SPY: 0.3}), D("1"))], cash_sleeve=BIL)
+        service.prepare()
+        _run_until(clock, service, ny(2026, 3, 6, 12))
+        held = {p.symbol: p.market_value for p in service.status().snapshot.positions}
+        assert set(held) == {"SPY", "BIL"} and held["BIL"] > held["SPY"]
+        assert service.status().last_reconciliation.in_sync
 
     def test_reports_running_only_once_a_snapshot_is_published(self):
         _, _, service, _ = _service()

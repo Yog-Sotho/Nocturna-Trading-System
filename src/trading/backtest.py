@@ -6,6 +6,9 @@ delivered at the moment it would have become available (bar end plus feed
 delay) and orders fill on later bars in the simulated broker. The validation
 pipeline (``src/trading/validation``) builds on this runner.
 
+With ``cash_sleeve`` the engine holds idle equity in that T-bill ETF, as the
+live engine does; its bars must be among the bars given.
+
 A drawdown kill halts the engine until an operator resumes it. By default a
 backtest stays halted, as an unattended account would; ``resume_after_kill``
 simulates an operator who resumes that long after the kill, once the book is
@@ -24,7 +27,7 @@ from decimal import Decimal
 from .broker import DEFAULT_COSTS, CostModel, SimulatedBroker
 from .clock import SimulatedClock
 from .data import DEFAULT_FEED_DELAY
-from .domain import AssetClass, Bar, Fill, Order
+from .domain import AssetClass, Bar, Fill, Instrument, Order
 from .engine import Allocation, Engine, EngineEvent, EngineSnapshot
 from .ledger import Ledger
 from .risk import RiskGate, RiskLimits
@@ -43,6 +46,8 @@ class BacktestConfig:
     participation: Decimal | None = None
     #: Simulated operator: resume this long after a drawdown kill (None: stay halted)
     resume_after_kill: timedelta | None = None
+    #: T-bill ETF holding the equity the targets leave unused (None: it stays in cash)
+    cash_sleeve: Instrument | None = None
 
     def __post_init__(self) -> None:
         if self.end <= self.start:
@@ -99,6 +104,8 @@ def run_backtest(allocations: Sequence[Allocation], bars: Mapping[str, Sequence[
     decisions happen for bars that become final in (start, end).
     """
     instruments = {i.symbol: i for a in allocations for i in a.strategy.instruments}
+    if config.cash_sleeve is not None:
+        instruments[config.cash_sleeve.symbol] = config.cash_sleeve
     timeline: dict[datetime, dict[str, Bar]] = defaultdict(dict)
     warm_up: dict[str, list[Bar]] = defaultdict(list)
     for symbol, series in bars.items():
@@ -118,7 +125,8 @@ def run_backtest(allocations: Sequence[Allocation], bars: Mapping[str, Sequence[
                              participation=config.participation)
     events: list[EngineEvent] = []
     engine = Engine(clock=clock, broker=broker, ledger=Ledger(config.starting_cash), allocations=allocations,
-                    risk=RiskGate(config.risk_limits), sizing=config.sizing, listeners=[events.append])
+                    risk=RiskGate(config.risk_limits), sizing=config.sizing, cash_sleeve=config.cash_sleeve,
+                    listeners=[events.append])
     engine.warm_up(warm_up)
 
     curve: list[tuple[datetime, Decimal]] = []

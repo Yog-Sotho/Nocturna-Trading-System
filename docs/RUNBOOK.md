@@ -180,6 +180,10 @@ Alerts come from the stack itself, so they cannot report a dead host. A
 - **State:** `GET /api/v1/trading/status` shows the engine's state, equity,
   drawdown, whether it is halted or cooling down, and the last
   reconciliation. `docker compose ps` shows each container's health.
+- **BIL in the positions** is the engine's idle cash held in T-bills (the
+  SPDR Bloomberg 1-3 Month T-Bill ETF), not a strategy position. Its size
+  moves with the 60/40's: it takes what the volatility target and the
+  drawdown ladder leave unused. The kill switch sells it with everything else.
 - **Logs:** `docker compose logs -f engine` (or `api`); one JSON object per
   line (`LOG_JSON=false` in `.env` for plain text).
 - **Metrics:** with `METRICS_TOKEN` set, `GET /metrics` serves Prometheus

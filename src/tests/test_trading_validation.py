@@ -4,6 +4,7 @@ overfitting estimators against simulations with a known answer, and the
 engine-based experiments (walk-forward, cost stress, stability, regimes).
 """
 
+import dataclasses
 import json
 import math
 from collections.abc import Mapping
@@ -14,7 +15,7 @@ from itertools import combinations
 import numpy as np
 import pytest
 
-from src.tests.trading_fixtures import IEF, SPY, bar, daily_bars
+from src.tests.trading_fixtures import BIL, IEF, SPY, bar, daily_bars
 from src.trading.backtest import BacktestConfig
 from src.trading.broker import CostModel
 from src.trading.domain import AssetClass
@@ -48,9 +49,11 @@ from src.trading.validation.stats import (
     deflated_sharpe_ratio,
     effective_trials,
     expected_max_sharpe,
+    hurdle_returns,
     max_drawdown,
     probabilistic_sharpe_ratio,
     sharpe_columns,
+    sharpe_ratio,
     summarize,
 )
 
@@ -116,6 +119,13 @@ class TestEffectiveTrials:
         assert 5 < n < 6
 
 
+def _run_hold_bil(bars, config):
+    from src.trading.backtest import run_backtest
+    from src.trading.engine import Allocation
+    return run_backtest([Allocation(BuyAndHold({SPY: 0.0}), D("1"))], bars, dataclasses.replace(
+        config, cash_sleeve=BIL, sizing=dataclasses.replace(config.sizing, rebalance_band=D("0"))))
+
+
 class TestReturnsAndSummary:
     def test_daily_returns_use_the_last_mark_of_each_utc_day(self):
         t = datetime(2026, 3, 2, 0, 15, tzinfo=UTC)
@@ -138,6 +148,52 @@ class TestReturnsAndSummary:
         dates = tuple(date(2025, 1, 1) + timedelta(days=i) for i in range(10))
         r = Returns(dates, np.arange(10.0)).between(date(2025, 1, 3), date(2025, 1, 6))
         assert r.dates == dates[2:5] and list(r.values) == [2.0, 3.0, 4.0]
+        hurdled = Returns(dates, np.arange(10.0)).over({d: 0.5 for d in dates}).between(dates[2], dates[5])
+        assert list(hurdled.excess) == [1.5, 2.5, 3.5]
+
+
+class TestHurdle:
+    """Sharpe ratios in excess of T-bills; returns, volatility and drawdown as earned."""
+
+    DATES = tuple(date(2025, 1, 1) + timedelta(days=i) for i in range(6))
+    VALUES = np.array([0.01, -0.02, 0.015, 0.0, 0.01, -0.005])
+
+    def test_excess_is_the_returns_without_a_hurdle_and_net_of_it_with_one(self):
+        plain = Returns(self.DATES, self.VALUES)
+        assert plain.excess is plain.values
+        hurdled = plain.over({self.DATES[0]: 0.001, self.DATES[3]: 0.002})  # missing days: zero
+        assert list(hurdled.hurdle) == [0.001, 0, 0, 0.002, 0, 0]
+        assert hurdled.excess == pytest.approx(self.VALUES - hurdled.hurdle)
+        with pytest.raises(ValueError, match="hurdle"):
+            Returns(self.DATES, self.VALUES, np.zeros(2))
+
+    def test_summary_measures_sharpe_and_sortino_against_the_hurdle_only(self):
+        plain = summarize(Returns(self.DATES, self.VALUES))
+        hurdled = summarize(Returns(self.DATES, self.VALUES).over({d: 0.004 for d in self.DATES}))
+        per_year = Returns(self.DATES, self.VALUES).periods_per_year
+        assert hurdled.sharpe == pytest.approx(sharpe_ratio(self.VALUES - 0.004) * math.sqrt(per_year))
+        assert hurdled.sharpe < plain.sharpe and hurdled.sortino < plain.sortino
+        assert (hurdled.total_return, hurdled.volatility, hurdled.max_drawdown) == \
+            (plain.total_return, plain.volatility, plain.max_drawdown)
+        assert hurdled.hurdle_return == pytest.approx(1.004 ** 6 - 1) and plain.hurdle_return == 0
+
+    def test_hurdle_returns_are_dated_when_their_bar_is_known(self):
+        bars = daily_bars(BIL, date(2026, 3, 2), date(2026, 3, 6), 91.0, seed=5)
+        returns = hurdle_returns(bars, timedelta(minutes=15))
+        # Monday's bar ends at midnight New York (05:00 UTC Tuesday) and is known at 05:15 UTC Tuesday
+        assert list(returns) == [date(2026, 3, 4), date(2026, 3, 5), date(2026, 3, 6), date(2026, 3, 7)]
+        assert returns[date(2026, 3, 4)] == pytest.approx(bars[1].close / bars[0].close - 1)
+
+    def test_matches_how_an_equity_curve_is_dated(self):
+        """A strategy that holds only the T-bill ETF earns exactly its hurdle: zero excess."""
+        bars = {"SPY": daily_bars(SPY, date(2026, 1, 2), date(2026, 3, 31), 100.0, seed=1),
+                "BIL": daily_bars(BIL, date(2026, 1, 2), date(2026, 3, 31), 91.0, seed=5, vol=0.001)}
+        config = BacktestConfig(start=datetime(2026, 2, 2, tzinfo=UTC), end=datetime(2026, 3, 31, tzinfo=UTC),
+                                costs={k: CostModel() for k in AssetClass})
+        result = _run_hold_bil(bars, config)
+        returns = daily_returns(result.equity_curve).over(hurdle_returns(bars["BIL"], timedelta(minutes=15)))
+        held = returns.between(date(2026, 2, 5), date(2026, 3, 31))  # after the first fill
+        assert np.abs(held.excess).max() < 1e-4
 
 
 # -- overfitting ------------------------------------------------------------------------------
@@ -421,6 +477,25 @@ class TestPipeline:
         with pytest.raises(ValueError):
             validate(HOLD, _bars(), ValidationConfig(short, walk_forward=WF))
 
+    def test_against_t_bills_holding_only_t_bills_is_no_edge(self):
+        """The sleeve's interest raises returns but no gate: Sharpe and the cost gate are net of it."""
+        bars = {**_bars(), "BIL": daily_bars(BIL, date(2014, 1, 2), date(2025, 12, 31), 91.0, seed=5,
+                                             drift=0.0002, vol=0.0001)}
+        tbills = hurdle_returns(bars["BIL"], timedelta(minutes=15))
+        idle = Candidate("idle", lambda p: BuyAndHold({SPY: p["equity"]}), {"equity": [0.001, 0.002]})
+        sleeved = dataclasses.replace(CONFIG, cash_sleeve=BIL)
+        plain = validate(idle, bars, ValidationConfig(sleeved, walk_forward=WF, pbo_blocks=8))
+        report = validate(idle, bars, ValidationConfig(sleeved, walk_forward=WF, pbo_blocks=8, hurdle=tbills,
+                                                       hurdle_label="T-bills (BIL)"))
+        assert plain.out_of_sample.sharpe > 3  # interest alone looks like a great strategy against zero
+        # Against T-bills: no edge, and a little worse for the unspent cash buffer and the costs
+        assert report.out_of_sample.sharpe <= 0 and report.out_of_sample.hurdle_return > 0.02
+        assert report.out_of_sample.total_return < report.out_of_sample.hurdle_return
+        stress = next(g for g in report.gates if g.name == "profitable at 3x costs")
+        assert stress.passed is False and stress.threshold == "> T-bills (BIL) total return"
+        assert report.settings["sharpe_in_excess_of"] == "T-bills (BIL)"
+        assert "in excess of T-bills (BIL)" in report.to_markdown()
+
 
 # -- operator command -------------------------------------------------------------------------
 
@@ -433,7 +508,9 @@ class TestValidateCommand:
 
         def load(settings, symbols, start, end):
             calls.append((tuple(s for s, _ in symbols), start, end))
-            return {"SPY": SPY, "IEF": IEF}, _bars()
+            bars = {**_bars(), "BIL": daily_bars(BIL, date(2014, 1, 2), date(2025, 12, 31), 91.0, seed=5,
+                                                 vol=0.0001)}
+            return {"SPY": SPY, "IEF": IEF, "BIL": BIL}, {s: bars[s] for s, _ in symbols}
 
         monkeypatch.setattr(market, "load", load)
         return calls
@@ -450,7 +527,18 @@ class TestValidateCommand:
         assert len(data["trials"]) == 5 and data["settings"]["resume_after_kill_days"] == 30
         assert (result.exit_code == 0) == data["passed"]
         [(symbols, start, end)] = synthetic_market
-        assert symbols == ("SPY", "IEF") and start == datetime(2016, 1, 4, tzinfo=UTC) - timedelta(days=400)
+        assert symbols == ("SPY", "IEF", "BIL") and start == datetime(2016, 1, 4, tzinfo=UTC) - timedelta(days=400)
+        assert data["settings"]["sharpe_in_excess_of"] == "T-bills (BIL)"
+
+    def test_without_t_bills_as_before(self, app, synthetic_market, tmp_path):
+        out = tmp_path / "benchmark.md"
+        result = app.test_cli_runner().invoke(args=[
+            "validate", "benchmark", "--start", "2016-01-04", "--end", "2021-01-01", "--output", str(out),
+            "--train-months", "24", "--no-tbills"])
+        assert result.exit_code in (0, 1), result.output
+        [(symbols, _, _)] = synthetic_market
+        assert symbols == ("SPY", "IEF")
+        assert json.loads(out.with_suffix(".json").read_text())["settings"]["sharpe_in_excess_of"] == "zero"
 
     def test_unknown_candidate(self, app):
         result = app.test_cli_runner().invoke(args=["validate", "nope"])

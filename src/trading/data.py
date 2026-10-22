@@ -102,16 +102,18 @@ class AlpacaBarSource:
     Historical bars from Alpaca's market data API (alpaca-py).
 
     Equities use the SIP feed (all US exchanges) with split and dividend
-    adjustment; requests never ask for data newer than the feed delay, which
-    keeps them within the free plan. Crypto data needs no API key.
+    adjustment (``raw=True``: the prices as traded, for comparing fills);
+    requests never ask for data newer than the feed delay, which keeps them
+    within the free plan. Crypto data needs no API key.
     """
 
     def __init__(self, clock: Clock, *, api_key: str | None = None, secret_key: str | None = None,
                  delays: Mapping[AssetClass, timedelta] | None = None,
-                 stock_client: Any = None, crypto_client: Any = None) -> None:
+                 stock_client: Any = None, crypto_client: Any = None, raw: bool = False) -> None:
         from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient
 
         self._clock = clock
+        self._raw = raw
         self._delays = dict(DEFAULT_FEED_DELAY if delays is None else delays)
         self._stocks = stock_client
         if self._stocks is None and api_key and secret_key:
@@ -147,8 +149,9 @@ class AlpacaBarSource:
             if asset_class is AssetClass.EQUITY:
                 if self._stocks is None:
                     raise RuntimeError("equity data needs ALPACA_API_KEY and ALPACA_SECRET_KEY")
+                adjustment = Adjustment.RAW if self._raw else Adjustment.ALL
                 barset = self._stocks.get_stock_bars(
-                    StockBarsRequest(**common, adjustment=Adjustment.ALL, feed=DataFeed.SIP))
+                    StockBarsRequest(**common, adjustment=adjustment, feed=DataFeed.SIP))
             else:
                 barset = self._crypto.get_crypto_bars(CryptoBarsRequest(**common))
             for symbol in symbols:

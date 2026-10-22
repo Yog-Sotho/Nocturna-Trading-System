@@ -14,7 +14,13 @@ new closed bars arrive it:
 
 Between 3 and 4 the sizer caps the targets, scales them to the volatility
 target and shrinks them as the drawdown grows; after the mark-to-market in 2
-the risk gate may trip the drawdown kill switch or start a cool-down.
+the risk gate may trip the drawdown kill switch or start a cool-down. With a
+cash sleeve (a T-bill ETF), the equity the sized targets leave unused is held
+in it instead of in cash.
+
+Equity orders go to the next opening auction, or at once during the session;
+strategies that ask for it (``execution`` CLOSE) trade in the next closing
+auction instead.
 
 Broker reports come back through ``on_order_update`` and are booked in the
 ledger. Nothing here reads the wall clock: time comes from the injected Clock.
@@ -28,7 +34,7 @@ from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
 from .broker import Broker
@@ -51,17 +57,22 @@ from .domain import (
 from .ledger import Ledger
 from .risk import OrderContext, RiskDecision, RiskGate
 from .sizing import PortfolioSizer, SizingPolicy, SizingResult
-from .strategy import Strategy, StrategyContext, needed_history
+from .strategy import CLOSE, Strategy, StrategyContext, common_execution, needed_history
 
 logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
+ONE = Decimal("1")
 WEIGHT_SCALE = Decimal("1e-6")
 
 #: Alpaca accepts opening-auction (OPG) orders from 19:00 ET the evening before
 #: until 09:28 ET; outside that window market orders are sent as DAY orders.
 OPG_WINDOW_START = time(19, 0)
 OPG_CUTOFF = timedelta(minutes=2)
+#: Alpaca rejects closing-auction (CLS) orders from 15:50 ET until 19:00 ET; from
+#: 19:00 they go to the next session's close. The cutoff is taken as 10 minutes
+#: before the session's close, which is 15:50 on a full day.
+CLS_CUTOFF = timedelta(minutes=10)
 
 
 @dataclass(frozen=True)
@@ -141,16 +152,20 @@ def _slug(symbol: str) -> str:
 class Engine:
     def __init__(self, *, clock: Clock, broker: Broker, ledger: Ledger, allocations: Sequence[Allocation],
                  risk: RiskGate | None = None, sizing: SizingPolicy | None = None,
-                 cash_buffer: Decimal = Decimal("0.005"), listeners: Sequence[EngineListener] = ()) -> None:
+                 cash_buffer: Decimal = Decimal("0.005"), cash_sleeve: Instrument | None = None,
+                 listeners: Sequence[EngineListener] = ()) -> None:
         """
         Args:
             risk: Risk gate; default limits when omitted.
             sizing: Sizing policy (volatility target, drawdown ladder, rebalance band);
                 the conservative defaults when omitted.
             cash_buffer: Fraction of equity kept unspent to absorb slippage and fees.
+            cash_sleeve: A T-bill ETF that holds the equity the targets leave unused
+                (None: it stays in cash). No strategy may trade it.
 
         Raises:
-            ValueError: For invalid allocations or conflicting instrument definitions.
+            ValueError: For invalid allocations or conflicting instrument definitions,
+                strategies trading at different auctions, or an invalid cash sleeve.
         """
         if not allocations:
             raise ValueError("at least one allocation is required")
@@ -159,6 +174,8 @@ class Engine:
         names = [a.strategy.name for a in allocations]
         if len(set(names)) != len(names):
             raise ValueError("strategy names must be unique")
+        #: Equity orders go to the next closing auction instead of the open
+        self.at_close = common_execution([a.strategy for a in allocations]) == CLOSE
 
         self.clock = clock
         self.broker = broker
@@ -179,6 +196,14 @@ class Engine:
                     raise ValueError(f"conflicting definitions for {instrument.symbol}")
                 lookbacks[instrument.symbol] = max(lookbacks.get(instrument.symbol, 1),
                                                    allocation.strategy.lookback, self.sizer.lookback)
+        self.cash_sleeve = cash_sleeve
+        if cash_sleeve is not None:
+            if cash_sleeve.asset_class is not AssetClass.EQUITY:
+                raise ValueError("the cash sleeve must be an equity (a T-bill ETF)")
+            if cash_sleeve.symbol in self.instruments:
+                raise ValueError(f"the cash sleeve {cash_sleeve.symbol} must not be traded by a strategy")
+            self.instruments[cash_sleeve.symbol] = cash_sleeve
+            lookbacks[cash_sleeve.symbol] = 2  # a price and the bar before, for the risk gate's jump check
         self._history: dict[str, deque[Bar]] = {s: deque(maxlen=n) for s, n in lookbacks.items()}
         self._targets: dict[str, dict[str, Decimal]] = {}
         self.orders: dict[str, Order] = {}
@@ -318,9 +343,12 @@ class Engine:
 
     # -- orders -------------------------------------------------------------
 
-    def _time_in_force(self, instrument: Instrument, now: datetime) -> TimeInForce:
+    def _time_in_force(self, instrument: Instrument, now: datetime) -> TimeInForce | None:
+        """How a market order is sent now; None when it cannot be sent until later."""
         if instrument.asset_class is AssetClass.CRYPTO:
             return TimeInForce.GTC
+        if self.at_close:
+            return self._closing_auction(now)
         local = now.astimezone(NEW_YORK)
         today = local.date()
         if self._calendar.is_session(today):
@@ -338,6 +366,15 @@ class Engine:
             return TimeInForce.OPG
         return TimeInForce.DAY
 
+    def _closing_auction(self, now: datetime) -> TimeInForce | None:
+        """CLS for the next closing auction Alpaca takes orders for now; None from the cutoff until 19:00 ET."""
+        today = now.astimezone(NEW_YORK).date()
+        session = today if self._calendar.is_session(today) else self._calendar.next_session(today)
+        if now >= self._calendar.session_close(session) - CLS_CUTOFF:
+            session = self._calendar.next_session(session)
+        evening_before = datetime.combine(self._calendar.previous_session(session), OPG_WINDOW_START, NEW_YORK)
+        return TimeInForce.CLS if today == session or now >= evening_before else None
+
     def rebalance(self) -> list[OrderRequest]:
         """Send the orders that move current exposure to the target weights."""
         now = self.clock.now()
@@ -353,10 +390,16 @@ class Engine:
             targets[symbol] = weight
         self.last_sizing = self.sizer.size(targets, self._history, self.instruments, self.risk.drawdown)
         band = self.sizer.policy.rebalance_band
+        weights = dict(self.last_sizing.weights)
+        sleeve = self.cash_sleeve.symbol if self.cash_sleeve is not None else None
+        if sleeve is not None:
+            invested = sum((abs(w) for w in weights.values()), ZERO)
+            room = min(ONE, self.risk.limits.max_gross_exposure) - self.cash_buffer - invested
+            weights[sleeve] = max(room, ZERO).quantize(WEIGHT_SCALE, rounding=ROUND_DOWN)
 
         sells: list[tuple[Instrument, Decimal, Decimal]] = []
         buys: list[tuple[Instrument, Decimal, Decimal]] = []
-        for symbol, weight in self.last_sizing.weights.items():
+        for symbol, weight in weights.items():
             instrument = self.instruments[symbol]
             price = self.prices.get(symbol)
             if price is None:
@@ -371,8 +414,8 @@ class Engine:
                 continue
             if not closing and abs(delta) * price < band * equity:
                 continue  # inside the rebalance band
-            if self.risk.cooling_down and abs(current + delta) >= abs(current):
-                continue  # during a cool-down only risk-reducing trades
+            if self.risk.cooling_down and abs(current + delta) >= abs(current) and symbol != sleeve:
+                continue  # during a cool-down only risk-reducing trades (T-bills add no risk)
             (sells if delta < 0 else buys).append((instrument, delta, price))
 
         # Buys are funded by cash and by proceeds from reducing longs, never by shorting
@@ -380,19 +423,32 @@ class Engine:
         open_buys = sum((o.remaining_qty * self.prices.get(o.request.symbol, ZERO) for o in self._open.values()
                          if o.request.side is Side.BUY), ZERO)
         available = self.ledger.cash + long_proceeds - open_buys - self.cash_buffer * equity
+        # The strategies' positions are funded first; the cash sleeve takes what is left
+        sleeve_buys = [(i, d, p) for i, d, p in buys if i.symbol == sleeve]
+        buys = [(i, d, p) for i, d, p in buys if i.symbol != sleeve]
         needed = sum((d * p for _, d, p in buys), ZERO)
         if needed > 0 and needed > available:
             scale = max(available, ZERO) / needed
             buys = [(i, i.round_qty(d * scale), p) for i, d, p in buys]
             buys = [(i, d, p) for i, d, p in buys if d >= i.min_qty]
+        left = available - sum((d * p for _, d, p in buys), ZERO)
+        for instrument, delta, price in sleeve_buys:
+            delta = min(delta, instrument.round_qty(max(left, ZERO) / price))
+            if delta >= instrument.min_qty:
+                buys.append((instrument, delta, price))
 
         sent = []
         for instrument, delta, _price in sells + buys:
+            time_in_force = self._time_in_force(instrument, now)
+            if time_in_force is None:
+                logger.info("No %s order now: the closing auction takes orders again at 19:00 ET",
+                            instrument.symbol)
+                continue
             side = Side.BUY if delta > 0 else Side.SELL
             request = OrderRequest(
                 client_order_id=f"nt-{now:%y%m%d%H%M%S}-{_slug(instrument.symbol)}-{side.value[0]}",
                 symbol=instrument.symbol, side=side, qty=abs(delta), order_type=OrderType.MARKET,
-                time_in_force=self._time_in_force(instrument, now), tag="rebalance")
+                time_in_force=time_in_force, tag="rebalance")
             if self._send(request).allowed:
                 sent.append(request)
         return sent
@@ -412,7 +468,8 @@ class Engine:
         context = OrderContext(
             now=now, price=price, exposure=self.exposure(), prices=self._marks(),
             asset_classes={s: i.asset_class for s, i in self.instruments.items()}, equity=self.equity(),
-            last_bar_end=history[-1].end if history else None, price_jump=jump)
+            last_bar_end=history[-1].end if history else None, price_jump=jump,
+            cash_equivalent=self.cash_sleeve is not None and request.symbol == self.cash_sleeve.symbol)
         decision = self.risk.check(request, context)
         if not decision.allowed:
             logger.warning("Risk gate rejected %s: %s", request.client_order_id, decision.reason)

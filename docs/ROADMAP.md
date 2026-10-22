@@ -30,12 +30,33 @@ limits. No strategy trades live unless it passes the promotion gates below.
 
 A strategy moves research → paper → small live → scaled live only if:
 
-- Out-of-sample Sharpe ≥ 1.0 net of costs (portfolio level)
+- Out-of-sample Sharpe ≥ 1.0 net of costs (portfolio level), in excess of T-bills (BIL) since
+  22 October 2026: every Sharpe-based gate uses daily returns minus BIL's, and idle cash is held
+  in BIL (see [STRATEGY_SHORTLIST.md](STRATEGY_SHORTLIST.md#t-bills))
 - Deflated Sharpe ratio ≥ 0.95 and probability of backtest overfitting ≤ 0.20
 - Still profitable at 2–3× assumed slippage; stable across neighbouring parameters
 - Maximum drawdown within the risk limits, with an automatic kill switch
-- ≥ 60 trading days of paper trading tracking the backtest within tolerance
+- ≥ 60 trading days of paper trading tracking the backtest within tolerance (below)
 - Live capital ramp: 10% → 25% → 50% → 100%
+
+### Paper soak tolerance (agreed with the operator)
+
+`flask soak report` compares paper trading with a backtest of the same days, started on the
+bar the engine first acted on, with the same equity, lineup, sizing and risk limits. The
+soak passes when all five hold:
+
+- At least 60 trading days recorded (a day counts when the engine recorded its equity)
+- Every engine error, refused order, unexpected fill, halt and kill-switch trip reviewed
+- Every reconciliation difference with Alpaca explained; a cash difference counts as
+  explained when the account's own entries (dividends, interest, fees) add up to it within
+  a cent
+- Tracking error, the annualised spread of daily return differences, below 2%
+- Total return within 1 percentage point of the backtest
+
+Returns are compared from the first session at whose close both had traded. Expect small
+differences around dividends: the backtest's bars are dividend-adjusted, while Alpaca pays
+the dividend as cash. The report also measures opening-auction fills against the open as
+traded, next to the 5 bps the backtest assumes.
 
 ## Strategy lineup
 
@@ -44,9 +65,14 @@ A strategy moves research → paper → small live → scaled live only if:
 | SENTINEL | Time-series momentum on 12 liquid ETFs across asset classes (`tsmom`): sign of the 12-month return, or the clipped t-statistic of daily returns (statistically significant trends), each sized 40% / EWMA volatility, monthly (Moskowitz, Ooi & Pedersen 2012) | Daily bars (free) | Built; alone 2017–2026: walk-forward Sharpe 0.32, long-only full period 0.71; a lineup component |
 | LUCIFER | **Replaced.** Month-end pension-rebalancing flows (Harvey, Mazzoleni & Melone, NBER w33554, 2025): simulate a 60/40 SPY/IEF portfolio; Threshold signal (drift > ~2 pp) and Calendar signal (last week of month, reversal on the first business day); trade the equity-vs-bond spread against the expected flows. Two variants to test: long/short spread scaled to ~4–5% vol, and long-only SPY/IEF switch | Daily bars (free) | Built (`rebalancing`); rejected for now: the signal works close-to-close (Sharpe 0.64 on 2017–2026 SPY/IEF, before costs) but only 0.24 at the next open, and it turns over about 43 times a year. Needs close-of-day execution |
 | CRYPTO BREAKOUT | Donchian ensemble (Zarattini, Pagani & Barbon 2025): 9 lookbacks 5–360 days, trailing stop at channel midpoint, volatility-targeted; long-only, no leverage, BTC/ETH/SOL; the engine trades the stops at the next bar | Alpaca crypto data (free, from 2021) | Built (`crypto-trend`); alone 2023–2026: Sharpe 0.85, walk-forward 2024–2026 0.45; a lineup component at the 15% crypto limit |
+| MONTH-END | Month-end payment cycle (Etula, Rinne, Suominen & Vaittinen, RFS 2020): SPY from the close of T−k to the close of T+3 around each month's last session, T-bills otherwise; k follows the settlement cycle | Daily bars (free) | Built (`month-end`) to rules fixed before any backtest ([STRATEGY_SHORTLIST.md](STRATEGY_SHORTLIST.md#fixed-rules-month-end)); rejected: walk-forward Sharpe over T-bills 0.06 (gate 1.0), 21.7% against T-bills' 20.3% from 2020 to October 2026 |
 | REAPER | Large-cap/ETF short-term reversal with a trend filter, low-turnover construction | Daily bars (free) | Deferred: net-of-cost reversal evidence is for individual large-cap stocks (residual reversal), whose honest test needs point-in-time index membership (not free); no peer-reviewed ETF evidence was found |
 | EVE | Grid trading — expected return ≈ 0 and ruin risk in trends | — | Retired from live; research only |
 | Overlays | Regime model used only to scale exposure; crypto Fear & Greed and x70 signals removed from equity decisions | — | Planned |
+
+The next candidates, with their sources and the evidence for and against them, are in
+[STRATEGY_SHORTLIST.md](STRATEGY_SHORTLIST.md); none is built until the operator picks one and
+its rules are fixed there.
 
 **Phase 5 outcome.** The lineup (60/40 core, ETF trend, crypto trend at 15%; two mixes and
 two trend variants fixed before any lineup backtest) was validated as one candidate on Alpaca
@@ -81,7 +107,7 @@ stock selection needs full-market real-time volume, which requires a $99/month d
 | 6 | Operations: engine as its own service, structured logs, metrics, alerts, health/readiness, Docker/Compose fixes, backups, runbooks | Done: see [RUNBOOK.md](RUNBOOK.md) |
 | 7 | Versioned API with OpenAPI docs; dashboard rebuilt with source and auth | Done: the API under `/api/v1` with an OpenAPI 3.1 document kept true by contract tests; the dashboard (`src/static/`) and Telegram commands |
 | 8 | CI quality gates: strict typing on core, coverage targets, mutation testing on risk, blocking security scans | Done: mypy `--strict` on the trading core, coverage floors (94% overall, 95% per core module), weekly Cosmic Ray mutation testing of `risk.py` and `sizing.py`, blocking bandit and pip-audit, dashboard and Compose-stack jobs; see the README's quality gates |
-| 9 | ≥ 60-day paper soak, then staged live ramp | Planned |
+| 9 | ≥ 60-day paper soak, then staged live ramp | In progress: the soak report (`flask soak report`) checks the tolerance above; the soak starts when the operator starts the engine on the paper account |
 
 ### Sequencing notes
 
@@ -90,6 +116,9 @@ stock selection needs full-market real-time volume, which requires a $99/month d
   dependency audit in CI now ignores nothing.
 - The live engine runs only the 60/40 SPY/IEF benchmark until a strategy passes the Phase 4
   gates. It exercises orders, fills, reconciliation and history in paper trading meanwhile.
+  From 22 October 2026 the equity its sizing leaves unused is held in T-bills (BIL). Out of
+  sample from 2020 to October 2026 that raised its return from 5.48% to 6.13% a year, with the
+  same 14% maximum drawdown.
 - Phase 3 widened the rebalance band to 2% of equity and rebalances on every bar, because
   the volatility and drawdown scales move with the market.
 - The PDT logic went with the legacy engine in Phase 2 and needs no replacement: FINRA

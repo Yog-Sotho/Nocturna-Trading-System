@@ -81,7 +81,8 @@ class ValidationReport:
             f"{self.start:%Y-%m-%d} to {self.end:%Y-%m-%d}. **Verdict: {self.verdict}.**",
             "",
             "Every figure comes from the trading engine with the simulated broker, the cost model, "
-            "the risk gate and the position sizing used in paper trading.",
+            "the risk gate and the position sizing used in paper trading. Sharpe and Sortino ratios are "
+            f"in excess of {self.settings.get('sharpe_in_excess_of', 'zero')}.",
             "",
             "## Promotion gates",
             "",
@@ -167,11 +168,11 @@ def _fmt(value: float | None) -> str:
 
 
 def _summary_table(rows: dict[str, Summary]) -> str:
-    out = ["| | Total return | CAGR | Volatility | Sharpe | Sortino | Max drawdown |",
-           "|---|---|---|---|---|---|---|"]
+    out = ["| | Total return | Hurdle | CAGR | Volatility | Sharpe | Sortino | Max drawdown |",
+           "|---|---|---|---|---|---|---|---|"]
     for label, s in rows.items():
-        out.append(f"| {label} | {s.total_return:.2%} | {s.cagr:.2%} | {s.volatility:.2%} | {s.sharpe:.2f} "
-                   f"| {s.sortino:.2f} | {s.max_drawdown:.2%} |")
+        out.append(f"| {label} | {s.total_return:.2%} | {s.hurdle_return:.2%} | {s.cagr:.2%} | {s.volatility:.2%} "
+                   f"| {s.sharpe:.2f} | {s.sortino:.2f} | {s.max_drawdown:.2%} |")
     return "\n".join(out)
 
 

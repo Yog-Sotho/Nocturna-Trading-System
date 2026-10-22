@@ -23,6 +23,11 @@ from .domain import DAILY, Bar, Instrument, Timeframe
 
 _NAME = re.compile(r"[a-z0-9-]{1,16}")
 
+#: When a strategy's equity orders execute: in the next opening auction (or at once
+#: during the session), or in the next closing auction
+OPEN = "open"
+CLOSE = "close"
+
 
 @dataclass(frozen=True)
 class StrategyContext:
@@ -49,7 +54,10 @@ class Strategy(ABC):
     Subclasses set ``name`` (1-16 of a-z, 0-9, -), ``instruments``, ``lookback``
     (bars of history kept and needed) and implement ``target_weights``.
     ``min_history`` lets a strategy be called with fewer bars than it keeps
-    (a blend whose components warm up at different speeds).
+    (a blend whose components warm up at different speeds). ``execution``
+    CLOSE trades equities in the next session's closing auction: a strategy
+    whose dates are known in advance (a calendar) can then trade at the close
+    it means, from the bars of the session before.
     """
 
     name: str
@@ -57,6 +65,7 @@ class Strategy(ABC):
     timeframe: Timeframe = DAILY
     lookback: int = 1
     min_history: int | None = None
+    execution: str = OPEN
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -70,6 +79,19 @@ class Strategy(ABC):
         Signed target weights for this strategy's instruments, or None to keep the
         previous targets. Instruments left out are targeted at zero.
         """
+
+
+def common_execution(strategies: Sequence[Strategy]) -> str:
+    """
+    The execution shared by strategies held together (a blend, a walk-forward switch).
+
+    Raises:
+        ValueError: If they trade at different auctions.
+    """
+    executions = {s.execution for s in strategies}
+    if len(executions) > 1:
+        raise ValueError("strategies trading at the open and at the close cannot be combined")
+    return executions.pop() if executions else OPEN
 
 
 def needed_history(strategy: Strategy) -> int:
