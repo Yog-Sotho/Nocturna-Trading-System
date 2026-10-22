@@ -67,6 +67,10 @@ traded, next to the 5 bps the backtest assumes.
 | EVE | Grid trading — expected return ≈ 0 and ruin risk in trends | — | Retired from live; research only |
 | Overlays | Regime model used only to scale exposure; crypto Fear & Greed and x70 signals removed from equity decisions | — | Planned |
 
+The next candidates, with their sources and the evidence for and against them, are in
+[STRATEGY_SHORTLIST.md](STRATEGY_SHORTLIST.md); none is built until the operator picks one and
+its rules are fixed there.
+
 **Phase 5 outcome.** The lineup (60/40 core, ETF trend, crypto trend at 15%; two mixes and
 two trend variants fixed before any lineup backtest) was validated as one candidate on Alpaca
 data from 2017 to October 2026 and rejected: walk-forward Sharpe 0.76 (gate 1.0), 4.6% a year,
