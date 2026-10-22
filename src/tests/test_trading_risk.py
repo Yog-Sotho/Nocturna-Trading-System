@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
+import numpy as np
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -47,6 +48,12 @@ def _ctx(price="100", exposure=None, equity="10000", now=NOW, last_bar_end=_FRES
         last_bar_end=now - timedelta(hours=12) if last_bar_end is _FRESH else last_bar_end, price_jump=jump)
 
 
+def _refused(decision, text):
+    """A refusal, for this reason: a decision that allows the order with the same text is a bug."""
+    assert not decision.allowed and text in decision.reason, decision
+    return True
+
+
 def _send(gate, request, ctx):
     """Check an order and, if allowed, count it, as the engine does."""
     decision = gate.check(request, ctx)
@@ -61,35 +68,42 @@ class TestExposureLimits:
     def test_position_and_gross_caps(self):
         gate = RiskGate(RiskLimits(max_position_weight=D("0.5"), max_gross_exposure=D("0.8")))
         assert gate.check(_req(qty="50"), _ctx()).allowed
-        assert "position would exceed" in gate.check(_req(qty="51"), _ctx()).reason
-        assert "gross exposure" in gate.check(_req(qty="40"), _ctx(exposure={"IEF": "50"})).reason
+        assert _refused(gate.check(_req(qty="51"), _ctx()), "position would exceed")
+        assert _refused(gate.check(_req(qty="40"), _ctx(exposure={"IEF": "50"})), "gross exposure")
 
     def test_asset_class_cap(self):
         gate = RiskGate()  # crypto at most 15% of equity
         assert gate.check(_req(symbol="BTC/USD", qty="15"), _ctx()).allowed
-        assert "crypto exposure" in gate.check(_req(symbol="BTC/USD", qty="16"), _ctx()).reason
+        assert _refused(gate.check(_req(symbol="BTC/USD", qty="16"), _ctx()), "crypto exposure")
+
+    def test_limits_reached_exactly_are_allowed(self):
+        assert RiskGate(RiskLimits(max_order_notional=D("500"))).check(_req(qty="5"), _ctx()).allowed
+        assert RiskGate().check(_req(), _ctx(jump=RiskLimits().max_price_jump[AssetClass.EQUITY])).allowed
 
     def test_single_order_limits(self):
-        assert "notional" in RiskGate(RiskLimits(max_order_notional=D("500"))).check(_req(qty="6"), _ctx()).reason
+        assert _refused(RiskGate(RiskLimits(max_order_notional=D("500"))).check(_req(qty="6"), _ctx()), "notional")
         fat_finger = RiskGate(RiskLimits(max_order_weight=D("0.2")))
         assert fat_finger.check(_req(qty="20"), _ctx()).allowed
-        assert "single-order" in fat_finger.check(_req(qty="21"), _ctx()).reason
+        assert _refused(fat_finger.check(_req(qty="21"), _ctx()), "order of 21% of equity exceeds the 20%")
 
     def test_halt_allows_only_reducing_orders(self):
         gate = RiskGate()
         gate.halt("drill")
-        assert "halted" in gate.check(_req(qty="1"), _ctx()).reason
+        assert _refused(gate.check(_req(qty="1"), _ctx()), "halted")
         assert gate.check(_req(side=Side.SELL, qty="5"), _ctx(exposure={"SPY": "10"})).allowed
         assert gate.check(_req(side=Side.SELL, qty="10"), _ctx(exposure={"SPY": "10"})).allowed
         # Selling through zero opens a short: not reducing
         assert not gate.check(_req(side=Side.SELL, qty="15"), _ctx(exposure={"SPY": "10"})).allowed
         assert gate.check(_req(side=Side.BUY, qty="4"), _ctx(exposure={"SPY": "-10"})).allowed
+        # Growing a position, long or short, is new risk
+        assert _refused(gate.check(_req(side=Side.BUY, qty="5"), _ctx(exposure={"SPY": "10"})), "halted")
+        assert _refused(gate.check(_req(side=Side.SELL, qty="5"), _ctx(exposure={"SPY": "-10"})), "halted")
 
 
 class TestOrderSanity:
     def test_missing_price_or_equity(self):
-        assert "reference price" in RiskGate().check(_req(), _ctx(price=None)).reason
-        assert "equity" in RiskGate().check(_req(), _ctx(equity="0")).reason
+        assert _refused(RiskGate().check(_req(), _ctx(price=None)), "reference price")
+        assert _refused(RiskGate().check(_req(), _ctx(equity="0")), "equity")
 
     def test_limit_price_collar(self):
         gate = RiskGate()  # 5% around the reference price of 100
@@ -98,16 +112,16 @@ class TestOrderSanity:
             return _req(cid, side=side, qty="1", order_type=OrderType.LIMIT, limit_price=D(price))
 
         assert gate.check(limit(Side.BUY, "105"), _ctx()).allowed
-        assert "above the reference price" in gate.check(limit(Side.BUY, "105.01"), _ctx()).reason
+        assert _refused(gate.check(limit(Side.BUY, "105.01"), _ctx()), "above the reference price")
         held = _ctx(exposure={"SPY": "10"})
         assert gate.check(limit(Side.SELL, "95"), held).allowed
         # The collar applies even to orders that reduce risk: a fat-fingered price is still wrong
-        assert "below the reference price" in gate.check(limit(Side.SELL, "94.99"), held).reason
+        assert _refused(gate.check(limit(Side.SELL, "94.99"), held), "below the reference price")
 
     def test_duplicates_within_the_window(self):
         gate = RiskGate()
         assert _send(gate, _req("a"), _ctx()).allowed
-        assert "duplicate" in _send(gate, _req("b"), _ctx(now=NOW + timedelta(minutes=1))).reason
+        assert _refused(_send(gate, _req("b"), _ctx(now=NOW + timedelta(minutes=1))), "duplicate")
         assert _send(gate, _req("c", qty="11"), _ctx(now=NOW + timedelta(minutes=1))).allowed
         assert _send(gate, _req("d", side=Side.SELL), _ctx(now=NOW + timedelta(minutes=2),
                                                            exposure={"SPY": "21"})).allowed
@@ -116,10 +130,10 @@ class TestOrderSanity:
     def test_stale_or_jumping_prices_block_new_risk_only(self):
         gate = RiskGate()
         old = NOW - timedelta(days=6)
-        assert "stale" in gate.check(_req(), _ctx(last_bar_end=old)).reason
-        assert "stale" in gate.check(_req(), _ctx(last_bar_end=None)).reason
+        assert _refused(gate.check(_req(), _ctx(last_bar_end=old)), "stale")
+        assert _refused(gate.check(_req(), _ctx(last_bar_end=None)), "stale")
         assert gate.check(_req(side=Side.SELL, qty="5"), _ctx(exposure={"SPY": "10"}, last_bar_end=old)).allowed
-        assert "bad data" in gate.check(_req(), _ctx(jump=D("0.3"))).reason
+        assert _refused(gate.check(_req(), _ctx(jump=D("0.3"))), "bad data")
         assert gate.check(_req(symbol="BTC/USD", qty="1"), _ctx(jump=D("0.3"))).allowed  # crypto: 50%
 
 
@@ -128,7 +142,7 @@ class TestCircuitBreakers:
         gate = RiskGate(RiskLimits(max_orders_per_day=2))
         assert _send(gate, _req("a", qty="1"), _ctx()).allowed
         assert _send(gate, _req("b", qty="2"), _ctx()).allowed
-        assert "daily order limit" in _send(gate, _req("c", qty="3"), _ctx()).reason
+        assert _refused(_send(gate, _req("c", qty="3"), _ctx()), "daily order limit")
         # Reducing orders are never blocked by circuit breakers
         assert _send(gate, _req("d", side=Side.SELL, qty="1"), _ctx(exposure={"SPY": "3"})).allowed
         # 23:59 is still the same New York day; 00:01 is the next one
@@ -139,7 +153,7 @@ class TestCircuitBreakers:
     def test_daily_turnover(self):
         gate = RiskGate(RiskLimits(max_daily_turnover=D("1")))  # one equity (10,000) per day
         assert _send(gate, _req("a", qty="60"), _ctx()).allowed
-        assert "turnover" in _send(gate, _req("b", qty="41"), _ctx()).reason
+        assert _refused(_send(gate, _req("b", qty="41"), _ctx()), "turnover")
         assert _send(gate, _req("c", qty="40"), _ctx()).allowed
         assert gate.state.turnover_today == D("10000")
 
@@ -172,6 +186,13 @@ class TestLossLimits:
         gate.resume(D("90000"))
         assert not gate.halted and gate.state.high_water_mark == D("90000") and gate.drawdown == 0
 
+    def test_resume_without_a_halt_changes_nothing(self):
+        gate = RiskGate()
+        gate.on_equity(D("100000"), _days(1)[0])
+        gate.on_equity(D("95000"), _days(2)[1])
+        gate.resume(D("95000"))  # an operator pressing resume while nothing is halted
+        assert gate.state.high_water_mark == D("100000") and gate.drawdown == D("0.05")
+
     def test_resume_after_a_manual_halt_keeps_the_high_water_mark(self):
         gate = RiskGate()
         gate.on_equity(D("100000"), NOW)
@@ -187,7 +208,7 @@ class TestLossLimits:
         assert gate.on_equity(D("97000"), ny(2026, 3, 2, 21)) == "cooldown"  # -3% on the day
         late = ny(2026, 3, 2, 22)
         assert gate.on_equity(D("97500"), late) == "cooldown"  # a bounce does not end it
-        assert "cool-down" in gate.check(_req(), _ctx(now=late)).reason
+        assert _refused(gate.check(_req(), _ctx(now=late)), "cool-down")
         assert gate.check(_req(side=Side.SELL, qty="5"), _ctx(now=late, exposure={"SPY": "10"})).allowed
         # The next day starts from the previous close
         assert gate.on_equity(D("97500"), ny(2026, 3, 3, 0, 15)) is None
@@ -217,6 +238,8 @@ class TestLossLimits:
             RiskLimits(max_position_weight=D("0"))
         with pytest.raises(ValueError):
             RiskLimits(max_orders_per_day=0)
+        with pytest.raises(ValueError):
+            RiskLimits(max_daily_turnover=D("-1"))
 
 
 # -- sizing ----------------------------------------------------------------------------------
@@ -269,7 +292,8 @@ class TestStopRiskWeight:
     def test_a_stop_above_the_price_is_a_short(self):
         assert stop_risk_weight(100.0, 104.0, risk=0.01) == pytest.approx(-0.25)
 
-    @pytest.mark.parametrize("price, stop, risk", [(0, 1, 0.005), (100, 100, 0.005), (100, 95, 0), (100, 95, 1)])
+    @pytest.mark.parametrize("price, stop, risk", [(0, 1, 0.005), (-100, 95, 0.005), (100, 0, 0.005),
+                                                   (100, 100, 0.005), (100, 95, 0), (100, 95, 1)])
     def test_invalid_inputs(self, price, stop, risk):
         with pytest.raises(ValueError):
             stop_risk_weight(price, stop, risk)
@@ -332,7 +356,38 @@ class TestVolatilityTarget:
         assert stressed.drawdown_scale == D("0.625")
         assert stressed.weights["SPY"] == pytest.approx(calm.weights["SPY"] * D("0.625"), abs=D("1e-6"))
 
+    def test_history_needed(self):
+        assert SizingPolicy().lookback == 252  # a year at least
+        assert SizingPolicy(min_history=300).lookback == 301  # min_history returns need one more close
+        assert PortfolioSizer(SizingPolicy(), RiskLimits()).lookback == 252
+        assert PortfolioSizer(SizingPolicy.unscaled(), RiskLimits()).lookback == 1  # no estimate to feed
+
+    def test_ewma_needs_min_history_returns(self):
+        policy = SizingPolicy()  # 60 returns
+        assert ewma_covariance({"SPY": _alternating(SPY, 0.01, 61)}, INSTRUMENTS, ["SPY"], 0.94,
+                               policy.min_history) is not None
+        assert ewma_covariance({"SPY": _alternating(SPY, 0.01, 60)}, INSTRUMENTS, ["SPY"], 0.94,
+                               policy.min_history) is None
+
+    def test_ewma_matches_the_textbook_recursion(self):
+        """Against a plain loop: seed with the sample covariance of 20 returns, then cov <- lam cov + (1-lam) r r'."""
+        history = {"SPY": daily_bars(SPY, date(2024, 1, 2), date(2025, 6, 30), 500.0, seed=3),
+                   "IEF": daily_bars(IEF, date(2024, 1, 2), date(2025, 6, 30), 95.0, seed=4)}
+        cov, periods = ewma_covariance(history, INSTRUMENTS, ["SPY", "IEF"], 0.94, 60)
+        closes = np.array([[b.close for b in history["SPY"]], [b.close for b in history["IEF"]]]).T
+        returns = np.diff(np.log(closes), axis=0)
+        expected = np.cov(returns[:20].T, ddof=1)
+        for r in returns[20:]:
+            expected = 0.94 * expected + 0.06 * np.outer(r, r)
+        assert np.allclose(cov, expected, rtol=1e-10, atol=0)
+        first, last = history["SPY"][0].start, history["SPY"][-1].start
+        years = (last.astimezone(NEW_YORK).date() - first.astimezone(NEW_YORK).date()).days / 365.25
+        assert periods == pytest.approx(len(returns) / years, rel=1e-12)
+
     def test_policy_is_validated(self):
+        assert SizingPolicy(rebalance_band=D("0")).rebalance_band == 0  # always trade to the target
+        with pytest.raises(ValueError):
+            SizingPolicy(rebalance_band=D("-0.01"))
         with pytest.raises(ValueError):
             SizingPolicy(target_volatility=D("0"))
         with pytest.raises(ValueError):
