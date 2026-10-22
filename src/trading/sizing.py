@@ -123,7 +123,7 @@ def stop_risk_weight(price: float, stop: float, risk: float = 0.005) -> float:
     return risk * price / (price - stop)
 
 
-@lru_cache(maxsize=1 << 16)
+@lru_cache(maxsize=1 << 16)  # pragma: no mutate - the cache size changes speed, not results
 def _day(start: datetime, asset_class: AssetClass) -> date:
     # Daily bars start at midnight: New York for equities, UTC for crypto
     zone = NEW_YORK if asset_class is AssetClass.EQUITY else UTC
