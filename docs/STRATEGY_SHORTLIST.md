@@ -286,7 +286,7 @@ earlier report exactly.
 
 ## Round 2: free long-history data (23 October 2026)
 
-The operator ruled out taking more market risk (option B) and paying for data (option E). He
+The operator ruled out taking more market risk (option B) and paying for data (option E), and
 chose to research ideas built on free data from outside Alpaca. Both sources work from here:
 
 - **Kenneth French's Data Library** has daily US market and 1-month T-bill returns from 1 July
