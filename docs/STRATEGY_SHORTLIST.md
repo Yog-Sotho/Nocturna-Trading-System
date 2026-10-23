@@ -283,3 +283,124 @@ earlier report exactly.
 - **Free data.** Any free source is allowed. B needs none beyond the NYSE calendar.
 - **Auction costs.** These stay at the modelled 5 bps until the soak report's measurements of
   real auction fills justify a change.
+
+## Round 2: free long-history data (23 October 2026)
+
+The operator ruled out taking more market risk (option B) and paying for data (option E). He
+chose to research ideas built on free data from outside Alpaca. Both sources work from here:
+
+- **Kenneth French's Data Library** has daily US market and 1-month T-bill returns from 1 July
+  1926 to August 2026 (from CRSP). Most of its portfolio sorts are monthly; the
+  variance-sorted portfolios, for example, are monthly from July 1963.
+- **FRED** has the 10-year Treasury yield, daily from 2 January 1962.
+
+**What the long history adds.** Tests over 60 to 100 years instead of 9, through 1973–74, 1987,
+2000–02 and 2008 rather than one or two crashes.
+
+**Its limits:**
+- Before ETFs existed these are index returns, not tradable funds.
+- Bond returns have to be computed from yields, which is an approximation.
+- Trading costs were higher in the past.
+
+The promotion gates still come from `flask validate` on Alpaca data. The long history is an
+additional test.
+
+### D1. Trend filter on the equity sleeve
+
+**Source.** Faber, "A Quantitative Approach to Tactical Asset Allocation" (*Journal of Wealth
+Management* 2007; revisited in the *Journal of Portfolio Management* 2018).
+
+**Published rule.** Hold stocks while the index is above its 10-month moving average and
+T-bills otherwise, checked at each month end.
+
+**Evidence for.**
+- In Faber's 2018 update the filter raised the Sharpe ratio of US stocks from 0.45 to 0.80, per
+  [Swedroe's summary](https://www.etf.com/sections/index-investor-corner/swedroe-why-financial-trends-persist).
+- Hurst, Ooi and Pedersen, "A Century of Evidence on Trend-Following Investing" (AQR, 2017),
+  find trend following positive in every decade since 1880. That is long-short across 67
+  futures markets, though, not this rule.
+
+**Evidence against.**
+- Faber's own update: after helping in 2008–09, the filter lagged stocks in six of the next
+  eight years.
+- Zakamulin ("The real-life performance of market timing with moving average and time-series
+  momentum rules", *Journal of Asset Management*; SSRN 2013) argues that earlier results were
+  inflated by data mining. Out of sample, the rules beat buy-and-hold only in short episodes
+  (per secondary summaries).
+- Huang, Li, Wang and Zhou, "Time Series Momentum: Is It There?" (*JFE* 2020), find little
+  evidence, market by market, that past returns predict future returns.
+
+**What it could add.** The engine already cuts exposure by volatility and by drawdown. The
+question this test answers is narrow: does a trend filter add anything on top of that? And
+does it let the portfolio hold more equity within the same 10% kill-switch limit? Option B
+failed because the drawdown limits cut in during crashes.
+
+**Overlap.** It belongs to the same family as the rejected ETF time-series momentum, but uses
+a single asset and a century of data.
+
+**Data.** French's daily market returns (1926–), FRED's 10-year yield for bonds (1962–), and
+Alpaca for 2017–2026.
+
+### D2. Defensive (low-volatility) stocks instead of SPY
+
+**Sources.** Blitz and van Vliet, "The Volatility Effect" (*JPM* 2007); Baker, Bradley and
+Wurgler, "Benchmarks as Limits to Arbitrage: Understanding the Low-Volatility Anomaly" (*FAJ*
+2011).
+
+**Rule.** Hold the least volatile stocks (through an ETF such as USMV or SPLV) in place of SPY
+in the 60/40.
+
+**Evidence for.** Baltussen, Blitz and van Vliet, "The Volatility Effect Revisited" (*JPM*
+2020), find the effect persistent across periods and markets, with no sign it has been
+arbitraged away (per summaries).
+
+**Evidence against.**
+- USMV, the largest such ETF, returned 10.5% a year over 2016–2025 against 14.8% for MSCI USA.
+  It beat the index only in 2018 and 2022. These are BlackRock's annual figures, compounded by
+  me.
+- It fell about as far as the S&P 500 in the 2020 crash (33%, per one analysis).
+
+**What it could add.** Each dollar in it carries less volatility, so the 8% volatility target
+would hold more equity. The test is whether its Sharpe ratio beats SPY's inside the engine.
+
+**Data.** French's variance-sorted portfolios are monthly only (from July 1963), so the
+long-history check would be monthly and outside the engine. The engine test runs on Alpaca
+data with USMV or SPLV (2017–2026).
+
+### D3. Economic trend (macro momentum)
+
+**Sources.** Brooks, "A Half Century of Macro Momentum" (AQR, 2017); Brooks, Feilbogen, Ooi and
+Akant, "Economic Trend" (AQR, 2023–24).
+
+**Rule.** Position each market by trends in its economic fundamentals: growth forecasts,
+inflation, monetary policy, trade and risk sentiment. It goes long and short across equity,
+bond, currency and commodity futures.
+
+**Evidence for.** AQR reports attractive returns over more than 50 years, with gains in the
+largest equity drawdowns.
+
+**Evidence against.**
+- The evidence comes from the manager that sells the strategy.
+- It is long-short in futures, not long-only in ETFs.
+- It needs data as first released (FRED's ALFRED vintages) and growth forecasts, which have no
+  free history.
+
+**Verdict.** It can't be tested faithfully with free data.
+
+### Checked and rejected (round 2)
+
+| Idea | Source | Why not |
+|---|---|---|
+| Timing stocks with valuation and macro predictors (dividend yield, earnings yield, term spread, and others) | Goyal and Welch, *RFS* 2008 | Re-tested by Goyal, Welch and Zafirov (*RFS* 2024; 46 variables): more than a third are no longer significant even in-sample, and half of the rest do poorly out of sample |
+| Timing bonds with the yield curve (forward rates) | Cochrane and Piazzesi, *AER* 2005 | No economic value to investors out of sample, worsening over time (Thornton and Valente, *RFS* 2012) |
+| Volatility timing | Moreira and Muir, *JF* 2017 | Fails out of sample (Cederburg et al., *JFE* 2020); the engine already targets volatility |
+
+### Recommendation (round 2)
+
+D1, though not because its evidence is strong: it is mixed. It is the one idea where a century
+of data answers a precise question about this engine.
+- It is conservative and cheap to build, and the answer is useful either way.
+- If it adds nothing, the current risk setup has been checked through 1973–74, 1987, 2000–02 and
+  2008 instead of one crash.
+
+D2 is the alternative. D3 is not recommended.
