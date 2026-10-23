@@ -183,8 +183,8 @@ Then run `sudo ./setup.sh` to check the result and apply it.
 `DATABASE_URL`, `REDIS_URL`, `LOG_TO_FILE` and `ENGINE_ALIVE_FILE` itself, so values for them
 in `.env` are ignored, and the setup drops them. Leave `API_BIND` out, so that the API listens
 on this machine only. The risk limits (`RISK_*`, `SIZING_*`) are optional. Their defaults are
-in the README's risk controls and in [`.env.example`](../.env.example), and the setup keeps any
-you set.
+in the README's safety limits, in the [technical reference](REFERENCE.md#risk-controls) and in
+[`.env.example`](../.env.example), and the setup keeps any you set.
 
 ## After the setup
 
