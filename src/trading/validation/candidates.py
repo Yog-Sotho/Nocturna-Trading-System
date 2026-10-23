@@ -29,6 +29,9 @@ from .experiment import Candidate
 #: high-yield credit, gold, commodities, real estate and the US dollar.
 TREND_ETFS = ("SPY", "IWM", "EFA", "EEM", "TLT", "IEF", "LQD", "HYG", "GLD", "DBC", "VNQ", "UUP")
 CRYPTO = ("BTC/USD", "ETH/USD", "SOL/USD")
+#: Low-volatility equity funds that can stand in for SPY in the 60/40: iShares MSCI USA Min Vol
+#: Factor and Invesco S&P 500 Low Volatility (docs/STRATEGY_SHORTLIST.md, "Fixed rules: low-vol")
+LOW_VOL_ETFS = ("USMV", "SPLV")
 
 
 @dataclass(frozen=True)
@@ -100,6 +103,16 @@ def _trend_filter(instruments: Mapping[str, Instrument]) -> Candidate:
     )
 
 
+def _low_vol(instruments: Mapping[str, Instrument]) -> Candidate:
+    ief = instruments["IEF"]
+    return Candidate(
+        "low-vol",
+        lambda p: BuyAndHold({instruments[p["equity"]]: 0.6, ief: 0.4}),
+        {"equity": list(LOW_VOL_ETFS)},  # fixed before any backtest (docs/STRATEGY_SHORTLIST.md)
+        regime_symbol="SPY",  # the same market regimes as the 60/40's
+    )
+
+
 #: Lineup mixes (core 60/40, ETF trend, crypto trend), fixed from first principles before
 #: any lineup backtest: the core carries the return, trend diversifies it, crypto is held at
 #: the 15% crypto limit
@@ -154,6 +167,12 @@ CANDIDATES: dict[str, CandidateSpec] = {
         "60/40 with SPY in T-bills while below its moving average of month-end closes (Faber)",
         (("SPY", AssetClass.EQUITY), ("IEF", AssetClass.EQUITY)),
         _trend_filter,
+    ),
+    "low-vol": CandidateSpec(
+        "60/40 with a low-volatility fund (USMV or SPLV) in place of SPY (Blitz and van Vliet; Baker, Bradley "
+        "and Wurgler)",
+        (*((s, AssetClass.EQUITY) for s in LOW_VOL_ETFS), ("IEF", AssetClass.EQUITY), ("SPY", AssetClass.EQUITY)),
+        _low_vol,
     ),
     "lineup": CandidateSpec(
         "60/40 core + ETF time-series momentum + crypto Donchian ensemble",

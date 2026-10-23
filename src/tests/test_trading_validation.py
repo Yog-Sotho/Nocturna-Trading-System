@@ -357,6 +357,21 @@ class TestSwitchingStrategy:
         with pytest.raises(ValueError):
             SwitchingStrategy("Not valid", [_Counting({})], [])
 
+    def test_switching_to_a_set_trading_another_fund_sells_the_first(self):
+        """The low-vol candidate's sets hold different funds (USMV or SPLV); a switch must swap them."""
+        from src.trading.backtest import run_backtest
+        from src.trading.engine import Allocation
+        switch_at = datetime(2016, 1, 4, tzinfo=UTC)
+        switching = SwitchingStrategy("wf-test", [BuyAndHold({SPY: 0.6}), BuyAndHold({IEF: 0.6})],
+                                      [(CONFIG.start, 0), (switch_at, 1)])
+        config = dataclasses.replace(CONFIG, end=datetime(2016, 3, 1, tzinfo=UTC))
+        result = run_backtest([Allocation(switching, D("1"))], _bars(), config)
+        before = [f for f in result.fills if f.timestamp < switch_at]
+        after = [f for f in result.fills if f.timestamp >= switch_at]
+        assert before and {f.symbol for f in before} == {"SPY"}
+        assert {("SPY", "sell"), ("IEF", "buy")} <= {(f.symbol, f.side.value) for f in after}
+        assert [p.symbol for p in result.final.positions] == ["IEF"]
+
     def test_sets_are_consulted_only_once_their_history_suffices(self):
         long_memory = _Counting({"SPY": 0.5})
         long_memory.lookback = 3
