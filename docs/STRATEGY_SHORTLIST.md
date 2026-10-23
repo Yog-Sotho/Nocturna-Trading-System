@@ -404,3 +404,100 @@ of data answers a precise question about this engine.
   2008 instead of one crash.
 
 D2 is the alternative. D3 is not recommended.
+
+## Decision (23 October 2026): D1
+
+The operator picked D1. These rules were fixed and committed before any backtest of it.
+
+**Primary source checked.** Faber's paper (SSRN 962461, February 2013 update):
+- "Buy when monthly price > 10-month SMA. Sell and move to cash when monthly price < 10-month
+  SMA."
+- Prices are total returns including dividends, at the close of the last day of the month;
+  the rest of the month is ignored.
+- Cash earns 90-day T-bills. Costs and taxes are excluded.
+- "There is broad parameter stability from 3 months on out to over 12 months." He chose 10
+  months as the one closest to the 200-day average.
+
+**Expectation, stated before the test.**
+- A 60/40 held to an 8% volatility target earned a Sharpe ratio of 0.52 over T-bills out of
+  sample on Alpaca data. A filter on its equity sleeve is unlikely to double that, so D1 is not
+  a likely pass of the 1.0 gate.
+- The real question is whether it beats the 60/40 (below).
+
+### Fixed rules: `trend-filter`
+
+- **Portfolio.** The live 60/40: SPY 60% and IEF 40%. The idle equity goes to the T-bill
+  sleeve (BIL), as for every strategy.
+- **Signal.** At each month end (the month's last NYSE session), compare SPY's adjusted close
+  (total return) with the mean of the last n month-end closes, that one included.
+  - Above the mean: target SPY 60%.
+  - Otherwise: SPY 0%, so that 60% goes to T-bills.
+  - IEF stays at 40% throughout. The filter applies only to the equity sleeve, as picked.
+  - Before n month ends exist, the strategy makes no decision.
+- **n, three variants (the whole grid):** 8, 10 and 12 months. That is Faber's 10 and the
+  neighbours inside the range he reports as stable.
+- **Size.** The engine's standard sizing applies unchanged: the 60% position cap, the 8%
+  volatility target and the drawdown ladder.
+  - The cap rules out a higher equity target. The filter can add only by avoiding the
+    drawdowns that make the ladder cut exposure.
+  - The 8% target stays, since the operator ruled out more risk (option B).
+- **Orders.** Each order goes at the opening auction of the next session, as for the live
+  60/40, so a month-end signal trades on the first session of the next month.
+- **Costs.** The standard model: 5 bps per equity fill.
+
+**Test 1, the gates: Alpaca data.**
+- `flask validate trend-filter --start 2017-01-01`, with the standard walk-forward (36-month
+  training, 12-month test) and the ROADMAP gates, in excess of T-bills.
+- This decides promotion, as for every candidate.
+
+**Test 2, the long history: 1970 to August 2026.** Proxies built from free data, run through
+the same engine and the same `flask validate`, with `--data history --start 1971-01-01 --end
+2026-08-31`.
+- **The proxies:**
+  - **SPY:** Kenneth French's daily US market return (Mkt-RF plus RF: all NYSE, AMEX and
+    NASDAQ stocks, value-weighted, dividends included, from CRSP).
+  - **BIL:** French's daily 1-month T-bill return (RF).
+  - **IEF:** the mean daily return of a 7-year and a 10-year Treasury par bond from FRED's
+    constant-maturity yields (DGS7 and DGS10). IEF holds 7- to 10-year Treasuries.
+    - Each day's return buys a par bond at the previous day's yield (coupon equal to that
+      yield, paid twice a year). It reprices that bond at today's yield, with its maturity
+      shortened by the calendar days elapsed, and adds the coupon accrued over them.
+    - On a day without a FRED value, the last earlier yield applies.
+- **How well the proxies track,** on daily returns from January 2016 to August 2026 against
+  Alpaca's adjusted bars (2,679 days). The bond mix was chosen on this comparison, which uses no
+  strategy results.
+
+  | Proxy | Its return | ETF's return | Its volatility | ETF's volatility | Correlation | Tracking error |
+  |---|---|---|---|---|---|---|
+  | US market for SPY | 15.35% | 15.16% | 18.4% | 17.5% | 0.992 | 2.4% |
+  | 7/10-year par bonds for IEF | 0.94% | 1.01% | 6.3% | 6.6% | 0.971 | 1.6% |
+  | 10-year par bond alone | 0.72% | 1.01% | 7.2% | 6.6% | 0.966 | 1.9% |
+  | 7-year par bond alone | 1.15% | 1.01% | 5.5% | 6.6% | 0.963 | 1.9% |
+  | 1-month T-bills for BIL | 2.31% | 2.14% | 0.1% | 0.3% | 0.44 | 0.2% |
+
+- **The bars.** One per NYSE session from 2 January 1970.
+  - Open, high, low and close all equal the cumulative total-return level. An order sent after
+    a session's bar therefore fills at the next session's close: a day later than Faber, and
+    later than the live open.
+  - Quantities are fractional, since the levels grow more than a hundredfold and whole units
+    would be too coarse.
+- **Why 1970.** From 1970 the NYSE calendar the engine uses matches French's trading days
+  exactly (14,287 days). Before 1970 it doesn't: it lacks the Saturday sessions (until 1952)
+  and many holidays (431 days in all). So the data from 1926 and FRED's 10-year yield from
+  1962 go unused. The test still spans 1973–74, the 1970s bond losses, 1987, 2000–02, 2008,
+  2020 and 2022.
+- **Costs.** 5 bps per fill, as above. Real costs were higher before ETFs and cheap trading;
+  the 3× cost gate (15 bps per fill) is the check.
+
+**The comparison.** The 60/40 (`benchmark` candidate) is run through `flask validate` on the
+same data and dates in both tests.
+
+**What decides.**
+- **Promotion:** only the gates of test 1, unchanged.
+- **If D1 fails the gates but beats the 60/40 in both tests,** I report that and the operator
+  decides whether it replaces the 60/40 as the live benchmark. "Beats" means a higher
+  walk-forward Sharpe ratio over T-bills and a maximum drawdown no deeper. It would still not
+  be a promoted strategy.
+- **Otherwise** D1 is recorded as rejected, and the live engine keeps the 60/40.
+- **No other variant is tested on this data,** whatever the result: no other filter length,
+  no filter on bonds, no other volatility target.
