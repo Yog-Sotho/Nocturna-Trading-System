@@ -230,20 +230,21 @@ backtest of it.
 
 ### Result: rejected (22 October 2026)
 
-`flask validate month-end --start 2017-01-01`, on Alpaca data to 22 October 2026:
+`flask validate month-end --start 2017-01-01`, on Alpaca data to 22 October 2026. Re-run on 23
+October with the corrected T-bill sleeve (below); the verdict did not change:
 
 | Gate | Value | Threshold | |
 |---|---|---|---|
-| Walk-forward Sharpe over T-bills | 0.06 | ≥ 1.0 | fail |
-| Deflated Sharpe | 0.85 | ≥ 0.95 | fail |
-| Probability of backtest overfitting | 0.67 | ≤ 0.20 | fail |
-| At 3× costs | 1.7% against T-bills' 20.3% | above T-bills | fail |
-| Parameter stability | 0.73 | ≥ 0.5 | pass |
+| Walk-forward Sharpe over T-bills | 0.05 | ≥ 1.0 | fail |
+| Deflated Sharpe | 0.84 | ≥ 0.95 | fail |
+| Probability of backtest overfitting | 0.68 | ≤ 0.20 | fail |
+| At 3× costs | 2.1% against T-bills' 20.3% | above T-bills | fail |
+| Parameter stability | 0.72 | ≥ 0.5 | pass |
 | Maximum drawdown | −6.0% | ≥ −12% | pass |
 
-- **Out of sample.** From January 2020 to October 2026 (the walk-forward) it returned 21.7%
+- **Out of sample.** From January 2020 to October 2026 (the walk-forward) it returned 21.4%
   against 20.3% for T-bills. Over the whole period the best variant, `paper` (k = 4), returned
-  43.5% against 25.7%, an excess Sharpe ratio of 0.33.
+  42.7% against 25.7%, an excess Sharpe ratio of 0.32.
 - **The effect.** On the days the `paper` window earns, SPY averaged 9.4 bps a day in 2017–2026,
   against 4.7 bps on the other days. That is the paper's direction at about two-thirds of its
   size, but it is not statistically significant (t = 1.0). After costs and a position the 8%
@@ -261,6 +262,10 @@ backtest of it.
   - It counts toward gross exposure.
   - It may be bought during a daily-loss cool-down, since it adds no market risk.
   - It is never bought while trading is halted, and the kill switch sells it like any position.
+- **Sized on holdings.** The sleeve takes what the positions leave once this rebalance's trades
+  are done, not what their targets would leave. A target moving inside the rebalance band then
+  trades nothing. The first version followed the targets: two positions each moving inside the
+  band sold T-bills for cash. The dashboard's fills showed it on 23 October, and it was fixed.
 - **The gates.** Every Sharpe-based number is computed on daily returns minus BIL's daily total
   return: the walk-forward Sharpe, its selection of parameter sets, the deflated and
   probabilistic Sharpe, the overfitting test, the cross-validation, the neighbours and the
@@ -268,8 +273,8 @@ backtest of it.
   stays on total returns.
 
 **Effect on the live 60/40.** Validated the same way from 2017, the 60/40 with its idle cash in
-BIL returned 6.13% a year out of sample (2020 to October 2026), against 5.48% with the cash
-earning nothing. Its maximum drawdown stayed at 14%. Its Sharpe ratio over T-bills is 0.50; the
+BIL returned 6.26% a year out of sample (2020 to October 2026), against 5.48% with the cash
+earning nothing. Its maximum drawdown stayed at 14%. Its Sharpe ratio over T-bills is 0.52; the
 0.81 reported before was against zero. `flask validate benchmark --no-tbills` reproduces the
 earlier report exactly.
 

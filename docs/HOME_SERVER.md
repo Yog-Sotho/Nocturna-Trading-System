@@ -89,9 +89,9 @@ have a working pair, use it.
 1. In Telegram, open **@BotFather**, Telegram's own bot for creating bots, and send `/newbot`.
 2. Give the bot a display name.
 3. Give it a username: 5 to 32 letters, digits or underscores, ending in `bot`.
-4. BotFather answers with the token, which looks like
-   `4839574812:AAFD39kkdpWt3ywyRZergyOLMaJhac60qc`. Anyone with the token controls the bot,
-   so keep it private.
+4. BotFather answers with the token: digits, a colon, then about 35 letters, digits, `-`
+   and `_` (shortened here: `4839574812:AAFD39kk…`). Anyone with the token controls the
+   bot, so keep it private.
 
 You do not need your chat id: the setup finds it.
 

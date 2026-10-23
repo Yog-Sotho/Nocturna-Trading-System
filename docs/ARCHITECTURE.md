@@ -172,6 +172,8 @@ target, or to close them. Strategies with protective stops size entries with
 **The cash sleeve.** With a T-bill ETF as cash sleeve (`Engine(cash_sleeve=...)`; the live
 lineup uses BIL), the equity the sized weights leave unused, minus the 0.5% cash buffer, is
 held in it instead of in cash.
+- It is sized on what the positions will hold once this rebalance's trades are done, so a target
+  moving inside the rebalance band trades nothing.
 - It is bought after the strategies' positions are funded, and sold first when they need cash.
 - It counts toward gross exposure but not toward the position or single-order caps.
 - It may be bought during a cool-down, since it adds no market risk, but never while trading

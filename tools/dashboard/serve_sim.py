@@ -1,8 +1,9 @@
 """
 The real app and dashboard with a simulated engine, for trying the dashboard
-and for tools/dashboard/e2e.cjs. The simulated clock advances one trading day
-every three seconds while the engine runs, so orders fill and the equity
-curve grows. No broker account is used.
+and for tools/dashboard/e2e.cjs. The engine runs the live lineup (the 60/40,
+idle cash in the T-bill ETF BIL) on synthetic prices. The simulated clock
+advances one trading day every three seconds while the engine runs, so orders
+fill and the equity curve grows. No broker account is used.
 
     python tools/dashboard/serve_sim.py . /tmp/dashboard.db 5055
 
@@ -26,11 +27,11 @@ sys.path.insert(0, repo)
 from pydantic import SecretStr  # noqa: E402
 from src.main import create_app  # noqa: E402
 from src.models.user import User, create_admin_user  # noqa: E402
-from src.tests.trading_fixtures import IEF, SPY, daily_bars, ny  # noqa: E402
+from src.tests.trading_fixtures import BIL, IEF, SPY, daily_bars, ny  # noqa: E402
 from src.trading.broker import SimulatedBroker  # noqa: E402
 from src.trading.clock import SimulatedClock  # noqa: E402
 from src.trading.data import InMemoryBarSource  # noqa: E402
-from src.trading.lineup import build_lineup  # noqa: E402
+from src.trading.lineup import CASH_SLEEVE, build_lineup  # noqa: E402
 from src.trading.persistence import EngineRecorder  # noqa: E402
 from src.trading.runtime import TradingRuntime, risk_limits, sizing_policy  # noqa: E402
 from src.trading.service import EngineService  # noqa: E402
@@ -40,12 +41,15 @@ clock = SimulatedClock(ny(2026, 3, 2, 12))
 
 
 def factory(flask_app, settings):
+    instruments = {"SPY": SPY, "IEF": IEF, CASH_SLEEVE: BIL}
     history = {"SPY": daily_bars(SPY, date(2025, 1, 2), date(2026, 12, 31), 500.0, seed=1),
-               "IEF": daily_bars(IEF, date(2025, 1, 2), date(2026, 12, 31), 95.0, seed=2)}
+               "IEF": daily_bars(IEF, date(2025, 1, 2), date(2026, 12, 31), 95.0, seed=2),
+               CASH_SLEEVE: daily_bars(BIL, date(2025, 1, 2), date(2026, 12, 31), 91.5, seed=5, drift=0.00015,
+                                       vol=0.0002)}
     recorder = EngineRecorder(flask_app)
     return EngineService(clock=clock, source=InMemoryBarSource(history, clock),
-                         broker=SimulatedBroker(clock, {"SPY": SPY, "IEF": IEF}, Decimal("100000")),
-                         allocations=build_lineup({"SPY": SPY, "IEF": IEF}), risk_limits=risk_limits(settings),
+                         broker=SimulatedBroker(clock, instruments, Decimal("100000")),
+                         allocations=build_lineup(instruments), cash_sleeve=BIL, risk_limits=risk_limits(settings),
                          sizing=sizing_policy(settings), risk_state=recorder.load_risk_state, listeners=[recorder],
                          snapshot_recorder=recorder.record_snapshot)
 

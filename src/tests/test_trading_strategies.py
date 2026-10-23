@@ -258,7 +258,6 @@ class TestMonthEndCycle:
         assert [(d.isoformat(), f.side.value) for d, f in zip(sessions, spy, strict=True)] == [
             ("2026-10-01", "buy"), ("2026-10-05", "sell"),  # the end of September's window: T+1 to T+3
             ("2026-10-28", "buy"),  # T-2 of October (T+1 settlement)
-            ("2026-11-03", "buy"),  # the volatility target topping up past the rebalance band
             ("2026-11-04", "sell"),  # T+3
             ("2026-11-25", "buy")]  # T-2 of November (Thanksgiving on the 26th)
         assert all(float(f.price) == pytest.approx(closes[d]) for d, f in zip(sessions, spy, strict=True))

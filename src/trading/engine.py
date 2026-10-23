@@ -390,20 +390,17 @@ class Engine:
             targets[symbol] = weight
         self.last_sizing = self.sizer.size(targets, self._history, self.instruments, self.risk.drawdown)
         band = self.sizer.policy.rebalance_band
-        weights = dict(self.last_sizing.weights)
         sleeve = self.cash_sleeve.symbol if self.cash_sleeve is not None else None
-        if sleeve is not None:
-            invested = sum((abs(w) for w in weights.values()), ZERO)
-            room = min(ONE, self.risk.limits.max_gross_exposure) - self.cash_buffer - invested
-            weights[sleeve] = max(room, ZERO).quantize(WEIGHT_SCALE, rounding=ROUND_DOWN)
 
         sells: list[tuple[Instrument, Decimal, Decimal]] = []
         buys: list[tuple[Instrument, Decimal, Decimal]] = []
-        for symbol, weight in weights.items():
+
+        def plan(symbol: str, weight: Decimal) -> Decimal:
+            """Queue the order that moves ``symbol`` to ``weight``; its signed quantity (0: none)."""
             instrument = self.instruments[symbol]
             price = self.prices.get(symbol)
             if price is None:
-                continue
+                return ZERO
             current = exposure.get(symbol, ZERO)
             target = instrument.round_qty(weight * equity / price)
             # Positions can sit off the increment grid (crypto fees are taken in the
@@ -411,12 +408,24 @@ class Engine:
             delta = instrument.round_qty(target - current)
             closing = target == 0 and current != 0
             if abs(delta) < instrument.min_qty:
-                continue
+                return ZERO
             if not closing and abs(delta) * price < band * equity:
-                continue  # inside the rebalance band
+                return ZERO  # inside the rebalance band
             if self.risk.cooling_down and abs(current + delta) >= abs(current) and symbol != sleeve:
-                continue  # during a cool-down only risk-reducing trades (T-bills add no risk)
+                return ZERO  # during a cool-down only risk-reducing trades (T-bills add no risk)
             (sells if delta < 0 else buys).append((instrument, delta, price))
+            return delta
+
+        held = dict(exposure)
+        for symbol, weight in self.last_sizing.weights.items():
+            held[symbol] = held.get(symbol, ZERO) + plan(symbol, weight)
+        if sleeve is not None:
+            # The sleeve holds what the positions leave after this rebalance's trades, not what
+            # their targets would: a target moving inside the band must not trade T-bills for cash
+            marks = self._marks()
+            invested = sum((abs(q) * marks.get(s, ZERO) for s, q in held.items() if s != sleeve), ZERO)
+            room = min(ONE, self.risk.limits.max_gross_exposure) - self.cash_buffer - invested / equity
+            plan(sleeve, max(room, ZERO).quantize(WEIGHT_SCALE, rounding=ROUND_DOWN))
 
         # Buys are funded by cash and by proceeds from reducing longs, never by shorting
         long_proceeds = sum((min(-d, max(exposure.get(i.symbol, ZERO), ZERO)) * p for i, d, p in sells), ZERO)
