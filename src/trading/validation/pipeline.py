@@ -16,11 +16,12 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from typing import Any
 
 import numpy as np
 
 from ..backtest import BacktestConfig
-from ..domain import Bar
+from ..domain import Bar, Instrument
 from .experiment import (
     Candidate,
     WalkForwardConfig,
@@ -65,17 +66,28 @@ class ValidationConfig:
     data_label: str = "Alpaca daily bars"
 
 
+def _regime_reference(candidate: Candidate, params: Sequence[Mapping[str, Any]]) -> Instrument:
+    """The instrument whose trend and volatility define the regimes: any parameter set may trade it."""
+    traded = {i.symbol: i for p in params for i in candidate.factory(p).instruments}
+    symbol = candidate.regime_symbol or next(iter(candidate.factory(params[0]).instruments)).symbol
+    if symbol not in traded:
+        raise ValueError(f"regime symbol {symbol} is not traded by any parameter set of {candidate.name}")
+    return traded[symbol]
+
+
 def validate(candidate: Candidate, bars: Mapping[str, Sequence[Bar]], config: ValidationConfig) -> ValidationReport:
     """
     Raises:
-        ValueError: If the period is too short for the walk-forward or the statistics.
+        ValueError: If the period is too short for the walk-forward or the statistics, or no
+            parameter set trades the candidate's regime symbol.
     """
     backtest, gates, hurdle = config.backtest, config.gates, config.hurdle
+    params = candidate.parameter_sets()
+    reference = _regime_reference(candidate, params)  # checked before hours of backtests, not after
     trials = run_trials(candidate, bars, backtest, hurdle)
     dates, matrix = returns_matrix(trials)
     if len(dates) < 2 * config.pbo_blocks:
         raise ValueError(f"only {len(dates)} common return days; the period is too short to validate")
-    params = candidate.parameter_sets()
     sharpes = full_period_sharpes(trials)
     selected = int(np.argmax(sharpes))
     chosen = matrix[:, selected]
@@ -92,10 +104,7 @@ def validate(candidate: Candidate, bars: Mapping[str, Sequence[Bar]], config: Va
     stressed = cost_stress(candidate, walk, bars, backtest, config.stress_multiples, hurdle)
     stressed_summary = {m: summarize(r) for m, r in stressed.items()}
     neighbourhood = neighbours(candidate, sharpes, selected)
-    reference = candidate.regime_symbol or next(iter(candidate.factory(params[0]).instruments)).symbol
-    delay = backtest.delays[next(i for i in candidate.factory(params[0]).instruments
-                                 if i.symbol == reference).asset_class]
-    regime_stats = regimes(walk.returns, bars.get(reference, ()), delay)
+    regime_stats = regimes(walk.returns, bars.get(reference.symbol, ()), backtest.delays[reference.asset_class])
 
     results = [
         GateResult("out-of-sample Sharpe", oos.sharpe >= gates.min_oos_sharpe, oos.sharpe,

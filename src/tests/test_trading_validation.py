@@ -487,6 +487,18 @@ class TestPipeline:
         assert gate.passed is None and report.overfitting is None and report.cross_validation is None
         assert report.deflated.dsr == pytest.approx(report.probabilistic_sharpe)
 
+    def test_the_regime_symbol_may_be_traded_by_any_parameter_set(self):
+        from src.trading.validation.pipeline import _regime_reference
+        funds = Candidate("funds", lambda p: BuyAndHold({p["fund"]: 0.6}), {"fund": [SPY, IEF]}, regime_symbol="IEF")
+        assert _regime_reference(funds, funds.parameter_sets()) == IEF  # only the second set trades IEF
+
+    def test_a_regime_symbol_no_set_trades_is_refused_before_any_backtest(self, monkeypatch):
+        from src.trading.validation import pipeline
+        monkeypatch.setattr(pipeline, "run_trials", lambda *a: pytest.fail("backtests ran"))
+        funds = Candidate("funds", lambda p: BuyAndHold({SPY: p["equity"]}), {"equity": [0.6]}, regime_symbol="QQQ")
+        with pytest.raises(ValueError, match="regime symbol QQQ is not traded by any parameter set of funds"):
+            validate(funds, _bars(), ValidationConfig(CONFIG, walk_forward=WF))
+
     def test_too_short_a_period_is_refused(self):
         short = BacktestConfig(start=datetime(2015, 1, 2, tzinfo=UTC), end=datetime(2015, 1, 20, tzinfo=UTC))
         with pytest.raises(ValueError):

@@ -109,7 +109,7 @@ def _low_vol(instruments: Mapping[str, Instrument]) -> Candidate:
         "low-vol",
         lambda p: BuyAndHold({instruments[p["equity"]]: 0.6, ief: 0.4}),
         {"equity": list(LOW_VOL_ETFS)},  # fixed before any backtest (docs/STRATEGY_SHORTLIST.md)
-        regime_symbol="SPY",  # the same market regimes as the 60/40's
+        regime_symbol="USMV",  # a US equity fund every run loads
     )
 
 
@@ -171,7 +171,7 @@ CANDIDATES: dict[str, CandidateSpec] = {
     "low-vol": CandidateSpec(
         "60/40 with a low-volatility fund (USMV or SPLV) in place of SPY (Blitz and van Vliet; Baker, Bradley "
         "and Wurgler)",
-        (*((s, AssetClass.EQUITY) for s in LOW_VOL_ETFS), ("IEF", AssetClass.EQUITY), ("SPY", AssetClass.EQUITY)),
+        (*((s, AssetClass.EQUITY) for s in LOW_VOL_ETFS), ("IEF", AssetClass.EQUITY)),
         _low_vol,
     ),
     "lineup": CandidateSpec(
