@@ -180,7 +180,8 @@ class TestLoad:
 
         monkeypatch.setattr(history.urllib.request, "urlopen", urlopen)
         assert history.download(history.FRENCH_URL) == b"payload"
-        assert calls == [(history.FRENCH_URL, "nocturna-validation", 60)]
+        assert calls == [(history.FRENCH_URL, history.USER_AGENT, 60)]
+        assert history.USER_AGENT.startswith("nocturna-validation/1.0 (+https://")
 
 
 def test_the_calendar_reaches_back_to_1970():

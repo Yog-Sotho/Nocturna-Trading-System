@@ -46,6 +46,8 @@ START_LEVEL = 100.0
 INCREMENT = Decimal("0.0001")
 SYMBOLS = ("SPY", "IEF", "BIL")
 _TIMEOUT = 60  # seconds per download
+#: FRED drops requests whose User-Agent it does not like ("nocturna-validation" alone, for one)
+USER_AGENT = "nocturna-validation/1.0 (+https://github.com/Yog-Sotho/Nocturna-Trading-System)"
 
 
 @dataclass(frozen=True)
@@ -60,7 +62,7 @@ class Source:
 
 def download(url: str) -> bytes:
     # Only the fixed https URLs above are fetched
-    request = urllib.request.Request(url, headers={"User-Agent": "nocturna-validation"})
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:  # nosec B310
         data: bytes = response.read()
     return data
