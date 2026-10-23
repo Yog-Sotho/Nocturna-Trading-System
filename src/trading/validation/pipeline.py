@@ -61,6 +61,8 @@ class ValidationConfig:
     #: The hurdle's return per day (UTC date the day's mark falls on); None: zero
     hurdle: Mapping[date, float] | None = None
     hurdle_label: str = "T-bills"
+    #: Where the bars came from, for the report
+    data_label: str = "Alpaca daily bars"
 
 
 def validate(candidate: Candidate, bars: Mapping[str, Sequence[Bar]], config: ValidationConfig) -> ValidationReport:
@@ -150,6 +152,7 @@ def validate(candidate: Candidate, bars: Mapping[str, Sequence[Bar]], config: Va
         passed=passed,
         verdict=summary,
         settings={
+            "data": config.data_label,
             "sharpe_in_excess_of": config.hurdle_label if hurdle is not None else "zero",
             "costs": {k.value: {"fee_bps": str(v.fee_bps), "slippage_bps": str(v.slippage_bps)}
                       for k, v in backtest.costs.items()},

@@ -14,8 +14,10 @@ import exchange_calendars as xcals
 
 from .domain import AssetClass
 
-#: Earliest session the calendar is built for; covers every backtest we run.
-CALENDAR_START = "2000-01-01"
+#: Earliest session the calendar is built for; covers every backtest we run, with a year to
+#: spare before the long-history proxies (``validation/history.py``) start in 1970. From 1970
+#: the calendar's sessions match CRSP's trading days exactly; before, it misses holidays.
+CALENDAR_START = "1969-01-01"
 
 
 @lru_cache(maxsize=1)

@@ -540,6 +540,59 @@ class TestValidateCommand:
         assert symbols == ("SPY", "IEF")
         assert json.loads(out.with_suffix(".json").read_text())["settings"]["sharpe_in_excess_of"] == "zero"
 
+    @pytest.fixture
+    def long_history(self, app, monkeypatch):
+        from src.trading.validation import history, market
+
+        calls = []
+
+        def load(start, end):
+            calls.append((start, end))
+            bars = {**_bars(), "BIL": daily_bars(BIL, date(2014, 1, 2), date(2025, 12, 31), 91.0, seed=5,
+                                                 vol=0.0001)}
+            return ({"SPY": SPY, "IEF": IEF, "BIL": BIL}, bars,
+                    [history.Source("https://example.test/french.zip", "ab" * 32, date(1926, 7, 1), date(2026, 8, 31))])
+
+        monkeypatch.setattr(history, "load", load)
+        monkeypatch.setattr(market, "load", lambda *args: pytest.fail("Alpaca data was loaded"))
+        # The proxies need no Alpaca account
+        settings = app.extensions["settings"].model_copy(update={"alpaca_api_key": None, "alpaca_secret_key": None})
+        monkeypatch.setitem(app.extensions, "settings", settings)
+        return calls
+
+    def test_long_history_proxies(self, app, long_history, tmp_path):
+        out = tmp_path / "trend-filter.md"
+        result = app.test_cli_runner().invoke(args=[
+            "validate", "trend-filter", "--data", "history", "--start", "2016-01-04", "--end", "2021-01-01",
+            "--output", str(out), "--train-months", "24"])
+        assert result.exit_code in (0, 1), result.output
+        assert f"Data: https://example.test/french.zip (1926-07-01 to 2026-08-31, sha256 {'ab' * 32})" in result.output
+        [(start, end)] = long_history
+        assert start == datetime(2016, 1, 4, tzinfo=UTC) - timedelta(days=400)
+        assert end == datetime(2021, 1, 1, tzinfo=UTC)
+        data = json.loads(out.with_suffix(".json").read_text())
+        assert [t["params"] for t in data["trials"]] == [{"months": 8}, {"months": 10}, {"months": 12}]
+        assert data["settings"]["data"].startswith("long-history proxies for SPY, IEF and BIL")
+        assert data["settings"]["sharpe_in_excess_of"] == "T-bills (French's 1-month rate, as BIL)"
+        assert "Data: long-history proxies" in out.read_text()
+
+    def test_long_history_has_no_proxy_for_other_symbols(self, app, long_history):
+        result = app.test_cli_runner().invoke(args=["validate", "crypto-trend", "--data", "history"])
+        assert result.exit_code != 0
+        assert "proxies for SPY, IEF, BIL only, not BTC/USD, ETH/USD, SOL/USD" in result.output
+        assert long_history == []  # refused before any download
+
+    def test_long_history_errors_are_reported(self, app, monkeypatch):
+        from src.trading.validation import history
+
+        def load(start, end):
+            raise ValueError("https://example.test/french.zip ends on 2026-08-31")
+
+        monkeypatch.setattr(history, "load", load)
+        result = app.test_cli_runner().invoke(args=["validate", "benchmark", "--data", "history"])
+        assert result.exit_code != 0
+        assert "long-history data: https://example.test/french.zip ends on 2026-08-31" in result.output
+
     def test_unknown_candidate(self, app):
         result = app.test_cli_runner().invoke(args=["validate", "nope"])
         assert result.exit_code != 0 and "unknown candidate" in result.output

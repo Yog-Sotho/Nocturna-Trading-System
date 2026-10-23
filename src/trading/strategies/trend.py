@@ -40,14 +40,15 @@ _CALENDAR = TradingCalendar(AssetClass.EQUITY)
 
 
 @lru_cache(maxsize=1 << 14)
-def _closes_month(day: date) -> bool:
+def closes_month(day: date) -> bool:
+    """Whether ``day`` is the last NYSE session of its month."""
     return _CALENDAR.next_session(day).month != day.month
 
 
 def _month_end(bars: Sequence[Bar]) -> int | None:
     """Index of the last bar that closed a month (its next session is in another month)."""
     for i in range(len(bars) - 1, -1, -1):
-        if _closes_month(bars[i].start.astimezone(NEW_YORK).date()):
+        if closes_month(bars[i].start.astimezone(NEW_YORK).date()):
             return i
     return None
 
