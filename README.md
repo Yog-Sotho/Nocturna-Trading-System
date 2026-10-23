@@ -27,7 +27,7 @@ trading; only the clock, the market-data source and the broker are swapped. See
 | Validation pipeline: walk-forward traded through the engine, deflated Sharpe, probability of backtest overfitting, purged cross-validation, cost stress, parameter stability, regimes, promotion gates | `src/trading/validation/`, `flask validate` | Working; no candidate has passed the gates yet |
 | Paper soak report: paper trading against a backtest of the same days, the account's dividends and interest, the soak tolerance | `src/trading/soak.py`, `flask soak report` | Working against recorded fakes; the soak has not started |
 | Paper trading on Alpaca (`alpaca-py`): broker adapter, trade-update stream, polling data feed, reconciliation | `src/trading/alpaca.py`, `service.py` | Working against fakes and Alpaca's real request models; not yet run against a live paper account |
-| Strategies | `src/trading/strategies/` | 60/40 benchmark (traded, idle cash in T-bills), plus month-end rebalancing flows, ETF time-series momentum, a crypto Donchian ensemble, the month-end payment cycle and a blend; none has passed the promotion gates yet |
+| Strategies | `src/trading/strategies/` | 60/40 benchmark (traded, idle cash in T-bills), plus month-end rebalancing flows, ETF time-series momentum, a crypto Donchian ensemble, the month-end payment cycle, a trend filter on the 60/40 and a blend; none has passed the promotion gates yet |
 | Trading history (orders, fills, equity snapshots) and audit log | `src/models/` | Working |
 | REST API with JWT and API-key auth (single operator) | `src/main.py`, `src/routes/` | Working; public registration is disabled |
 | Dashboard: sign-in, account and risk figures, equity curve, positions and targets, working orders (cancel), fills and order history, start / stop / resume, emergency stop; phone-first, light and dark | `src/static/` (plain HTML, CSS and JavaScript; no build step) | Working; checked in Chromium at phone size by `tools/dashboard/e2e.cjs` |
@@ -38,7 +38,8 @@ trading; only the clock, the market-data source and the broker are swapped. See
 
 - No strategy has a validated edge: on Alpaca data from 2017 to 2026 none of the Phase 5
   candidates, alone or combined, beat the 60/40 benchmark out of sample, and neither did the
-  month-end payment cycle (see [docs/ROADMAP.md](docs/ROADMAP.md)). The engine trades the
+  month-end payment cycle or a trend filter on the 60/40 (the latter also over 1974–2026 on
+  long-history proxies; see [docs/ROADMAP.md](docs/ROADMAP.md)). The engine trades the
   benchmark, with its idle cash in T-bills.
 - The Compose stack has not yet run against the paper account (see the runbook before the
   first run).
@@ -142,8 +143,14 @@ flask --app src.main validate benchmark --start 2017-01-01 --output reports/benc
 It writes a Markdown tear sheet and a JSON report, prints the verdict, and exits with code 1
 when the candidate is rejected. Idle cash is held in T-bills (BIL), as in paper trading, and
 every Sharpe ratio is measured in excess of BIL's return; `--no-tbills` runs the earlier rules
-(cash earns nothing, Sharpe against zero). For each candidate (a strategy family and its
-parameter grid):
+(cash earns nothing, Sharpe against zero). `--data history` runs a candidate that trades only
+SPY and IEF on long-history proxies instead: French's daily US market and T-bill returns and
+par bonds priced from FRED's 7- and 10-year Treasury yields, from 1970, with no Alpaca account
+(for example `--data history --start 1971-01-01 --end 2026-08-31`). It is an additional test;
+promotion is decided on Alpaca data. The command prints each downloaded file's SHA-256, and
+[docs/STRATEGY_SHORTLIST.md](docs/STRATEGY_SHORTLIST.md#fixed-rules-trend-filter) shows how
+closely the proxies track the ETFs. For each candidate (a strategy family and its parameter
+grid):
 
 1. Every parameter set is backtested over the whole period.
 2. **Walk-forward:** at the start of each test year the parameter set with the best Sharpe ratio
@@ -169,11 +176,11 @@ parameter grid):
 
 Registered candidates: `benchmark`, `rebalancing`, `tsmom`, `crypto-trend` (use
 `--start 2023-01-01 --train-months 12`: crypto data starts in 2021 and the longest channel needs
-two years), `month-end` and `lineup`.
+two years), `month-end`, `trend-filter` and `lineup`.
 
 Notes: Alpaca's free plan serves equity history from 2016, so the default first trading day is
-2017-01-01 (2016 warms up indicators). Sharpe ratios use a zero risk-free rate, the same as idle
-cash earns in the engine. A backtest has no operator, so a drawdown kill is followed by a
+2017-01-01 (2016 warms up indicators). Sharpe ratios are in excess of T-bills, which idle cash
+earns in the engine. A backtest has no operator, so a drawdown kill is followed by a
 simulated resume after `--resume-after-kill-days` (30); every kill is counted in the report.
 Candidates are defined in `src/trading/validation/candidates.py`.
 

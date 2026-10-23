@@ -501,3 +501,69 @@ same data and dates in both tests.
 - **Otherwise** D1 is recorded as rejected, and the live engine keeps the 60/40.
 - **No other variant is tested on this data,** whatever the result: no other filter length,
   no filter on bonds, no other volatility target.
+
+### Result: rejected (23 October 2026)
+
+Both tests were run as fixed above. The commands were `flask validate trend-filter --start
+2017-01-01 --end 2026-10-23` and `flask validate trend-filter --data history --start 1971-01-01
+--end 2026-08-31`, and the same for `benchmark`. The downloaded files' SHA-256 digests begin
+`2f29e225` (French), `8e6ff8f4` (DGS7) and `e6bd270b` (DGS10).
+
+**The gates (test 1, Alpaca, walk-forward 2020 to October 2026):**
+
+| Gate | Value | Threshold | |
+|---|---|---|---|
+| Walk-forward Sharpe over T-bills | 0.53 | ≥ 1.0 | fail |
+| Deflated Sharpe | 0.98 | ≥ 0.95 | pass |
+| Probability of backtest overfitting | 0.84 | ≤ 0.20 | fail |
+| At 3× costs | 41.7% against T-bills' 20.3% | above T-bills | pass |
+| Parameter stability | 0.72 | ≥ 0.5 | pass |
+| Maximum drawdown | −11.2% | ≥ −12% | pass |
+
+**Against the 60/40, out of sample (walk-forward):**
+
+| | D1, Alpaca | 60/40, Alpaca | D1, 1974–2026 | 60/40, 1974–2026 |
+|---|---|---|---|---|
+| Sharpe over T-bills | 0.529 | 0.528 | 0.557 | 0.582 |
+| Return a year | 6.31% | 6.34% | 7.91% | 8.18% |
+| Volatility | 6.9% | 7.0% | 6.4% | 6.6% |
+| Maximum drawdown | −11.2% | −14.0% | −12.2% | −14.1% |
+| Kill-switch trips | 1 | 1 | 2 | 5 |
+| Gates failed | Sharpe, overfitting | Sharpe, overfitting, drawdown | Sharpe, overfitting, drawdown | Sharpe, overfitting, drawdown |
+
+**The verdict.** D1 fails the gates. It also doesn't beat the 60/40 in both tests:
+- On Alpaca data it ties: a Sharpe ratio of 0.529 against 0.528, with a shallower drawdown.
+- Over 1974–2026 its Sharpe ratio is lower, 0.557 against 0.582.
+
+So it is rejected, and the live engine keeps the 60/40.
+
+**What the long history shows:**
+- **The filter trades drawdowns for return.** It was in stocks at 75% of month ends and switched
+  0.8 times a year, in line with Faber's "less than one round-trip trade per asset class per
+  year".
+  - Held fixed over 1971–2026 (10 months against the 60/40), it cut the maximum drawdown from
+    −15.8% (1973–74) to −12.2% (1987).
+  - It also cut the kill-switch trips from five (1974, 1987, 2001, 2008, 2022) to two (1987,
+    1990).
+  - It earned less: 7.61% a year against 7.92%, an identical Sharpe ratio of 0.51.
+- **The month-end check can't react to a fast crash.** October 1987 fell inside one month,
+  and both portfolios tripped the kill switch on 20 October.
+- **No length stands out.** Over the full periods, 8, 10 and 12 months gave Sharpe ratios of
+  0.65, 0.46 and 0.56 on Alpaca data, and 0.49, 0.51 and 0.55 since 1971. The fixed 60/40
+  gave 0.68 and 0.51. The walk-forward's choices moved between lengths, and the overfitting
+  probability (0.84 and 0.65) says the in-sample best length tells little about the next year.
+- **The answer to the question asked.** The engine's volatility target and drawdown ladder
+  already do most of what the filter does, so the filter adds no risk-adjusted return. It
+  lowers drawdowns and kill-switch trips at a small cost in return, but not enough to pass the
+  12% drawdown gate over 55 years.
+
+**The current setup through five crashes.** Validated over 1974–2026, the 60/40 earned 8.18%
+a year out of sample with a Sharpe ratio of 0.58 over T-bills. Its maximum drawdown was −14.1%
+despite the 10% kill switch:
+- The kill switch tripped five times in 55 years, about once a decade.
+- The gap past 10% comes from moves between one session and the next fill, which in these
+  proxies lands a day later than live.
+
+**As fixed in advance,** no other variant is tested on this data. The code stays as the
+`trend-filter` candidate, and `--data history` stays available to every candidate trading SPY
+and IEF.

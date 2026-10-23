@@ -220,6 +220,12 @@ costs, the risk gate, sizing and the kill switch.
   deflated and probabilistic Sharpe, overfitting, cross-validation, neighbours and regimes.
   The cost-stress gate needs a total return above BIL's. Returns, volatility and drawdowns
   stay as earned. `--no-tbills` runs the earlier rules: no sleeve, Sharpe against zero.
+- **Long-history proxies** (`history`): `--data history` replaces Alpaca's bars for SPY, IEF
+  and BIL with French's daily market return (Mkt-RF + RF), the mean return of 7- and 10-year
+  par bonds priced from FRED's constant-maturity yields, and French's T-bill return. Each bar's
+  open, high, low and close equal the total-return level, so orders fill at the next session's
+  close. The bars start in 1970, when the NYSE calendar starts matching CRSP's trading days;
+  `load` checks the match and refuses an end past the data.
 
 The backtester's `resume_after_kill` simulates the operator: a kill halts and flattens, and
 trading resumes that long after, once the book is flat. Without it a long backtest would stop
@@ -238,6 +244,7 @@ paper is silent the module says what was assumed.
 | `trend.TimeSeriesMomentum` | each month, sign of the 12-month return (or the clipped t-statistic of daily returns) times 40% / EWMA volatility (60-day centre of mass), averaged over the basket | Moskowitz, Ooi and Pedersen, JFE 2012; Baltas and Kosowski 2013 |
 | `crypto_trend.DonchianEnsemble` | nine breakout models (5-360 days) with trailing stops at the channel midpoint, each sized to 25% volatility, averaged; long only | Zarattini, Pagani and Barbon, SFI 25-80 (2025) |
 | `month_end.MonthEndCycle` | SPY from the closing auction of T-k to that of T+3 around each month's last session T; k follows the settlement cycle (4, 3 from 5 September 2017, 2 from 28 May 2024), or 4, or 1; trades at the close | Etula, Rinne, Suominen and Vaittinen, RFS 2020 |
+| `trend_filter.TrendFilter` | the 60/40 with SPY held only while its month-end close is above the mean of the last n month-end closes (8, 10 or 12), T-bills otherwise; IEF stays at 40%; trades at the open | Faber, JWM 2007 (SSRN 962461, 2013 update) |
 | `blend.Blend` | fixed-weight sum of strategies, so a lineup validates and trades as one book | - |
 
 A strategy held inside another (a blend, a walk-forward switch) is asked for targets through
