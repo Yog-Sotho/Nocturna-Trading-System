@@ -164,3 +164,21 @@ class EngineCommand(Model):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
     expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime)  # None: never (emergency halts)
     completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class TradingProfileRecord(Model):
+    """
+    One saved version of the trading profile (``src/trading/profile.py``): the
+    strategy mix and the risk-limit overrides. Rows are never changed, except
+    ``activated_at``, stamped the first time the engine starts with the version.
+    """
+
+    __tablename__ = 'trading_profiles'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mix: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    risk: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    activated_at: Mapped[datetime | None] = mapped_column(UTCDateTime, index=True)

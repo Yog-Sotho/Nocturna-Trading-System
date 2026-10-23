@@ -153,6 +153,7 @@ class Engine:
     def __init__(self, *, clock: Clock, broker: Broker, ledger: Ledger, allocations: Sequence[Allocation],
                  risk: RiskGate | None = None, sizing: SizingPolicy | None = None,
                  cash_buffer: Decimal = Decimal("0.005"), cash_sleeve: Instrument | None = None,
+                 close_out: Sequence[Instrument] = (),
                  listeners: Sequence[EngineListener] = ()) -> None:
         """
         Args:
@@ -162,6 +163,8 @@ class Engine:
             cash_buffer: Fraction of equity kept unspent to absorb slippage and fees.
             cash_sleeve: A T-bill ETF that holds the equity the targets leave unused
                 (None: it stays in cash). No strategy may trade it.
+            close_out: Instruments no strategy trades that the account may still hold (left
+                by a strategy mix that changed): targeted at zero, so any position is sold.
 
         Raises:
             ValueError: For invalid allocations or conflicting instrument definitions,
@@ -196,12 +199,21 @@ class Engine:
                     raise ValueError(f"conflicting definitions for {instrument.symbol}")
                 lookbacks[instrument.symbol] = max(lookbacks.get(instrument.symbol, 1),
                                                    allocation.strategy.lookback, self.sizer.lookback)
+        traded = set(self.instruments)
+        for instrument in close_out:
+            known = self.instruments.setdefault(instrument.symbol, instrument)
+            if known != instrument:
+                raise ValueError(f"conflicting definitions for {instrument.symbol}")
+            lookbacks.setdefault(instrument.symbol, 2)  # a price and the bar before, for the jump check
+        #: Symbols held over from an earlier mix, sold at the next rebalance
+        self.close_out = tuple(sorted({i.symbol for i in close_out} - traded))
         self.cash_sleeve = cash_sleeve
         if cash_sleeve is not None:
             if cash_sleeve.asset_class is not AssetClass.EQUITY:
                 raise ValueError("the cash sleeve must be an equity (a T-bill ETF)")
             if cash_sleeve.symbol in self.instruments:
-                raise ValueError(f"the cash sleeve {cash_sleeve.symbol} must not be traded by a strategy")
+                raise ValueError(f"the cash sleeve {cash_sleeve.symbol} must not be traded by a strategy "
+                                 "or closed out")
             self.instruments[cash_sleeve.symbol] = cash_sleeve
             lookbacks[cash_sleeve.symbol] = 2  # a price and the bar before, for the risk gate's jump check
         self._history: dict[str, deque[Bar]] = {s: deque(maxlen=n) for s, n in lookbacks.items()}
@@ -334,11 +346,13 @@ class Engine:
             self._open.pop(order.client_order_id, None)
 
     def target_weights(self) -> dict[str, Decimal]:
-        """Account-level targets: each strategy's weights times its allocation."""
+        """Account-level targets: each strategy's weights times its allocation; zero for close-outs."""
         combined: dict[str, Decimal] = {}
         for allocation in self.allocations:
             for symbol, weight in self._targets.get(allocation.strategy.name, {}).items():
                 combined[symbol] = combined.get(symbol, ZERO) + weight * allocation.weight
+        for symbol in self.close_out:
+            combined[symbol] = ZERO
         return combined
 
     # -- orders -------------------------------------------------------------

@@ -32,7 +32,8 @@ from .clock import Clock
 
 #: How long a command may wait for the engine before it is not executed at all
 COMMAND_TTL = {"halt": None, "submit_order": timedelta(seconds=30), "cancel_order": timedelta(seconds=30),
-               "resume": timedelta(seconds=60), "start": timedelta(seconds=60), "stop": timedelta(seconds=60)}
+               "resume": timedelta(seconds=60), "start": timedelta(seconds=60), "stop": timedelta(seconds=60),
+               "restart": timedelta(seconds=60)}
 
 
 #: Extra wait for a command the engine has already started

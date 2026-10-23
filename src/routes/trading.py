@@ -10,6 +10,7 @@ interface. Paper trading only.
 import logging
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 from flask import Blueprint, current_app, g, jsonify, request
@@ -18,7 +19,10 @@ from src.middleware.auth import require_admin, require_auth, require_trading_per
 from src.models.trading import EquitySnapshot, TradingFill, TradingOrder
 from src.routes import schemas
 from src.routes.openapi import documented
+from src.trading import profile as profiles
+from src.trading.catalog import catalog
 from src.trading.operator import OperatorOrder, UnknownSymbolError
+from src.trading.profile import RISK_FIELDS, ProfileError
 from src.trading.runtime import (
     NOT_CONFIGURED_MESSAGE,
     EngineUnavailableError,
@@ -239,6 +243,27 @@ def start_engine():
     return format_response(True, message='Engine starting', status_code=202)
 
 
+@trading_bp.route('/control/restart', methods=['POST'])
+@documented("Restart the engine with the newest saved profile", tag="control", access="admin",
+            description="Stops the engine and starts it again; a profile saved while it ran takes effect.",
+            responses={202: "Restarting", 502: "Start-up failed",
+                       503: "Alpaca keys are not set, or the engine process is not answering"})
+@require_auth
+@require_admin
+def restart_engine():
+    try:
+        _runtime().restart()
+    except TradingNotConfiguredError:
+        return format_response(False, error=NOT_CONFIGURED_MESSAGE, status_code=503)
+    except EngineUnavailableError:
+        return _unavailable()
+    except Exception:
+        logger.exception("Engine restart failed")
+        return format_response(False, error='Engine restart failed', status_code=502)
+    record_audit_event('ENGINE_RESTART', True)
+    return format_response(True, message='Engine restarting', status_code=202)
+
+
 @trading_bp.route('/control/stop', methods=['POST'])
 @documented("Stop the engine", tag="control", access="admin",
             description="Working orders stay at the broker; the emergency stop cancels them.",
@@ -317,3 +342,78 @@ def emergency_stop():
                                                 'close_all_positions': validated.close_all_positions, **result})
     return format_response(True, message='Emergency stop executed',
                            data={'reason': validated.reason, **result})
+
+
+# =============================================================================
+# STRATEGIES AND THE TRADING PROFILE
+# =============================================================================
+
+def _setting(value: Any) -> Any:
+    return str(value) if isinstance(value, Decimal) else value
+
+
+def _risk_settings(saved: profiles.Profile) -> list[dict[str, Any]]:
+    settings = current_app.extensions['settings']
+    try:
+        effective = profiles.effective_settings(settings, saved)
+    except ProfileError:  # the environment changed under a saved profile: show what it now gives
+        effective = settings.model_copy(update=dict(saved.risk))
+    return [{
+        'name': name, 'label': spec.label, 'kind': spec.kind, 'minimum': _setting(spec.minimum),
+        'maximum': _setting(spec.maximum), 'off': _setting(spec.off), 'optional': spec.optional,
+        'value': _setting(getattr(effective, name)), 'source': 'profile' if name in saved.risk else 'environment',
+        'environment': _setting(getattr(settings, name)),
+    } for name, spec in RISK_FIELDS.items()]
+
+
+def _running_profile() -> dict[str, Any] | None:
+    views = _runtime().views()
+    if views['status']['state'] not in ('starting', 'running'):
+        return None
+    profile: dict[str, Any] | None = views.get('profile')
+    return profile
+
+
+@trading_bp.route('/strategies', methods=['GET'])
+@documented("The strategies the engine can trade", tag="strategies", access="user",
+            description="Every registered strategy with its parameters (its validation grid) and what "
+                        "validation concluded about it.",
+            responses={200: ("The strategies", schemas.Strategies)})
+@require_auth
+def list_strategies():
+    return format_response(True, data={'strategies': catalog()})
+
+
+@trading_bp.route('/profile', methods=['GET'])
+@documented("The trading profile: the strategy mix and the risk limits", tag="strategies", access="user",
+            responses={200: ("The saved profile, and the one the engine runs", schemas.ProfileState)})
+@require_auth
+def get_profile():
+    saved = profiles.latest(current_app._get_current_object())
+    running = _running_profile()
+    return format_response(True, data={
+        'saved': saved.to_dict(), 'running': running,
+        'pending': running is not None and running['id'] != saved.id, 'risk': _risk_settings(saved)})
+
+
+@trading_bp.route('/profile', methods=['PUT'])
+@documented("Save the trading profile", tag="strategies", access="admin", body=schemas.ProfileBody,
+            description="Saves a new version. The engine trades it from its next start; POST /control/restart "
+                        "applies it now. Positions in symbols the new mix does not trade are sold. Paper only.",
+            responses={201: ("Saved", schemas.ProfileSaved),
+                       400: "The engine could not trade it; the error says why"})
+@require_auth
+@require_admin
+def save_profile():
+    try:
+        parsed = profiles.parse(request.get_json(silent=True))
+        profiles.effective_settings(current_app.extensions['settings'], parsed)
+    except ProfileError as e:
+        return format_response(False, error=str(e), status_code=400)
+    saved = profiles.save(current_app._get_current_object(), parsed, created_by=getattr(g, 'username', None),
+                          now=datetime.now(UTC))
+    record_audit_event('PROFILE_SAVED', True, {
+        'profile_id': saved.id, 'mix': [e.to_dict() for e in saved.mix], 'risk': saved.to_dict()['risk']})
+    running = _running_profile()
+    return format_response(True, data={'profile': saved.to_dict(), 'restart_needed': running is not None},
+                           message='Saved: the engine trades it from its next start', status_code=201)

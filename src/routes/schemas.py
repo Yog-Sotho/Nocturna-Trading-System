@@ -305,3 +305,83 @@ class EmergencyStopResult(Strict):
 class ValidationErrors(Strict):
     validation_errors: list[dict[str, Any]] | None = None
     errors: list[dict[str, Any]] | None = None
+
+
+# -- strategies and the trading profile -------------------------------------------------
+
+
+class ParameterChoice(Strict):
+    value: Any = Field(description="A value from the strategy's validation grid")
+    label: str
+
+
+class StrategyParameter(Strict):
+    name: str
+    label: str
+    choices: list[ParameterChoice]
+
+
+class StrategyInfo(Strict):
+    name: str = Field(description="The registered name (flask validate <name>)")
+    title: str
+    summary: str
+    source: str = Field(description="The paper or idea it follows")
+    verdict: Literal["benchmark", "rejected"] = Field(description="What validation concluded")
+    verdict_detail: str
+    doc: str = Field(description="Where the evidence is written up")
+    execution: Literal["open", "close"] = Field(description="Which auction its equity orders go to")
+    symbols: list[str]
+    asset_classes: list[str]
+    defaults: dict[str, Any] = Field(description="The parameters it starts with on the dashboard")
+    parameters: list[StrategyParameter]
+
+
+class Strategies(Strict):
+    strategies: list[StrategyInfo]
+
+
+class MixEntry(Strict):
+    strategy: str
+    params: dict[str, Any]
+    weight: DecimalStr = Field(description="Share of the account, as a fraction; the shares add up to at most 1")
+
+
+class TradingProfile(Strict):
+    id: int | None = Field(description="None: the default profile (nothing saved yet)")
+    mix: list[MixEntry]
+    risk: dict[str, Any] = Field(description="Overrides of the environment's RISK_* / SIZING_* settings")
+    note: str
+    created_by: str | None
+    created_at: Timestamp | None
+    activated_at: Timestamp | None = Field(description="When the engine first traded it")
+
+
+class RiskSetting(Strict):
+    name: str = Field(description="The setting, as its environment variable in lower case")
+    label: str
+    kind: Literal["fraction", "integer", "boolean", "dollars"]
+    minimum: DecimalStr | None
+    maximum: DecimalStr | None
+    off: DecimalStr | None = Field(description="A value outside the bounds that turns the control off")
+    optional: bool = Field(description="null is allowed (no limit)")
+    value: Any = Field(description="What the saved profile trades with")
+    source: Literal["profile", "environment"]
+    environment: Any = Field(description="The value from .env (or its default)")
+
+
+class ProfileState(Strict):
+    saved: TradingProfile = Field(description="What the engine trades from its next start")
+    running: TradingProfile | None = Field(description="What the running engine trades (None: not running)")
+    pending: bool = Field(description="The engine runs and a newer profile is saved: restart to apply it")
+    risk: list[RiskSetting]
+
+
+class ProfileSaved(Strict):
+    profile: TradingProfile
+    restart_needed: bool = Field(description="The engine runs another profile: restart it to apply this one")
+
+
+class ProfileBody(Strict):
+    mix: list[MixEntry]
+    risk: dict[str, Any] = Field(default_factory=dict, description="Only the settings to override")
+    note: str = ""

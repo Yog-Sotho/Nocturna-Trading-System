@@ -347,6 +347,46 @@ def test_the_report_runs_a_backtest_of_the_recorded_days(app, monkeypatch):
     assert any("could not read the account's dividends" in n for n in report.notes)
 
 
+def test_the_report_follows_the_profile_the_engine_trades(app, monkeypatch):
+    """From when the engine first traded the active profile, with its mix and its risk limits."""
+
+    from pydantic import SecretStr
+
+    from src.trading import backtest, data
+    from src.trading import profile as profiles
+    from src.trading.validation import market
+
+    record = paper_run()
+    saved = profiles.save(app, profiles.parse({
+        "mix": [{"strategy": "benchmark", "params": {"equity": 0.6}, "weight": "0.5"}],
+        "risk": {"risk_max_drawdown": "0.08"}}), "ops", datetime(2025, 12, 1, tzinfo=UTC))
+    activated = profiles.mark_activated(app, saved, datetime(2026, 1, 2, 15, tzinfo=UTC))
+    asked, configs = [], []
+    monkeypatch.setattr(soak, "load_record", lambda since=None: asked.append(since) or record)
+    monkeypatch.setattr(market, "load", lambda settings, symbols, start, end: ({"SPY": SPY, "IEF": IEF, "BIL": BIL},
+                                                                              BARS))
+    monkeypatch.setattr(data, "AlpacaBarSource", lambda *a, **k: type("Raw", (), {"bars": lambda *a: BARS})())
+    monkeypatch.setattr(soak, "broker_activities", lambda key, secret, after: [])
+
+    def recording(allocations, bars, config):
+        configs.append((allocations, config))
+        return run_backtest(allocations, bars, config)
+
+    monkeypatch.setattr(backtest, "run_backtest", recording)
+    settings = app.extensions["settings"].model_copy(
+        update={"alpaca_api_key": SecretStr("key"), "alpaca_secret_key": SecretStr("secret")})
+    report = soak.run_report(settings)
+    assert asked == [activated.activated_at]
+    [(allocations, config)] = configs
+    assert [(a.strategy.name, a.weight) for a in allocations] == [("benchmark", Decimal("0.5"))]
+    assert config.risk_limits.max_drawdown == Decimal("0.08")
+    assert report.notes[0] == (f"paper trading and the backtest follow profile #{saved.id} (50% benchmark), "
+                               "traded since 2026-01-02 15:00 UTC")
+    # An explicit start wins over the activation
+    soak.run_report(settings, since=datetime(2026, 1, 5, tzinfo=UTC))
+    assert asked[-1] == datetime(2026, 1, 5, tzinfo=UTC)
+
+
 def test_the_report_needs_the_alpaca_keys(app, monkeypatch):
     from src.trading.runtime import TradingNotConfiguredError
 

@@ -55,6 +55,7 @@ class EngineWorker:
         self._handlers: dict[str, Callable[[dict[str, Any]], Any]] = {
             "start": lambda p: self.runtime.start(),
             "stop": lambda p: self.runtime.stop(),
+            "restart": lambda p: self.runtime.restart(),
             "resume": lambda p: self.runtime.resume(),
             "halt": lambda p: self.runtime.emergency_stop(p["reason"], bool(p["flatten"])),
             "submit_order": self._submit_order,

@@ -221,6 +221,19 @@ class TestResponsesMatchTheDocument:
         api.call("POST", "/api/v1/trading/emergency-stop", 200, headers=bearer,
                  json={"reason": "drill", "close_all_positions": False})
         api.call("POST", "/api/v1/trading/control/resume", 200, headers=bearer)
+
+        # The strategies and the trading profile
+        api.call("GET", "/api/v1/trading/strategies", 200, headers=bearer)
+        api.call("GET", "/api/v1/trading/profile", 200, headers=bearer)
+        api.call("PUT", "/api/v1/trading/profile", 400, headers=bearer, json={"mix": []})
+        mix = {"mix": [{"strategy": "benchmark", "params": {"equity": 0.6}, "weight": "1"}],
+               "risk": {"risk_max_drawdown": "0.08"}}
+        saved = api.call("PUT", "/api/v1/trading/profile", 201, headers=bearer, json=mix).get_json()["data"]
+        assert saved["restart_needed"] is True
+        api.call("POST", "/api/v1/trading/control/restart", 202, headers=bearer)
+        sim_runtime.wait_running()
+        state = api.call("GET", "/api/v1/trading/profile", 200, headers=bearer).get_json()["data"]
+        assert state["running"]["id"] == saved["profile"]["id"] and state["pending"] is False
         api.call("POST", "/api/v1/trading/control/stop", 200, headers=bearer)
         # Without a running engine the emergency stop goes to the broker
         api.call("POST", "/api/v1/trading/emergency-stop", 200, headers=bearer,

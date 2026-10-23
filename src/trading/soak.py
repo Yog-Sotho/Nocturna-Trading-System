@@ -499,30 +499,43 @@ def _audit_entry(timestamp: Any, event_type: Any, data: Any) -> AuditEntry:
 def run_report(settings: Any, since: datetime | None = None) -> SoakReport:
     """
     The soak report on what paper trading recorded, against a backtest of the
-    same days on Alpaca's bars. Needs an app context and the Alpaca keys.
+    same days on Alpaca's bars. Both follow the trading profile the engine
+    started with last, measured from when it first traded it (unless
+    ``since`` says otherwise). Needs an app context and the Alpaca keys.
     """
+    from flask import current_app
+
     from .backtest import BacktestConfig, run_backtest
     from .clock import SystemClock
     from .data import AlpacaBarSource
     from .domain import DAILY
-    from .lineup import CASH_SLEEVE, LINEUP_SYMBOLS, build_lineup
+    from .lineup import CASH_SLEEVE
+    from .profile import active, allocations, effective_settings, symbols, warm_up_days
     from .runtime import risk_limits, sizing_policy
     from .validation import market
 
     calendar = TradingCalendar(AssetClass.EQUITY)
+    profile = active(current_app)
+    if since is None and profile.activated_at is not None:
+        since = profile.activated_at
     record = load_record(since)
     if not record.snapshots or record.started is None:
         return build_report(record, None, (), {}, calendar)
     start = backtest_start(record.started, calendar)
     end = record.snapshots[-1].timestamp + timedelta(minutes=1)
-    instruments, bars = market.load(settings, LINEUP_SYMBOLS, start - WARM_UP, end)
-    backtest = run_backtest(build_lineup(instruments), bars, BacktestConfig(
-        start=start, end=end, starting_cash=record.snapshots[0].equity, risk_limits=risk_limits(settings),
-        sizing=sizing_policy(settings), cash_sleeve=instruments[CASH_SLEEVE]))
+    warm_up = max(WARM_UP, timedelta(days=warm_up_days(profile)))
+    instruments, bars = market.load(settings, symbols(profile), start - warm_up, end)
+    effective = effective_settings(settings, profile)
+    backtest = run_backtest(allocations(profile, instruments), bars, BacktestConfig(
+        start=start, end=end, starting_cash=record.snapshots[0].equity, risk_limits=risk_limits(effective),
+        sizing=sizing_policy(effective), cash_sleeve=instruments[CASH_SLEEVE]))
     key, secret = settings.alpaca_api_key.get_secret_value(), settings.alpaca_secret_key.get_secret_value()
     raw = AlpacaBarSource(SystemClock(), api_key=key, secret_key=secret, raw=True).bars(
         list(instruments.values()), DAILY, record.started - timedelta(days=1), end)
-    notes = []
+    mix = ", ".join(f"{e.weight:.0%} {e.strategy}" for e in profile.mix)
+    which = f"profile #{profile.id}" if profile.id is not None else "the default profile"
+    since_note = f", traded since {profile.activated_at:%Y-%m-%d %H:%M} UTC" if profile.activated_at else ""
+    notes = [f"paper trading and the backtest follow {which} ({mix}){since_note}"]
     try:
         activities = broker_activities(key, secret, record.started - timedelta(days=1))
     except OSError as e:  # urllib's errors are OSErrors; the message never holds the keys
