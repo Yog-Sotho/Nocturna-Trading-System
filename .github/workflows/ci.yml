@@ -64,6 +64,7 @@ jobs:
         run: |
           pip-audit -r requirements-dev.txt --disable-pip --no-deps --progress-spinner off
           pip-audit -r requirements-mutation.txt --disable-pip --no-deps --progress-spinner off
+          pip-audit -r requirements-docs.txt --disable-pip --no-deps --progress-spinner off
 
   test:
     runs-on: ubuntu-latest

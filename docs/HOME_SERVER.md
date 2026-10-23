@@ -184,7 +184,7 @@ Then run `sudo ./setup.sh` to check the result and apply it.
 in `.env` are ignored, and the setup drops them. Leave `API_BIND` out, so that the API listens
 on this machine only. The risk limits (`RISK_*`, `SIZING_*`) are optional. Their defaults are
 in the README's safety limits, in the [technical reference](REFERENCE.md#risk-controls) and in
-[`.env.example`](../.env.example), and the setup keeps any you set.
+[`.env.example`](https://github.com/Yog-Sotho/Nocturna-Trading-System/blob/main/.env.example), and the setup keeps any you set.
 
 ## After the setup
 

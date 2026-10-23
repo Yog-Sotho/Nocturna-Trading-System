@@ -1,13 +1,12 @@
 # NOCTURNA technical reference
 
-Everything the [README](../README.md) leaves out: what each part does and how well it is
+Everything the [README](https://github.com/Yog-Sotho/Nocturna-Trading-System#readme) leaves out: what each part does and how well it is
 tested, the full risk limits, the validation pipeline, the API, every setting, and how to
 develop on the code. The design is in [ARCHITECTURE.md](ARCHITECTURE.md), the plan and its
 decisions in [ROADMAP.md](ROADMAP.md), operations in [RUNBOOK.md](RUNBOOK.md) and the home
 server in [HOME_SERVER.md](HOME_SERVER.md).
 
-> [!WARNING]
-> **Paper trading only.** Live trading is disabled in code: the app refuses to start unless
+> ⚠️ **Paper trading only.** Live trading is disabled in code: the app refuses to start unless
 > `TRADING_MODE=PAPER` and `ALPACA_BASE_URL` points at the Alpaca paper API. No strategy in this
 > repository has passed out-of-sample validation, and none should be trusted with real money.
 
@@ -309,6 +308,16 @@ Dependencies are declared in `requirements.in` / `requirements-dev.in` and compi
 hashed lockfiles with `uv pip compile ... --generate-hashes` (commands are in the `.in`
 headers).
 
+The documentation site (<https://yog-sotho.github.io/Nocturna-Trading-System/>) is built from
+`docs/` with MkDocs Material (`mkdocs.yml`, locked in `requirements-docs.txt`) by
+`.github/workflows/docs.yml`: a strict build on pull requests, a deployment to GitHub Pages on
+every push to `main`. To preview it:
+
+```bash
+pip install --require-hashes -r requirements-docs.txt
+mkdocs serve
+```
+
 ### Quality gates
 
 CI (`.github/workflows/ci.yml`) blocks a merge on any of:
@@ -318,7 +327,7 @@ CI (`.github/workflows/ci.yml`) blocks a merge on any of:
 | ruff | lint of `src/`, `tools/` and `setup/` |
 | mypy | `--strict` typing of the trading core (`src/trading/`, `src/models/trading.py`; settings in `pyproject.toml`) |
 | bandit | security findings of medium severity and confidence or higher; a reviewed exception carries `# nosec <id>` with the reason on the line above |
-| pip-audit | known vulnerabilities in both lockfiles |
+| pip-audit | known vulnerabilities in the lockfiles (development, mutation testing, docs site) |
 | pytest | the suite on SQLite and PostgreSQL; at least 94% line coverage overall and 95% for each core module (`tools/coverage_gate.py`) |
 | dashboard | the dashboard against a simulated engine in Chromium at phone size (`tools/dashboard/`) |
 | image | the Docker image builds and the Compose stack starts healthy with a throwaway `.env` |

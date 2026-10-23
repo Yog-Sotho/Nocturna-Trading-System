@@ -1,0 +1,51 @@
+site_name: NOCTURNA Trading System
+site_description: A self-hosted paper-trading robot for US ETFs on Alpaca, with hard risk limits and a validation gauntlet that catches lucky backtests.
+site_url: https://yog-sotho.github.io/Nocturna-Trading-System/
+repo_url: https://github.com/Yog-Sotho/Nocturna-Trading-System
+edit_uri: edit/main/docs/
+strict: true
+validation:
+  anchors: warn  # a broken in-page link fails the strict build
+
+theme:
+  name: material
+  logo: images/wolf.png
+  favicon: images/wolf-favicon.png
+  features:
+    - content.code.copy
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+  palette:
+    - scheme: slate
+      primary: deep purple
+      accent: purple
+      toggle: {icon: material/brightness-4, name: Light mode}
+    - scheme: default
+      primary: deep purple
+      accent: purple
+      toggle: {icon: material/brightness-7, name: Dark mode}
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      # GitHub-style anchors, so in-page links work the same on GitHub and on the site
+      slugify: !!python/object/apply:pymdownx.slugs.slugify {kwds: {case: lower}}
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+nav:
+  - Home: index.md
+  - Running it:
+      - Home server: HOME_SERVER.md
+      - Runbook: RUNBOOK.md
+  - Reference:
+      - Technical reference: REFERENCE.md
+      - Architecture: ARCHITECTURE.md
+  - Strategy research:
+      - Roadmap: ROADMAP.md
+      - Strategy shortlist: STRATEGY_SHORTLIST.md
