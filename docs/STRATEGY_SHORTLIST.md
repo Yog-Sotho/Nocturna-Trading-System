@@ -567,3 +567,75 @@ despite the 10% kill switch:
 **As fixed in advance,** no other variant is tested on this data. The code stays as the
 `trend-filter` candidate, and `--data history` stays available to every candidate trading SPY
 and IEF.
+
+## Decision (23 October 2026): D2
+
+The operator asked for D2 next. These rules were fixed and committed before any backtest of it.
+
+**The two funds, from their providers:**
+- **SPLV** (Invesco S&P 500 Low Volatility ETF; launched 5 May 2011; expense ratio 0.25%) tracks
+  the S&P 500 Low Volatility Index.
+  - The index holds the 100 S&P 500 stocks with the lowest standard deviation of their trailing
+    252 daily returns, weighted by the inverse of that volatility.
+  - It is rebalanced quarterly, in February, May, August and November, with no sector limits.
+  - Sources: [S&P DJI research](https://www.spglobal.com/spdji/en/documents/research/research-sp-500-low-volatility-index-five-decades-of-history.pdf)
+    and a [2012 SEC filing](https://www.sec.gov/Archives/edgar/data/83246/000114420412016831/v306941_fwp.htm).
+    S&P's methodology PDF was not reachable from here (HTTP 403).
+- **USMV** (iShares MSCI USA Min Vol Factor ETF; launched 18 October 2011; expense ratio
+  0.15%; 174 holdings) tracks the MSCI USA Minimum Volatility Index.
+  - That index is the minimum-variance portfolio of MSCI USA under a Barra risk model. Its
+    stock, sector and factor weights are kept near the parent index's, and it is re-optimized
+    each May and November ([MSCI methodology](https://www.msci.com/eqb/methodology/meth_docs/MSCI_Minimum_Volatility_Methodology_May2018.pdf)).
+
+**What Alpaca has.** Both are active and tradable, with daily bars from 4 January 2016.
+Checking that also showed their buy-and-hold returns from 4 January 2016 to 22 October 2026:
+
+| | Return a year | Volatility |
+|---|---|---|
+| USMV | 10.85% | 14.0% |
+| SPLV | 8.93% | 14.8% |
+| SPY | 14.89% | 17.4% |
+
+These figures were seen before the rules were written. They don't affect the rules, whose
+only choice (which fund) the round-2 text had already named.
+
+**No daily long history.** French's variance-sorted portfolios are monthly only, so D2 can't
+go through the engine on long-history data. The decision rests on Alpaca data alone.
+
+**Expectation, stated before the test.** Over 2016–2026 both funds gave up more return than
+volatility against SPY. So D2 is unlikely to beat the 60/40, and very unlikely to reach the 1.0
+gate.
+
+### Fixed rules: `low-vol`
+
+- **Portfolio.** The live 60/40 with the low-volatility fund in place of SPY: the fund at 60%
+  and IEF at 40%. Idle equity goes to the T-bill sleeve (BIL).
+- **The grid (two variants):** USMV and SPLV.
+- **Size.** The engine's standard sizing applies unchanged: the 60% position cap, the 8%
+  volatility target and the drawdown ladder.
+  - The fund's lower volatility means the target scales the portfolio down less, so it holds
+    more of both funds than the 60/40 holds of SPY and IEF. That is the mechanism under test.
+- **Orders.** At the next session's opening auction, as for the live 60/40.
+- **Costs.** The standard 5 bps per equity fill. Both funds trade about $200 million a day
+  (median over the last 250 sessions).
+- **Test.** `flask validate low-vol --start 2017-01-01 --end 2026-10-23`, with the standard
+  walk-forward and the ROADMAP gates, in excess of T-bills.
+- **The comparison.** `flask validate benchmark` on the same dates.
+- **What decides:** the same rule as for D1.
+  - Promotion only through the gates.
+  - If D2 fails them but beats the 60/40 (a higher walk-forward Sharpe ratio over T-bills and a
+    maximum drawdown no deeper), the operator decides whether it replaces the 60/40 as the
+    live benchmark.
+  - Otherwise D2 is recorded as rejected.
+- **Monthly long-history check, descriptive only.** It runs outside the engine on French's
+  "Portfolios Formed on Variance" (value-weighted; variance of the last 60 daily returns;
+  formed monthly on NYSE breakpoints; file SHA-256 beginning `232fdeac`).
+  - It compares the lowest-variance quintile with the market (French's daily Mkt-RF plus RF,
+    compounded by month).
+  - Over three periods: July 1963 to August 2026, July 1963 to December 2010 (before the
+    funds), and January 2012 to August 2026 (both funds trading).
+  - Measures: return a year, volatility, Sharpe ratio over the T-bill rate, and maximum
+    drawdown on monthly returns.
+  - It decides nothing.
+- **No other variant is tested on this data,** whatever the result: no other fund (SPHD,
+  LGLV, EFAV and the like), no other weights, no switching between the funds and SPY.
