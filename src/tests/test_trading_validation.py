@@ -357,6 +357,21 @@ class TestSwitchingStrategy:
         with pytest.raises(ValueError):
             SwitchingStrategy("Not valid", [_Counting({})], [])
 
+    def test_switching_to_a_set_trading_another_fund_sells_the_first(self):
+        """The low-vol candidate's sets hold different funds (USMV or SPLV); a switch must swap them."""
+        from src.trading.backtest import run_backtest
+        from src.trading.engine import Allocation
+        switch_at = datetime(2016, 1, 4, tzinfo=UTC)
+        switching = SwitchingStrategy("wf-test", [BuyAndHold({SPY: 0.6}), BuyAndHold({IEF: 0.6})],
+                                      [(CONFIG.start, 0), (switch_at, 1)])
+        config = dataclasses.replace(CONFIG, end=datetime(2016, 3, 1, tzinfo=UTC))
+        result = run_backtest([Allocation(switching, D("1"))], _bars(), config)
+        before = [f for f in result.fills if f.timestamp < switch_at]
+        after = [f for f in result.fills if f.timestamp >= switch_at]
+        assert before and {f.symbol for f in before} == {"SPY"}
+        assert {("SPY", "sell"), ("IEF", "buy")} <= {(f.symbol, f.side.value) for f in after}
+        assert [p.symbol for p in result.final.positions] == ["IEF"]
+
     def test_sets_are_consulted_only_once_their_history_suffices(self):
         long_memory = _Counting({"SPY": 0.5})
         long_memory.lookback = 3
@@ -472,6 +487,18 @@ class TestPipeline:
         assert gate.passed is None and report.overfitting is None and report.cross_validation is None
         assert report.deflated.dsr == pytest.approx(report.probabilistic_sharpe)
 
+    def test_the_regime_symbol_may_be_traded_by_any_parameter_set(self):
+        from src.trading.validation.pipeline import _regime_reference
+        funds = Candidate("funds", lambda p: BuyAndHold({p["fund"]: 0.6}), {"fund": [SPY, IEF]}, regime_symbol="IEF")
+        assert _regime_reference(funds, funds.parameter_sets()) == IEF  # only the second set trades IEF
+
+    def test_a_regime_symbol_no_set_trades_is_refused_before_any_backtest(self, monkeypatch):
+        from src.trading.validation import pipeline
+        monkeypatch.setattr(pipeline, "run_trials", lambda *a: pytest.fail("backtests ran"))
+        funds = Candidate("funds", lambda p: BuyAndHold({SPY: p["equity"]}), {"equity": [0.6]}, regime_symbol="QQQ")
+        with pytest.raises(ValueError, match="regime symbol QQQ is not traded by any parameter set of funds"):
+            validate(funds, _bars(), ValidationConfig(CONFIG, walk_forward=WF))
+
     def test_too_short_a_period_is_refused(self):
         short = BacktestConfig(start=datetime(2015, 1, 2, tzinfo=UTC), end=datetime(2015, 1, 20, tzinfo=UTC))
         with pytest.raises(ValueError):
@@ -539,6 +566,59 @@ class TestValidateCommand:
         [(symbols, _, _)] = synthetic_market
         assert symbols == ("SPY", "IEF")
         assert json.loads(out.with_suffix(".json").read_text())["settings"]["sharpe_in_excess_of"] == "zero"
+
+    @pytest.fixture
+    def long_history(self, app, monkeypatch):
+        from src.trading.validation import history, market
+
+        calls = []
+
+        def load(start, end):
+            calls.append((start, end))
+            bars = {**_bars(), "BIL": daily_bars(BIL, date(2014, 1, 2), date(2025, 12, 31), 91.0, seed=5,
+                                                 vol=0.0001)}
+            return ({"SPY": SPY, "IEF": IEF, "BIL": BIL}, bars,
+                    [history.Source("https://example.test/french.zip", "ab" * 32, date(1926, 7, 1), date(2026, 8, 31))])
+
+        monkeypatch.setattr(history, "load", load)
+        monkeypatch.setattr(market, "load", lambda *args: pytest.fail("Alpaca data was loaded"))
+        # The proxies need no Alpaca account
+        settings = app.extensions["settings"].model_copy(update={"alpaca_api_key": None, "alpaca_secret_key": None})
+        monkeypatch.setitem(app.extensions, "settings", settings)
+        return calls
+
+    def test_long_history_proxies(self, app, long_history, tmp_path):
+        out = tmp_path / "trend-filter.md"
+        result = app.test_cli_runner().invoke(args=[
+            "validate", "trend-filter", "--data", "history", "--start", "2016-01-04", "--end", "2021-01-01",
+            "--output", str(out), "--train-months", "24"])
+        assert result.exit_code in (0, 1), result.output
+        assert f"Data: https://example.test/french.zip (1926-07-01 to 2026-08-31, sha256 {'ab' * 32})" in result.output
+        [(start, end)] = long_history
+        assert start == datetime(2016, 1, 4, tzinfo=UTC) - timedelta(days=400)
+        assert end == datetime(2021, 1, 1, tzinfo=UTC)
+        data = json.loads(out.with_suffix(".json").read_text())
+        assert [t["params"] for t in data["trials"]] == [{"months": 8}, {"months": 10}, {"months": 12}]
+        assert data["settings"]["data"].startswith("long-history proxies for SPY, IEF and BIL")
+        assert data["settings"]["sharpe_in_excess_of"] == "T-bills (French's 1-month rate, as BIL)"
+        assert "Data: long-history proxies" in out.read_text()
+
+    def test_long_history_has_no_proxy_for_other_symbols(self, app, long_history):
+        result = app.test_cli_runner().invoke(args=["validate", "crypto-trend", "--data", "history"])
+        assert result.exit_code != 0
+        assert "proxies for SPY, IEF, BIL only, not BTC/USD, ETH/USD, SOL/USD" in result.output
+        assert long_history == []  # refused before any download
+
+    def test_long_history_errors_are_reported(self, app, monkeypatch):
+        from src.trading.validation import history
+
+        def load(start, end):
+            raise ValueError("https://example.test/french.zip ends on 2026-08-31")
+
+        monkeypatch.setattr(history, "load", load)
+        result = app.test_cli_runner().invoke(args=["validate", "benchmark", "--data", "history"])
+        assert result.exit_code != 0
+        assert "long-history data: https://example.test/french.zip ends on 2026-08-31" in result.output
 
     def test_unknown_candidate(self, app):
         result = app.test_cli_runner().invoke(args=["validate", "nope"])

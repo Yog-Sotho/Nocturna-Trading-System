@@ -121,12 +121,18 @@ def register_cli(app: Flask) -> None:
     @click.option("--no-tbills", is_flag=True,
                   help="Keep idle cash in cash and measure Sharpe ratios against zero (the rules before "
                        "22 October 2026), to compare with earlier reports.")
+    @click.option("--data", "data_source", type=click.Choice(["alpaca", "history"]), default="alpaca",
+                  show_default=True,
+                  help="alpaca: Alpaca's bars. history: proxies for SPY, IEF and BIL from French's Data Library "
+                       "and FRED, from 1970 to French's last month (no Alpaca account needed).")
     def validate_candidate(candidate: str, start: datetime, end: datetime | None, output: Path | None,
                            resume_after_kill_days: int, train_months: int, test_months: int,
-                           min_sharpe: float | None, no_tbills: bool) -> None:
+                           min_sharpe: float | None, no_tbills: bool, data_source: str) -> None:
         """
-        Validate CANDIDATE against the promotion gates on Alpaca data. Idle cash is held in
-        T-bills (BIL) and Sharpe ratios are measured in excess of them. Exit code 1 means rejected.
+        Validate CANDIDATE against the promotion gates on Alpaca data, or on the long-history
+        proxies with --data history (an additional test; promotion is decided on Alpaca data).
+        Idle cash is held in T-bills (BIL) and Sharpe ratios are measured in excess of them.
+        Exit code 1 means rejected.
         """
         from src.trading.backtest import BacktestConfig
         from src.trading.data import DEFAULT_FEED_DELAY
@@ -150,10 +156,29 @@ def register_cli(app: Flask) -> None:
         if end <= start:
             raise click.ClickException("--end must be after --start")
         symbols = spec.symbols if no_tbills else (*spec.symbols, (CASH_SLEEVE, AssetClass.EQUITY))
-        try:
-            instruments, bars = market.load(settings, symbols, start - timedelta(days=spec.warm_up_days), end)
-        except TradingNotConfiguredError as e:
-            raise click.ClickException(str(e)) from e
+        data_label, hurdle_label = "Alpaca daily bars", f"T-bills ({CASH_SLEEVE})"
+        if data_source == "history":
+            from src.trading.validation import history
+
+            unknown = sorted({s for s, _ in symbols} - set(history.SYMBOLS))
+            if unknown:
+                raise click.ClickException(f"the long history has proxies for {', '.join(history.SYMBOLS)} only, "
+                                           f"not {', '.join(unknown)}")
+            try:
+                instruments, bars, sources = history.load(start - timedelta(days=spec.warm_up_days), end)
+            except (ValueError, OSError) as e:
+                raise click.ClickException(f"long-history data: {e}") from e
+            bars = {s: bars[s] for s, _ in symbols}
+            for source in sources:
+                click.echo(f"Data: {source.url} ({source.first} to {source.last}, sha256 {source.sha256})")
+            data_label = ("long-history proxies for SPY, IEF and BIL from French's Data Library and FRED "
+                          "(docs/STRATEGY_SHORTLIST.md, Fixed rules: trend-filter)")
+            hurdle_label = f"T-bills (French's 1-month rate, as {CASH_SLEEVE})"
+        else:
+            try:
+                instruments, bars = market.load(settings, symbols, start - timedelta(days=spec.warm_up_days), end)
+            except TradingNotConfiguredError as e:
+                raise click.ClickException(str(e)) from e
         gates = PromotionGates() if min_sharpe is None else PromotionGates(min_oos_sharpe=min_sharpe)
         config = ValidationConfig(
             BacktestConfig(start=start, end=end, risk_limits=risk_limits(settings), sizing=sizing_policy(settings),
@@ -161,7 +186,7 @@ def register_cli(app: Flask) -> None:
                            cash_sleeve=None if no_tbills else instruments[CASH_SLEEVE]),
             walk_forward=WalkForwardConfig(train_months, test_months), gates=gates,
             hurdle=None if no_tbills else hurdle_returns(bars[CASH_SLEEVE], DEFAULT_FEED_DELAY[AssetClass.EQUITY]),
-            hurdle_label=f"T-bills ({CASH_SLEEVE})")
+            hurdle_label=hurdle_label, data_label=data_label)
         click.echo(f"Validating {candidate} ({spec.description}) from {start:%Y-%m-%d} to {end:%Y-%m-%d}...")
         try:
             report = validate(spec.build(instruments), bars, config)

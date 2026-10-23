@@ -283,3 +283,429 @@ earlier report exactly.
 - **Free data.** Any free source is allowed. B needs none beyond the NYSE calendar.
 - **Auction costs.** These stay at the modelled 5 bps until the soak report's measurements of
   real auction fills justify a change.
+
+## Round 2: free long-history data (23 October 2026)
+
+The operator ruled out taking more market risk (option B) and paying for data (option E), and
+chose to research ideas built on free data from outside Alpaca. Both sources work from here:
+
+- **Kenneth French's Data Library** has daily US market and 1-month T-bill returns from 1 July
+  1926 to August 2026 (from CRSP). Most of its portfolio sorts are monthly; the
+  variance-sorted portfolios, for example, are monthly from July 1963.
+- **FRED** has the 10-year Treasury yield, daily from 2 January 1962.
+
+**What the long history adds.** Tests over 60 to 100 years instead of 9, through 1973–74, 1987,
+2000–02 and 2008 rather than one or two crashes.
+
+**Its limits:**
+- Before ETFs existed these are index returns, not tradable funds.
+- Bond returns have to be computed from yields, which is an approximation.
+- Trading costs were higher in the past.
+
+The promotion gates still come from `flask validate` on Alpaca data. The long history is an
+additional test.
+
+### D1. Trend filter on the equity sleeve
+
+**Source.** Faber, "A Quantitative Approach to Tactical Asset Allocation" (*Journal of Wealth
+Management* 2007; revisited in the *Journal of Portfolio Management* 2018).
+
+**Published rule.** Hold stocks while the index is above its 10-month moving average and
+T-bills otherwise, checked at each month end.
+
+**Evidence for.**
+- In Faber's 2018 update the filter raised the Sharpe ratio of US stocks from 0.45 to 0.80, per
+  [Swedroe's summary](https://www.etf.com/sections/index-investor-corner/swedroe-why-financial-trends-persist).
+- Hurst, Ooi and Pedersen, "A Century of Evidence on Trend-Following Investing" (AQR, 2017),
+  find trend following positive in every decade since 1880. That is long-short across 67
+  futures markets, though, not this rule.
+
+**Evidence against.**
+- Faber's own update: after helping in 2008–09, the filter lagged stocks in six of the next
+  eight years.
+- Zakamulin ("The real-life performance of market timing with moving average and time-series
+  momentum rules", *Journal of Asset Management*; SSRN 2013) argues that earlier results were
+  inflated by data mining. Out of sample, the rules beat buy-and-hold only in short episodes
+  (per secondary summaries).
+- Huang, Li, Wang and Zhou, "Time Series Momentum: Is It There?" (*JFE* 2020), find little
+  evidence, market by market, that past returns predict future returns.
+
+**What it could add.** The engine already cuts exposure by volatility and by drawdown. The
+question this test answers is narrow: does a trend filter add anything on top of that? And
+does it let the portfolio hold more equity within the same 10% kill-switch limit? Option B
+failed because the drawdown limits cut in during crashes.
+
+**Overlap.** It belongs to the same family as the rejected ETF time-series momentum, but uses
+a single asset and a century of data.
+
+**Data.** French's daily market returns (1926–), FRED's 10-year yield for bonds (1962–), and
+Alpaca for 2017–2026.
+
+### D2. Defensive (low-volatility) stocks instead of SPY
+
+**Sources.** Blitz and van Vliet, "The Volatility Effect" (*JPM* 2007); Baker, Bradley and
+Wurgler, "Benchmarks as Limits to Arbitrage: Understanding the Low-Volatility Anomaly" (*FAJ*
+2011).
+
+**Rule.** Hold the least volatile stocks (through an ETF such as USMV or SPLV) in place of SPY
+in the 60/40.
+
+**Evidence for.** Baltussen, Blitz and van Vliet, "The Volatility Effect Revisited" (*JPM*
+2020), find the effect persistent across periods and markets, with no sign it has been
+arbitraged away (per summaries).
+
+**Evidence against.**
+- USMV, the largest such ETF, returned 10.5% a year over 2016–2025 against 14.8% for MSCI USA.
+  It beat the index only in 2018 and 2022. These are BlackRock's annual figures, compounded by
+  me.
+- It fell about as far as the S&P 500 in the 2020 crash (33%, per one analysis).
+
+**What it could add.** Each dollar in it carries less volatility, so the 8% volatility target
+would hold more equity. The test is whether its Sharpe ratio beats SPY's inside the engine.
+
+**Data.** French's variance-sorted portfolios are monthly only (from July 1963), so the
+long-history check would be monthly and outside the engine. The engine test runs on Alpaca
+data with USMV or SPLV (2017–2026).
+
+### D3. Economic trend (macro momentum)
+
+**Sources.** Brooks, "A Half Century of Macro Momentum" (AQR, 2017); Brooks, Feilbogen, Ooi and
+Akant, "Economic Trend" (AQR, 2023–24).
+
+**Rule.** Position each market by trends in its economic fundamentals: growth forecasts,
+inflation, monetary policy, trade and risk sentiment. It goes long and short across equity,
+bond, currency and commodity futures.
+
+**Evidence for.** AQR reports attractive returns over more than 50 years, with gains in the
+largest equity drawdowns.
+
+**Evidence against.**
+- The evidence comes from the manager that sells the strategy.
+- It is long-short in futures, not long-only in ETFs.
+- It needs data as first released (FRED's ALFRED vintages) and growth forecasts, which have no
+  free history.
+
+**Verdict.** It can't be tested faithfully with free data.
+
+### Checked and rejected (round 2)
+
+| Idea | Source | Why not |
+|---|---|---|
+| Timing stocks with valuation and macro predictors (dividend yield, earnings yield, term spread, and others) | Goyal and Welch, *RFS* 2008 | Re-tested by Goyal, Welch and Zafirov (*RFS* 2024; 46 variables): more than a third are no longer significant even in-sample, and half of the rest do poorly out of sample |
+| Timing bonds with the yield curve (forward rates) | Cochrane and Piazzesi, *AER* 2005 | No economic value to investors out of sample, worsening over time (Thornton and Valente, *RFS* 2012) |
+| Volatility timing | Moreira and Muir, *JF* 2017 | Fails out of sample (Cederburg et al., *JFE* 2020); the engine already targets volatility |
+
+### Recommendation (round 2)
+
+D1, though not because its evidence is strong: it is mixed. It is the one idea where a century
+of data answers a precise question about this engine.
+- It is conservative and cheap to build, and the answer is useful either way.
+- If it adds nothing, the current risk setup has been checked through 1973–74, 1987, 2000–02 and
+  2008 instead of one crash.
+
+D2 is the alternative. D3 is not recommended.
+
+## Decision (23 October 2026): D1
+
+The operator picked D1. These rules were fixed and committed before any backtest of it.
+
+**Primary source checked.** Faber's paper (SSRN 962461, February 2013 update):
+- "Buy when monthly price > 10-month SMA. Sell and move to cash when monthly price < 10-month
+  SMA."
+- Prices are total returns including dividends, at the close of the last day of the month;
+  the rest of the month is ignored.
+- Cash earns 90-day T-bills. Costs and taxes are excluded.
+- "There is broad parameter stability from 3 months on out to over 12 months." He chose 10
+  months as the one closest to the 200-day average.
+
+**Expectation, stated before the test.**
+- A 60/40 held to an 8% volatility target earned a Sharpe ratio of 0.52 over T-bills out of
+  sample on Alpaca data. A filter on its equity sleeve is unlikely to double that, so D1 is not
+  a likely pass of the 1.0 gate.
+- The real question is whether it beats the 60/40 (below).
+
+### Fixed rules: `trend-filter`
+
+- **Portfolio.** The live 60/40: SPY 60% and IEF 40%. The idle equity goes to the T-bill
+  sleeve (BIL), as for every strategy.
+- **Signal.** At each month end (the month's last NYSE session), compare SPY's adjusted close
+  (total return) with the mean of the last n month-end closes, that one included.
+  - Above the mean: target SPY 60%.
+  - Otherwise: SPY 0%, so that 60% goes to T-bills.
+  - IEF stays at 40% throughout. The filter applies only to the equity sleeve, as picked.
+  - Before n month ends exist, the strategy makes no decision.
+- **n, three variants (the whole grid):** 8, 10 and 12 months. That is Faber's 10 and the
+  neighbours inside the range he reports as stable.
+- **Size.** The engine's standard sizing applies unchanged: the 60% position cap, the 8%
+  volatility target and the drawdown ladder.
+  - The cap rules out a higher equity target. The filter can add only by avoiding the
+    drawdowns that make the ladder cut exposure.
+  - The 8% target stays, since the operator ruled out more risk (option B).
+- **Orders.** Each order goes at the opening auction of the next session, as for the live
+  60/40, so a month-end signal trades on the first session of the next month.
+- **Costs.** The standard model: 5 bps per equity fill.
+
+**Test 1, the gates: Alpaca data.**
+- `flask validate trend-filter --start 2017-01-01`, with the standard walk-forward (36-month
+  training, 12-month test) and the ROADMAP gates, in excess of T-bills.
+- This decides promotion, as for every candidate.
+
+**Test 2, the long history: 1970 to August 2026.** Proxies built from free data, run through
+the same engine and the same `flask validate`, with `--data history --start 1971-01-01 --end
+2026-08-31`.
+- **The proxies:**
+  - **SPY:** Kenneth French's daily US market return (Mkt-RF plus RF: all NYSE, AMEX and
+    NASDAQ stocks, value-weighted, dividends included, from CRSP).
+  - **BIL:** French's daily 1-month T-bill return (RF).
+  - **IEF:** the mean daily return of a 7-year and a 10-year Treasury par bond from FRED's
+    constant-maturity yields (DGS7 and DGS10). IEF holds 7- to 10-year Treasuries.
+    - Each day's return buys a par bond at the previous day's yield (coupon equal to that
+      yield, paid twice a year). It reprices that bond at today's yield, with its maturity
+      shortened by the calendar days elapsed, and adds the coupon accrued over them.
+    - On a day without a FRED value, the last earlier yield applies.
+- **How well the proxies track,** on daily returns from January 2016 to August 2026 against
+  Alpaca's adjusted bars (2,679 days). The bond mix was chosen on this comparison, which uses no
+  strategy results.
+
+  | Proxy | Its return | ETF's return | Its volatility | ETF's volatility | Correlation | Tracking error |
+  |---|---|---|---|---|---|---|
+  | US market for SPY | 15.35% | 15.16% | 18.4% | 17.5% | 0.992 | 2.4% |
+  | 7/10-year par bonds for IEF | 0.94% | 1.01% | 6.3% | 6.6% | 0.971 | 1.6% |
+  | 10-year par bond alone | 0.72% | 1.01% | 7.2% | 6.6% | 0.966 | 1.9% |
+  | 7-year par bond alone | 1.15% | 1.01% | 5.5% | 6.6% | 0.963 | 1.9% |
+  | 1-month T-bills for BIL | 2.31% | 2.14% | 0.1% | 0.3% | 0.44 | 0.2% |
+
+- **The bars.** One per NYSE session from 2 January 1970.
+  - Open, high, low and close all equal the cumulative total-return level. An order sent after
+    a session's bar therefore fills at the next session's close: a day later than Faber, and
+    later than the live open.
+  - Quantities are fractional, since the levels grow more than a hundredfold and whole units
+    would be too coarse.
+- **Why 1970.** From 1970 the NYSE calendar the engine uses matches French's trading days
+  exactly (14,287 days). Before 1970 it doesn't: it lacks the Saturday sessions (until 1952)
+  and many holidays (431 days in all). So the data from 1926 and FRED's 10-year yield from
+  1962 go unused. The test still spans 1973–74, the 1970s bond losses, 1987, 2000–02, 2008,
+  2020 and 2022.
+- **Costs.** 5 bps per fill, as above. Real costs were higher before ETFs and cheap trading;
+  the 3× cost gate (15 bps per fill) is the check.
+
+**The comparison.** The 60/40 (`benchmark` candidate) is run through `flask validate` on the
+same data and dates in both tests.
+
+**What decides.**
+- **Promotion:** only the gates of test 1, unchanged.
+- **If D1 fails the gates but beats the 60/40 in both tests,** I report that and the operator
+  decides whether it replaces the 60/40 as the live benchmark. "Beats" means a higher
+  walk-forward Sharpe ratio over T-bills and a maximum drawdown no deeper. It would still not
+  be a promoted strategy.
+- **Otherwise** D1 is recorded as rejected, and the live engine keeps the 60/40.
+- **No other variant is tested on this data,** whatever the result: no other filter length,
+  no filter on bonds, no other volatility target.
+
+### Result: rejected (23 October 2026)
+
+Both tests were run as fixed above. The commands were `flask validate trend-filter --start
+2017-01-01 --end 2026-10-23` and `flask validate trend-filter --data history --start 1971-01-01
+--end 2026-08-31`, and the same for `benchmark`. The downloaded files' SHA-256 digests begin
+`2f29e225` (French), `8e6ff8f4` (DGS7) and `e6bd270b` (DGS10).
+
+**The gates (test 1, Alpaca, walk-forward 2020 to October 2026):**
+
+| Gate | Value | Threshold | |
+|---|---|---|---|
+| Walk-forward Sharpe over T-bills | 0.53 | ≥ 1.0 | fail |
+| Deflated Sharpe | 0.98 | ≥ 0.95 | pass |
+| Probability of backtest overfitting | 0.84 | ≤ 0.20 | fail |
+| At 3× costs | 41.7% against T-bills' 20.3% | above T-bills | pass |
+| Parameter stability | 0.72 | ≥ 0.5 | pass |
+| Maximum drawdown | −11.2% | ≥ −12% | pass |
+
+**Against the 60/40, out of sample (walk-forward):**
+
+| | D1, Alpaca | 60/40, Alpaca | D1, 1974–2026 | 60/40, 1974–2026 |
+|---|---|---|---|---|
+| Sharpe over T-bills | 0.529 | 0.528 | 0.557 | 0.582 |
+| Return a year | 6.31% | 6.34% | 7.91% | 8.18% |
+| Volatility | 6.9% | 7.0% | 6.4% | 6.6% |
+| Maximum drawdown | −11.2% | −14.0% | −12.2% | −14.1% |
+| Kill-switch trips | 1 | 1 | 2 | 5 |
+| Gates failed | Sharpe, overfitting | Sharpe, overfitting, drawdown | Sharpe, overfitting, drawdown | Sharpe, overfitting, drawdown |
+
+**The verdict.** D1 fails the gates. It also doesn't beat the 60/40 in both tests:
+- On Alpaca data it ties: a Sharpe ratio of 0.529 against 0.528, with a shallower drawdown.
+- Over 1974–2026 its Sharpe ratio is lower, 0.557 against 0.582.
+
+So it is rejected, and the live engine keeps the 60/40.
+
+**What the long history shows:**
+- **The filter trades drawdowns for return.** It was in stocks at 75% of month ends and switched
+  0.8 times a year, in line with Faber's "less than one round-trip trade per asset class per
+  year".
+  - Held fixed over 1971–2026 (10 months against the 60/40), it cut the maximum drawdown from
+    −15.8% (1973–74) to −12.2% (1987).
+  - It also cut the kill-switch trips from five (1974, 1987, 2001, 2008, 2022) to two (1987,
+    1990).
+  - It earned less: 7.61% a year against 7.92%, an identical Sharpe ratio of 0.51.
+- **The month-end check can't react to a fast crash.** October 1987 fell inside one month,
+  and both portfolios tripped the kill switch on 20 October.
+- **No length stands out.** Over the full periods, 8, 10 and 12 months gave Sharpe ratios of
+  0.65, 0.46 and 0.56 on Alpaca data, and 0.49, 0.51 and 0.55 since 1971. The fixed 60/40
+  gave 0.68 and 0.51. The walk-forward's choices moved between lengths, and the overfitting
+  probability (0.84 and 0.65) says the in-sample best length tells little about the next year.
+- **The answer to the question asked.** The engine's volatility target and drawdown ladder
+  already do most of what the filter does, so the filter adds no risk-adjusted return. It
+  lowers drawdowns and kill-switch trips at a small cost in return, but not enough to pass the
+  12% drawdown gate over 55 years.
+
+**The current setup through five crashes.** Validated over 1974–2026, the 60/40 earned 8.18%
+a year out of sample with a Sharpe ratio of 0.58 over T-bills. Its maximum drawdown was −14.1%
+despite the 10% kill switch:
+- The kill switch tripped five times in 55 years, about once a decade.
+- The gap past 10% comes from moves between one session and the next fill, which in these
+  proxies lands a day later than live.
+
+**As fixed in advance,** no other variant is tested on this data. The code stays as the
+`trend-filter` candidate, and `--data history` stays available to every candidate trading SPY
+and IEF.
+
+## Decision (23 October 2026): D2
+
+The operator asked for D2 next. These rules were fixed and committed before any backtest of it.
+
+**The two funds, from their providers:**
+- **SPLV** (Invesco S&P 500 Low Volatility ETF; launched 5 May 2011; expense ratio 0.25%) tracks
+  the S&P 500 Low Volatility Index.
+  - The index holds the 100 S&P 500 stocks with the lowest standard deviation of their trailing
+    252 daily returns, weighted by the inverse of that volatility.
+  - It is rebalanced quarterly, in February, May, August and November, with no sector limits.
+  - Sources: [S&P DJI research](https://www.spglobal.com/spdji/en/documents/research/research-sp-500-low-volatility-index-five-decades-of-history.pdf)
+    and a [2012 SEC filing](https://www.sec.gov/Archives/edgar/data/83246/000114420412016831/v306941_fwp.htm).
+    S&P's methodology PDF was not reachable from here (HTTP 403).
+- **USMV** (iShares MSCI USA Min Vol Factor ETF; launched 18 October 2011; expense ratio
+  0.15%; 174 holdings) tracks the MSCI USA Minimum Volatility Index.
+  - That index is the minimum-variance portfolio of MSCI USA under a Barra risk model. Its
+    stock, sector and factor weights are kept near the parent index's, and it is re-optimized
+    each May and November ([MSCI methodology](https://www.msci.com/eqb/methodology/meth_docs/MSCI_Minimum_Volatility_Methodology_May2018.pdf)).
+
+**What Alpaca has.** Both are active and tradable, with daily bars from 4 January 2016.
+Checking that also showed their buy-and-hold returns from 4 January 2016 to 22 October 2026:
+
+| | Return a year | Volatility |
+|---|---|---|
+| USMV | 10.85% | 14.0% |
+| SPLV | 8.93% | 14.8% |
+| SPY | 14.89% | 17.4% |
+
+These figures were seen before the rules were written. They don't affect the rules, whose
+only choice (which fund) the round-2 text had already named.
+
+**No daily long history.** French's variance-sorted portfolios are monthly only, so D2 can't
+go through the engine on long-history data. The decision rests on Alpaca data alone.
+
+**Expectation, stated before the test.** Over 2016–2026 both funds gave up more return than
+volatility against SPY. So D2 is unlikely to beat the 60/40, and very unlikely to reach the 1.0
+gate.
+
+### Fixed rules: `low-vol`
+
+- **Portfolio.** The live 60/40 with the low-volatility fund in place of SPY: the fund at 60%
+  and IEF at 40%. Idle equity goes to the T-bill sleeve (BIL).
+- **The grid (two variants):** USMV and SPLV.
+- **Size.** The engine's standard sizing applies unchanged: the 60% position cap, the 8%
+  volatility target and the drawdown ladder.
+  - The fund's lower volatility means the target scales the portfolio down less, so it holds
+    more of both funds than the 60/40 holds of SPY and IEF. That is the mechanism under test.
+- **Orders.** At the next session's opening auction, as for the live 60/40.
+- **Costs.** The standard 5 bps per equity fill. Both funds trade about $200 million a day
+  (median over the last 250 sessions).
+- **Test.** `flask validate low-vol --start 2017-01-01 --end 2026-10-23`, with the standard
+  walk-forward and the ROADMAP gates, in excess of T-bills.
+- **The comparison.** `flask validate benchmark` on the same dates.
+- **What decides:** the same rule as for D1.
+  - Promotion only through the gates.
+  - If D2 fails them but beats the 60/40 (a higher walk-forward Sharpe ratio over T-bills and a
+    maximum drawdown no deeper), the operator decides whether it replaces the 60/40 as the
+    live benchmark.
+  - Otherwise D2 is recorded as rejected.
+- **Monthly long-history check, descriptive only.** It runs outside the engine on French's
+  "Portfolios Formed on Variance" (value-weighted; variance of the last 60 daily returns;
+  formed monthly on NYSE breakpoints; file SHA-256 beginning `232fdeac`).
+  - It compares the lowest-variance quintile with the market (French's daily Mkt-RF plus RF,
+    compounded by month).
+  - Over three periods: July 1963 to August 2026, July 1963 to December 2010 (before the
+    funds), and January 2012 to August 2026 (both funds trading).
+  - Measures: return a year, volatility, Sharpe ratio over the T-bill rate, and maximum
+    drawdown on monthly returns.
+  - It decides nothing.
+- **No other variant is tested on this data,** whatever the result: no other fund (SPHD,
+  LGLV, EFAV and the like), no other weights, no switching between the funds and SPY.
+
+### Result: rejected (23 October 2026)
+
+`flask validate low-vol --start 2017-01-01 --end 2026-10-23`, and the same for `benchmark`.
+The first run stopped at the end with an error: the pipeline looked for the regime reference,
+SPY, only in the first parameter set, and neither set trades SPY. That was fixed (the symbol is
+now checked across all sets before any backtest). Regimes are measured on USMV; they are
+descriptive and decide nothing. Nothing else changed between the runs.
+
+**The gates (walk-forward 2020 to October 2026):**
+
+| Gate | Value | Threshold | |
+|---|---|---|---|
+| Walk-forward Sharpe over T-bills | 0.15 | ≥ 1.0 | fail |
+| Deflated Sharpe | 0.945 | ≥ 0.95 | fail |
+| Probability of backtest overfitting | 0.21 | ≤ 0.20 | fail |
+| At 3× costs | 22.0% against T-bills' 20.3% | above T-bills | pass |
+| Parameter stability | 0.71 | ≥ 0.5 | pass |
+| Maximum drawdown | −13.0% | ≥ −12% | fail |
+
+**Against the 60/40, out of sample:**
+
+| | D2 low-vol | 60/40 |
+|---|---|---|
+| Sharpe over T-bills | 0.15 | 0.53 |
+| Return a year | 3.56% | 6.34% |
+| Volatility | 6.7% | 7.0% |
+| Maximum drawdown | −13.0% | −14.0% |
+| 2020 | 1.5% | 8.9% |
+| 2022 | −7.9% | −12.5% |
+
+Over the full period the variants' Sharpe ratios were 0.52 (USMV) and 0.37 (SPLV), against
+0.68 for the 60/40.
+
+**The verdict.** Rejected on the gates and on the comparison: a much lower Sharpe ratio, and
+a drawdown only slightly shallower. The live engine keeps the 60/40.
+- The funds lost less in 2022.
+- They didn't protect in the 2020 crash.
+- They lagged in the rising years.
+
+**The monthly check (descriptive),** as fixed: French's lowest-variance quintile against the
+market, monthly.
+
+| Period | Quintile: return a year | Volatility | Sharpe over T-bills | Max drawdown | Market: return a year | Volatility | Sharpe | Max drawdown |
+|---|---|---|---|---|---|---|---|---|
+| July 1963 – August 2026 | 11.24% | 12.1% | 0.58 | −42.3% | 10.87% | 15.4% | 0.47 | −50.2% |
+| July 1963 – December 2010 | 10.29% | 12.2% | 0.44 | −42.3% | 9.81% | 15.7% | 0.34 | −50.2% |
+| January 2012 – August 2026 | 14.44% | 12.0% | 1.05 | −17.7% | 15.13% | 14.5% | 0.94 | −24.9% |
+
+**The effect is real in the data, but the funds didn't deliver it.** The lowest-variance stocks
+earned about the market's return at four-fifths of its volatility, and they still did after
+2011. I added one window after seeing the results, the funds' own: January 2016 to August
+2026, monthly.
+
+| | Return a year | Volatility |
+|---|---|---|
+| Lowest-variance quintile | 14.62% | 12.9% |
+| Market | 15.12% | 15.7% |
+| USMV | 10.86% | 12.1% |
+| SPLV | 8.89% | 12.5% |
+| SPY | 15.63% | 15.0% |
+
+The funds trailed the quintile by 4 to 6 points a year at about its volatility. This check
+doesn't show why. The constructions differ:
+- The quintile is weighted by market value and re-sorted monthly on 60-day variance.
+- SPLV holds 100 S&P 500 stocks weighted by inverse volatility, quarterly.
+- USMV is an optimizer's portfolio with sector and factor limits, twice a year.
+
+**As fixed in advance,** no other fund, weighting or switch is tested on this data. The code
+stays as the `low-vol` candidate.

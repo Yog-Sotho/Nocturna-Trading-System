@@ -82,7 +82,8 @@ class ValidationReport:
             "",
             "Every figure comes from the trading engine with the simulated broker, the cost model, "
             "the risk gate and the position sizing used in paper trading. Sharpe and Sortino ratios are "
-            f"in excess of {self.settings.get('sharpe_in_excess_of', 'zero')}.",
+            f"in excess of {self.settings.get('sharpe_in_excess_of', 'zero')}. "
+            f"Data: {self.settings.get('data', 'Alpaca daily bars')}.",
             "",
             "## Promotion gates",
             "",

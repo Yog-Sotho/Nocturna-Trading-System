@@ -1,7 +1,7 @@
 """
 Tests for the candidate strategies against hand-computed cases from their
 papers' rules: month-end rebalancing flows, the crypto Donchian ensemble,
-time-series momentum and the month-end payment cycle.
+time-series momentum, the month-end payment cycle and the trend filter.
 """
 
 import math
@@ -23,7 +23,8 @@ from src.trading.strategies.rebalancing import (
     strategy_weight,
 )
 from src.trading.strategies.trend import TimeSeriesMomentum, ewma_volatility, trend_signal
-from src.trading.strategy import CLOSE, StrategyContext
+from src.trading.strategies.trend_filter import MONTHS, TrendFilter
+from src.trading.strategy import CLOSE, OPEN, StrategyContext, consult
 
 D = Decimal
 SESSIONS = TradingCalendar(AssetClass.EQUITY)
@@ -264,6 +265,74 @@ class TestMonthEndCycle:
         assert {f.symbol for f in result.fills} == {"SPY", "BIL"}
 
 
+# -- trend filter ----------------------------------------------------------------------------
+
+def _month_end_history(month_end_closes, first=date(2024, 1, 2), last=None, intra=None):
+    """
+    SPY bars on every session from ``first``: each month's sessions close at
+    that month's value in ``month_end_closes`` (in order), or at ``intra``
+    before the month's last session when given; the history stops after ``last``.
+    """
+    bars, month, value = [], None, None
+    values = iter(month_end_closes)
+    day = first if SESSIONS.is_session(first) else SESSIONS.next_session(first)
+    while True:
+        if (day.year, day.month) != month:
+            month = (day.year, day.month)
+            value = next(values, None)
+            if value is None:
+                break
+        close = value if intra is None or SESSIONS.next_session(day).month != day.month else intra
+        bars.append(bar(SPY, ny(day.year, day.month, day.day), close, close, close, close))
+        if last is not None and day >= last:
+            break
+        day = SESSIONS.next_session(day)
+    return {"SPY": tuple(bars)}
+
+
+class TestTrendFilter:
+    def test_holds_the_equity_sleeve_while_the_month_end_close_is_above_its_mean(self):
+        rising = _month_end_history([100 + i for i in range(10)])  # 109 against a mean of 104.5
+        assert TrendFilter(SPY, IEF).target_weights(_ctx(rising)) == {"SPY": 0.6, "IEF": 0.4}
+
+    @pytest.mark.parametrize("closes", [[109 - i for i in range(10)], [100] * 10])
+    def test_t_bills_instead_when_below_or_at_the_mean(self, closes):
+        # The engine's cash sleeve takes the 60% left over; the bonds keep their 40%
+        assert TrendFilter(SPY, IEF).target_weights(_ctx(_month_end_history(closes))) == {"SPY": 0.0, "IEF": 0.4}
+
+    def test_the_mean_is_over_the_last_n_month_end_closes(self):
+        closes = [200] * 4 + [100] * 7 + [130]
+        history = _ctx(_month_end_history(closes))
+        assert TrendFilter(SPY, IEF, months=8).target_weights(history)["SPY"] == 0.6  # mean 103.75
+        assert TrendFilter(SPY, IEF, months=12).target_weights(history)["SPY"] == 0.0  # mean 135.83
+
+    def test_prices_inside_a_month_are_ignored(self):
+        # Ten rising month ends to October 2024, then November trades at 50 until its last session
+        closes = [100 + i for i in range(10)] + [50]
+        mid_november = _month_end_history(closes, last=date(2024, 11, 27), intra=50)
+        assert TrendFilter(SPY, IEF).target_weights(_ctx(mid_november))["SPY"] == 0.6
+        november_end = _month_end_history(closes, last=date(2024, 11, 29))  # the month's last session
+        assert TrendFilter(SPY, IEF).target_weights(_ctx(november_end))["SPY"] == 0.0
+
+    def test_no_decision_before_n_month_ends(self):
+        assert TrendFilter(SPY, IEF).target_weights(_ctx(_month_end_history([100 + i for i in range(9)]))) is None
+
+    @pytest.mark.parametrize("months", MONTHS)
+    def test_its_lookback_holds_n_month_ends_whatever_the_newest_session(self, months):
+        strategy = TrendFilter(SPY, IEF, months=months)
+        assert strategy.execution == OPEN and strategy.lookback == months * 23 + 1
+        full = _month_end_history([100.0] * (months + 14))["SPY"]
+        newest = [i for i, b in enumerate(full) if i >= months * 23 + 30][:260]  # every day of a year
+        for i in newest:
+            history = {"SPY": full[:i + 1], "IEF": full[:i + 1]}
+            assert consult(strategy, _ctx(history)) is not None, full[i].start
+
+    @pytest.mark.parametrize("kwargs", [{"months": 1}, {"equity_weight": 0.0}, {"equity_weight": 1.5}])
+    def test_invalid_parameters(self, kwargs):
+        with pytest.raises(ValueError):
+            TrendFilter(SPY, IEF, **kwargs)
+
+
 class TestBlend:
     def test_weights_add_up_and_components_warm_up_separately(self):
         from src.trading.strategies.benchmark import BuyAndHold
@@ -297,7 +366,8 @@ class TestBlend:
 
 
 class TestCandidateRegistry:
-    @pytest.mark.parametrize("name", ["benchmark", "rebalancing", "tsmom", "crypto-trend", "month-end", "lineup"])
+    @pytest.mark.parametrize("name", ["benchmark", "rebalancing", "tsmom", "crypto-trend", "month-end",
+                                      "trend-filter", "low-vol", "lineup"])
     def test_every_candidate_builds_from_its_own_symbols(self, name):
         from src.trading.domain import Instrument
         from src.trading.validation.candidates import CANDIDATES
