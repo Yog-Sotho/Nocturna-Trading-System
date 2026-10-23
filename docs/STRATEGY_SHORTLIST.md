@@ -639,3 +639,73 @@ gate.
   - It decides nothing.
 - **No other variant is tested on this data,** whatever the result: no other fund (SPHD,
   LGLV, EFAV and the like), no other weights, no switching between the funds and SPY.
+
+### Result: rejected (23 October 2026)
+
+`flask validate low-vol --start 2017-01-01 --end 2026-10-23`, and the same for `benchmark`.
+The first run stopped at the end with an error: the pipeline looked for the regime reference,
+SPY, only in the first parameter set, and neither set trades SPY. That was fixed (the symbol is
+now checked across all sets before any backtest). Regimes are measured on USMV; they are
+descriptive and decide nothing. Nothing else changed between the runs.
+
+**The gates (walk-forward 2020 to October 2026):**
+
+| Gate | Value | Threshold | |
+|---|---|---|---|
+| Walk-forward Sharpe over T-bills | 0.15 | ≥ 1.0 | fail |
+| Deflated Sharpe | 0.945 | ≥ 0.95 | fail |
+| Probability of backtest overfitting | 0.21 | ≤ 0.20 | fail |
+| At 3× costs | 22.0% against T-bills' 20.3% | above T-bills | pass |
+| Parameter stability | 0.71 | ≥ 0.5 | pass |
+| Maximum drawdown | −13.0% | ≥ −12% | fail |
+
+**Against the 60/40, out of sample:**
+
+| | D2 low-vol | 60/40 |
+|---|---|---|
+| Sharpe over T-bills | 0.15 | 0.53 |
+| Return a year | 3.56% | 6.34% |
+| Volatility | 6.7% | 7.0% |
+| Maximum drawdown | −13.0% | −14.0% |
+| 2020 | 1.5% | 8.9% |
+| 2022 | −7.9% | −12.5% |
+
+Over the full period the variants' Sharpe ratios were 0.52 (USMV) and 0.37 (SPLV), against
+0.68 for the 60/40.
+
+**The verdict.** Rejected on the gates and on the comparison: a much lower Sharpe ratio, and
+a drawdown only slightly shallower. The live engine keeps the 60/40.
+- The funds lost less in 2022.
+- They didn't protect in the 2020 crash.
+- They lagged in the rising years.
+
+**The monthly check (descriptive),** as fixed: French's lowest-variance quintile against the
+market, monthly.
+
+| Period | Quintile: return a year | Volatility | Sharpe over T-bills | Max drawdown | Market: return a year | Volatility | Sharpe | Max drawdown |
+|---|---|---|---|---|---|---|---|---|
+| July 1963 – August 2026 | 11.24% | 12.1% | 0.58 | −42.3% | 10.87% | 15.4% | 0.47 | −50.2% |
+| July 1963 – December 2010 | 10.29% | 12.2% | 0.44 | −42.3% | 9.81% | 15.7% | 0.34 | −50.2% |
+| January 2012 – August 2026 | 14.44% | 12.0% | 1.05 | −17.7% | 15.13% | 14.5% | 0.94 | −24.9% |
+
+**The effect is real in the data, but the funds didn't deliver it.** The lowest-variance stocks
+earned about the market's return at four-fifths of its volatility, and they still did after
+2011. I added one window after seeing the results, the funds' own: January 2016 to August
+2026, monthly.
+
+| | Return a year | Volatility |
+|---|---|---|
+| Lowest-variance quintile | 14.62% | 12.9% |
+| Market | 15.12% | 15.7% |
+| USMV | 10.86% | 12.1% |
+| SPLV | 8.89% | 12.5% |
+| SPY | 15.63% | 15.0% |
+
+The funds trailed the quintile by 4 to 6 points a year at about its volatility. This check
+doesn't show why. The constructions differ:
+- The quintile is weighted by market value and re-sorted monthly on 60-day variance.
+- SPLV holds 100 S&P 500 stocks weighted by inverse volatility, quarterly.
+- USMV is an optimizer's portfolio with sector and factor limits, twice a year.
+
+**As fixed in advance,** no other fund, weighting or switch is tested on this data. The code
+stays as the `low-vol` candidate.

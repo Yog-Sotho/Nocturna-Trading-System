@@ -38,9 +38,9 @@ trading; only the clock, the market-data source and the broker are swapped. See
 
 - No strategy has a validated edge: on Alpaca data from 2017 to 2026 none of the Phase 5
   candidates, alone or combined, beat the 60/40 benchmark out of sample, and neither did the
-  month-end payment cycle or a trend filter on the 60/40 (the latter also over 1974–2026 on
-  long-history proxies; see [docs/ROADMAP.md](docs/ROADMAP.md)). The engine trades the
-  benchmark, with its idle cash in T-bills.
+  month-end payment cycle, a trend filter on the 60/40 (also over 1974–2026 on long-history
+  proxies) or low-volatility funds in place of SPY (see [docs/ROADMAP.md](docs/ROADMAP.md)).
+  The engine trades the benchmark, with its idle cash in T-bills.
 - The Compose stack has not yet run against the paper account (see the runbook before the
   first run).
 
@@ -176,7 +176,7 @@ grid):
 
 Registered candidates: `benchmark`, `rebalancing`, `tsmom`, `crypto-trend` (use
 `--start 2023-01-01 --train-months 12`: crypto data starts in 2021 and the longest channel needs
-two years), `month-end`, `trend-filter` and `lineup`.
+two years), `month-end`, `trend-filter`, `low-vol` and `lineup`.
 
 Notes: Alpaca's free plan serves equity history from 2016, so the default first trading day is
 2017-01-01 (2016 warms up indicators). Sharpe ratios are in excess of T-bills, which idle cash
