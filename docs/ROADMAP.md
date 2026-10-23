@@ -74,7 +74,8 @@ traded, next to the 5 bps the backtest assumes.
 
 The next candidates, with their sources and the evidence for and against them, are in
 [STRATEGY_SHORTLIST.md](STRATEGY_SHORTLIST.md); none is built until the operator picks one and
-its rules are fixed there.
+its rules are fixed there. Round 1's pick (MONTH-END) and round 2's two picks (TREND-FILTER and
+LOW-VOL) were built and rejected; no candidate is open.
 
 **Phase 5 outcome.** The lineup (60/40 core, ETF trend, crypto trend at 15%; two mixes and
 two trend variants fixed before any lineup backtest) was validated as one candidate on Alpaca
@@ -108,7 +109,7 @@ stock selection needs full-market real-time volume, which requires a $99/month d
 | 5 | Strategy rebuild per the lineup above, each gated by Phase 4 | Done: four candidates built and validated on Alpaca data; none passed, so the engine keeps the 60/40 benchmark |
 | 6 | Operations: engine as its own service, structured logs, metrics, alerts, health/readiness, Docker/Compose fixes, backups, runbooks | Done: see [RUNBOOK.md](RUNBOOK.md) |
 | 7 | Versioned API with OpenAPI docs; dashboard rebuilt with source and auth | Done: the API under `/api/v1` with an OpenAPI 3.1 document kept true by contract tests; the dashboard (`src/static/`) and Telegram commands |
-| 8 | CI quality gates: strict typing on core, coverage targets, mutation testing on risk, blocking security scans | Done: mypy `--strict` on the trading core, coverage floors (94% overall, 95% per core module), weekly Cosmic Ray mutation testing of `risk.py` and `sizing.py`, blocking bandit and pip-audit, dashboard and Compose-stack jobs; see the README's quality gates |
+| 8 | CI quality gates: strict typing on core, coverage targets, mutation testing on risk, blocking security scans | Done: mypy `--strict` on the trading core, coverage floors (94% overall, 95% per core module), weekly Cosmic Ray mutation testing of `risk.py` and `sizing.py`, blocking bandit and pip-audit, dashboard and Compose-stack jobs; see [REFERENCE.md](REFERENCE.md#quality-gates) |
 | 9 | ≥ 60-day paper soak, then staged live ramp | In progress: the soak report (`flask soak report`) checks the tolerance above; the soak starts when the operator starts the engine on the paper account |
 
 ### Sequencing notes
@@ -146,7 +147,11 @@ stock selection needs full-market real-time volume, which requires a $99/month d
   component can be validated with `--min-sharpe`, and Phase 5 validates the combined lineup as
   its own candidate.
 - Alpaca's free plan serves equity history from 2016: with 36 months of training, about six
-  years are out of sample.
+  years are out of sample. `flask validate --data history` adds proxies from free data back to
+  1970 (French's Data Library and FRED) for candidates trading SPY and IEF. On them, the live
+  60/40 (held at 60/40, the same limits) earned 8.11% a year from 1974 to August 2026, with a
+  maximum drawdown of −15.2% and five kill-switch trips (1974, 1987, 2001, 2008, 2022). Over
+  2020 to October 2026 on Alpaca data it earned 6.32% a year, with a −12.0% maximum drawdown.
 - The Alpaca adapter is tested against fakes with alpaca-py's real request models; its first
   run against a live paper account should be watched (order acknowledgements, fill events,
   crypto fee postings, position symbol formats).

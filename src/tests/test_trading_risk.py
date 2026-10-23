@@ -68,7 +68,7 @@ def _send(gate, request, ctx):
 # -- the pre-trade gate ------------------------------------------------------------------
 
 def test_defaults_are_the_documented_ones():
-    """The defaults in the README's risk controls table."""
+    """The defaults in the README's safety limits and docs/REFERENCE.md's risk controls."""
     limits = RiskLimits()
     assert (limits.max_drawdown, limits.daily_loss_limit) == (D("0.10"), D("0.03"))
     assert (limits.max_position_weight, limits.max_gross_exposure, limits.max_order_weight) == \

@@ -1,5 +1,9 @@
 # Strategy shortlist (research, 22 October 2026)
 
+> **Status (23 October 2026).** Every pick so far was built and rejected: round 1's B
+> (month-end payment cycle), and round 2's D1 (trend filter) and D2 (low-volatility funds). Each
+> result is under its decision below. No candidate is open; the live engine trades the 60/40.
+
 Phase 5 built four candidates (60/40 benchmark, month-end rebalancing flows, ETF time-series
 momentum, crypto Donchian ensemble) and none passed the promotion gates. This file lists what
 could come next. The operator picks, the rules are fixed in this file, and only then is a
