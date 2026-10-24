@@ -481,8 +481,8 @@ def change_password(user_id):
             password_errors.append('Must contain at least one lowercase letter')
         if not re.search(r'\d', new_password):
             password_errors.append('Must contain at least one number')
-        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', new_password):
-            password_errors.append('Must contain at least one special character')
+        if not re.search(r'[^A-Za-z0-9\s]', new_password):
+            password_errors.append('Must contain at least one symbol (not a letter, digit or space)')
 
         if password_errors:
             return format_response(

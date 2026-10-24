@@ -204,6 +204,21 @@ _ORIGIN = re.compile(r"https?://[^/\s,]+")
 _SECRET_NAME = re.compile(r"KEY|SECRET|TOKEN|PASSWORD|PEPPER|HEARTBEAT|NTFY|WEBHOOK|DATABASE_URL|REDIS_URL")
 _USERNAME = re.compile(r"[A-Za-z0-9_]{3,50}")
 _EMAIL = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+PASSWORD_RULES = ("at least 12 characters, with an upper-case letter, a lower-case letter, a digit and a symbol "
+                  "(any character that is not a letter, a digit or a space, such as ! - _ # or @)")
+
+
+def password_problem(password: str) -> str:
+    """What the password lacks, or "": the rules of src/utils/validators.py (RegisterSchema)."""
+    for broken, problem in ((len(password) < 12, f"it has {len(password)} characters, not 12 or more"),
+                            (len(password) > 128, "it has more than 128 characters"),
+                            (not re.search(r"[A-Z]", password), "it has no upper-case letter"),
+                            (not re.search(r"[a-z]", password), "it has no lower-case letter"),
+                            (not re.search(r"\d", password), "it has no digit"),
+                            (not re.search(r"[^A-Za-z0-9\s]", password), "it has no symbol")):
+        if broken:
+            return problem
+    return ""
 
 
 def is_placeholder(value: str) -> bool:
@@ -1070,16 +1085,30 @@ class Setup:
         email = ""
         while not _EMAIL.fullmatch(email):
             email = self.d.ask("Email for the account (it identifies the account; nothing is sent to it): ").strip()
-        self.d.say("Now the password, typed twice and hidden: at least 12 characters, with upper case, lower case, "
-                   "a digit and a symbol.")
-        for _ in range(3):
-            done = self.m.run(["docker", "compose", "exec", "api", "flask", "--app", "src.main", "create-admin",
-                               "--username", username, "--email", email], stream=True)
-            if done.code == 0:
-                self.m.admins = [username.lower()]
-                return
-            self.d.say("That did not work (the reason is above). Try again.")
-        raise StepFailedError("the dashboard account was not created")
+        password = self.choose_password()
+        self.m.hide.add(password)
+        # The password goes in the environment, not on the command line; the app's startup logs stay quiet
+        done = self.m.run(["docker", "compose", "exec", "-T", "-e", "LOG_LEVEL=WARNING", "-e", "ADMIN_PASSWORD",
+                           "api", "flask", "--app", "src.main", "create-admin", "--username", username,
+                           "--email", email], env={"ADMIN_PASSWORD": password})
+        if done.code != 0:
+            lines = [line.strip() for line in (done.err + done.out).splitlines() if line.strip()]
+            reason = next((line for line in lines if line.startswith("Error:")), lines[-1] if lines else "")
+            raise StepFailedError(f"the dashboard account was not created ({reason or f'exit {done.code}'})")
+        self.m.admins = [username.lower()]
+        self.d.say(f"The dashboard account {username.lower()} is created.")
+
+    def choose_password(self) -> str:
+        self.d.say(f"Now the password, typed twice and hidden: {PASSWORD_RULES}.")
+        while True:
+            password = self.d.ask_secret("Password (hidden): ")
+            problem = password_problem(password)
+            if problem:
+                self.d.say(f"Not accepted: {problem}. The rules: {PASSWORD_RULES}.")
+            elif self.d.ask_secret("The same password again (hidden): ") != password:
+                self.d.say("The two did not match. Type it again.")
+            else:
+                return password
 
     def test_alert(self) -> None:
         if not (self.m.env.get("ALERT_TELEGRAM_BOT_TOKEN") and self.m.env.get("ALERT_TELEGRAM_CHAT_ID")):
