@@ -1,8 +1,10 @@
 # Strategy shortlist (research, 22 October 2026)
 
-> **Status (23 October 2026).** Every pick so far was built and rejected: round 1's B
+> **Status (24 October 2026).** Every pick so far was built and rejected: round 1's B
 > (month-end payment cycle), and round 2's D1 (trend filter) and D2 (low-volatility funds). Each
-> result is under its decision below. No candidate is open; the live engine trades the 60/40.
+> result is under its decision below. [Round 3](#round-3-improving-the-6040-itself-24-october-2026)
+> proposes gold in the mix and asks the operator to decide how a change to the benchmark itself
+> is judged. Nothing is built or backtested for it yet; the live engine trades the 60/40.
 
 Phase 5 built four candidates (60/40 benchmark, month-end rebalancing flows, ETF time-series
 momentum, crypto Donchian ensemble) and none passed the promotion gates. This file lists what
@@ -713,3 +715,124 @@ doesn't show why. The constructions differ:
 
 **As fixed in advance,** no other fund, weighting or switch is tested on this data. The code
 stays as the `low-vol` candidate.
+
+## Round 3: improving the 60/40 itself (24 October 2026)
+
+**Why a different question.** Eight ideas have failed the gates, and the gates may be the wrong
+yardstick for a long-only, unlevered fund mix. The live 60/40 earns a Sharpe ratio of 0.53 over
+T-bills out of sample (2020 to October 2026); the gate asks for 1.0. The best simple long-only
+portfolio in the newest research below reaches 0.82 over 2006–2026. So this round looks for a
+change to the benchmark that earns more for the same risk, and asks the operator how such a
+change should be judged (see [The gate question](#the-gate-question-the-operators-decision)).
+
+### E1. Gold in the mix
+
+**Source.** Devanathan, Tzikas and Boyd (Stanford), "Simple Dynamic Stock/Bond/Gold
+Portfolios", [arXiv 2609.07946](https://arxiv.org/abs/2609.07946), 7 September 2026.
+
+**What they tested.** SPY, AGG and GLD, January 2006 to January 2026, long-only, no leverage,
+with cash at the federal funds rate:
+- fixed 60/40 and 50/30/20 (stocks/bonds/gold), rebalanced yearly;
+- the same mixes with volatility control: monthly, scaled down to a 7% volatility target
+  (11-day estimate), the rest in cash. Our engine already does this (8% target, plus the
+  drawdown ladder), so the only new piece here is the gold sleeve;
+- two optimizer portfolios (below, under *checked and rejected*).
+
+**Evidence for.** Their results, Sharpe ratios in excess of the federal funds rate:
+
+| Portfolio | Return a year | Volatility | Sharpe | Max drawdown |
+|---|---|---|---|---|
+| 50/30/20, volatility control | 7.8% | 7.3% | 0.82 | −15.9% |
+| 60/40, volatility control | 7.1% | 7.4% | 0.71 | −16.9% |
+| 50/30/20 | 9.1% | 10.3% | 0.70 | −27.1% |
+| 60/40 | 8.1% | 11.3% | 0.56 | −33.7% |
+
+- Without 2008–09 the order holds: 0.93 against 0.83 with volatility control.
+- Costs barely matter: at 20 bps a trade the volatility-controlled 50/30/20 still has 0.80.
+- Gold helps most when stocks and bonds fall together. Their correlation turned positive in
+  2022 ([one secondary source](https://dataporium.tech/articles/do-bonds-still-diversify-stocks-stock-bond-correlation-from-2022-to-2026)
+  puts it at +0.42 in 2026; I have not checked it against primary data).
+
+**Evidence against.**
+- **The samples flatter gold.** GLD returned 10.6% a year over 2006–2026, about as much as SPY.
+  Over our own Alpaca window gold went from $1,076 an ounce (December 2015, monthly average)
+  to $4,319 (September 2026): about four times, 14% a year
+  ([World Bank Pink Sheet](https://www.worldbank.org/en/research/commodity-markets), October
+  2026 release). A backtest on 2017–2026 will very likely like gold for that reason alone.
+- **A high real price has preceded weak returns.** Erb and Harvey find that when the real gold
+  price is high, the following decade's real return has been low, and that gold has not hedged
+  inflation over 10-year spans since 1975 ([NBER w18706](https://www.nber.org/system/files/working_papers/w18706/w18706.pdf);
+  [2024 update](https://www.fuqua.duke.edu/duke-fuqua-insights/future-gold-prices)). The real
+  price is near its all-time high now, with gold around $4,000 on 23 October 2026
+  ([Kitco](https://www.kitco.com/gold-price-today-usa/)).
+- **Long losing spells.** $675 an ounce in January 1980, $256 in July 1999 (monthly averages):
+  −62% over almost 20 years, before inflation.
+- Gold pays nothing, and the funds charge for storage: GLD 0.40% a year, GLDM 0.10%.
+- The paper is a new preprint with no independent replication yet. Its authors note that their
+  confidence intervals do not account for their specification search.
+
+**How it can be tested here, with free data.**
+- **The gates:** `flask validate` on Alpaca bars, SPY/IEF/GLD from 2017, the same engine, costs
+  and limits as the 60/40.
+- **The long history, monthly (the real test):** 1975–2026, through gold's 1980–2001 bear market.
+  - US market and 1-month T-bills from French's Data Library;
+  - 10-year Treasury returns from FRED's yields, as in round 2;
+  - gold from the World Bank's monthly prices, free and CC BY 4.0 (from January 1960; US
+    citizens could own gold again from 31 December 1974). They are monthly *averages*, which
+    smooth gold's month-to-month moves, so its volatility will read low.
+- FRED no longer serves the LBMA gold price (both series answer 404), so there is no free daily
+  gold history before GLD (November 2004).
+
+**Draft rules (to fix if chosen).**
+- The live 60/40 with a gold sleeve of 10%, 15% or 20% (the grid, for the stability gate),
+  taken equally from stocks and bonds: 20% gives the paper's 50/30/20.
+- GLD in the backtests, for its history. Which fund the engine then trades (GLD or the cheaper
+  GLDM) is fixed with the rules.
+- Everything else as the 60/40: the 8% volatility target, the drawdown ladder, the kill switch,
+  idle cash in T-bills, trades at the open.
+
+**Expectation, stated before any test.** E1 will probably beat the 60/40 on 2017–2026 Alpaca
+data because gold quadrupled in it, and probably still miss the 1.0 gate. The long history
+decides whether the gain is gold's recent run or a lasting effect of diversification.
+
+### Checked and rejected (round 3)
+
+| Idea | Source | Why not |
+|---|---|---|
+| Optimizer portfolios (return forecasts from 42 market and economic features) | Devanathan, Tzikas and Boyd, arXiv 2609.07946 (2026) | Best numbers in the paper (Sharpe 1.08), but about 280% turnover a year, many data series, and settings chosen by the authors with hindsight; too many free choices to validate honestly with nine years of Alpaca data |
+| Faster trend following | Kurth, Eisler, Rej and Bouchaud, [arXiv 2607.01550](https://arxiv.org/abs/2607.01550) (2026) | Short-term trend profits have been unreliable since about 2009 in futures data; our slower ETF trend (Phase 5) and trend filter (D1) already failed |
+| Long-only trend on single stocks | Zarattini, Pagani and Wilcox, SSRN 5084316 (2025) | Holds up out of sample, but needs a survivorship-free single-stock history, which is not free |
+
+### Small changes that need no strategy test
+
+These change costs, not exposure; each is worth a few basis points a year. They wait for the
+operator and are best made after the paper soak, so the soak measures one setup.
+- **SGOV instead of BIL for the T-bill sleeve:** 0.09% a year against 0.1356%, about 4.5 bps
+  less on the cash. SGOV only exists since May 2020, so the gates would keep measuring against
+  BIL ([comparison](https://www.trackinsight.com/en/compare-etfs/SGOV,BIL)).
+- **GLDM instead of GLD,** only if E1 is adopted: 0.10% against 0.40%
+  ([ETF.com](https://www.etf.com/sections/news/gld-vs-gldm-vs-iau-which-gold-etf-should-you-actually-buy)).
+
+### The gate question (the operator's decision)
+
+A long-only, unlevered fund mix is unlikely to reach a Sharpe ratio of 1.0 out of sample: the
+60/40 has 0.53, and the newest paper's best simple mix 0.82 over twenty years that include 2008.
+Two ways to judge E1, to be fixed before any test:
+
+- **A. Keep the gates as they are.** E1 is judged like every candidate. It will most likely be
+  rejected on the 1.0 gate, and we learn whether gold helps.
+- **B. A separate path for changing the benchmark itself.** A variant of the 60/40 (same engine
+  and limits, a different fixed mix) replaces it only if *all* of these hold, as fixed in
+  writing before the test:
+  - out of sample on Alpaca data (2020 to October 2026): a higher Sharpe ratio over T-bills than
+    the 60/40, and a maximum drawdown no worse;
+  - deflated Sharpe ratio, overfitting probability, 3× costs and parameter stability: the usual
+    gates;
+  - on the monthly long history, in each half of 1975–2026: a Sharpe ratio over T-bills no
+    lower than the 60/40's, and a maximum drawdown no worse;
+  - then the 60-day paper soak, like any change.
+
+**Recommendation: B, with E1 as its first test.** Your goal is more income at the same risk,
+and B asks exactly that question, with the long history as the guard against gold's recent
+run. A asks a question a long-only mix almost cannot pass.
+
