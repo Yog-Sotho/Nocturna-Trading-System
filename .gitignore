@@ -77,3 +77,4 @@ reports/
 
 # Database dumps (docker compose backup service)
 backups/
+site/

@@ -1,0 +1,11 @@
+# Documentation site (MkDocs + Material), built by .github/workflows/docs.yml and published to
+# https://yog-sotho.github.io/Nocturna-Trading-System/. Compile with:
+#   uv pip compile requirements-docs.in --python-version 3.13 --generate-hashes \
+#       --exclude-newer 2026-10-09 --exclude-newer-package certifi=2026-10-20 -o requirements-docs.txt
+# --exclude-newer takes only releases at least two weeks old when locked; certifi is allowed the
+# newer security fix below.
+# Preview it locally:
+#   pip install --require-hashes -r requirements-docs.txt && mkdocs serve
+mkdocs>=1.6.1,<2          # MkDocs 2 drops the plugin and theme system Material needs
+mkdocs-material>=9.7,<10
+certifi>=2026.10.19       # PYSEC-2026-4320 (via requests)

@@ -3,6 +3,7 @@
   <p>
     <a href="https://github.com/Yog-Sotho/Nocturna-Trading-System/actions/workflows/ci.yml"><img src="https://github.com/Yog-Sotho/Nocturna-Trading-System/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+    <a href="https://yog-sotho.github.io/Nocturna-Trading-System/"><img src="https://img.shields.io/badge/docs-online-8b5cf6" alt="Documentation"></a>
     <img src="https://img.shields.io/badge/Python-3.13%2B-3b82f6.svg" alt="Python 3.13+">
     <img src="https://img.shields.io/badge/Docker-Compose_ready-3b82f6.svg" alt="Docker Compose ready">
     <img src="https://img.shields.io/badge/trading-paper_only-8b5cf6.svg" alt="Paper trading only">
@@ -252,6 +253,10 @@ data library and FRED) is downloaded only when you ask for it.
 ---
 
 ## 🤓 For the nerds
+
+Read the guides as a website at
+**[yog-sotho.github.io/Nocturna-Trading-System](https://yog-sotho.github.io/Nocturna-Trading-System/)**,
+or right here:
 
 | Guide | What you'll find |
 |---|---|
