@@ -493,23 +493,58 @@ def test_starting_the_stack(tmp_path):
         s.start_stack()
 
 
+CREATE = ("docker", "compose", "exec", "-T", "-e", "LOG_LEVEL=WARNING")
+
+
 def test_creating_the_account(tmp_path):
-    answers = operator_machine() | {("docker", "compose", "exec", "-T", "api"): ok(""),
-                                    ("docker", "compose", "exec", "api"): ok()}
-    script = Script(answers=["bad name!", "", "not-an-email", "ops@home.lan"])
+    answers = operator_machine() | {("docker", "compose", "exec", "-T", "api"): ok(""), CREATE: ok()}
+    script = Script(answers=["bad name!", "", "not-an-email", "ops@home.lan"],
+                    secrets=["short1!A", "nosymbolsHere12", "Night-wolf-2026", "Night-wolf-2025",
+                             "Night-wolf-2026", "Night-wolf-2026"])
     s, m = setup_for(tmp_path, answers, script)
+    kwargs = []
+    run = m.run
+    m.run = lambda args, **k: (kwargs.append(k), run(args, **k))[1]
     s.create_account()
-    assert m.run.ran("docker", "compose", "exec", "api") == [
-        ["docker", "compose", "exec", "api", "flask", "--app", "src.main", "create-admin", "--username", "yogsotho",
-         "--email", "ops@home.lan"]]
-    assert m.admins == ["yogsotho"]
+    assert run.ran(*CREATE) == [
+        [*CREATE, "-e", "ADMIN_PASSWORD", "api", "flask", "--app", "src.main", "create-admin", "--username",
+         "yogsotho", "--email", "ops@home.lan"]]
+    assert kwargs[-1] == {"env": {"ADMIN_PASSWORD": "Night-wolf-2026"}}  # never on the command line
+    assert "Night-wolf-2026" in m.hide and m.admins == ["yogsotho"]
+    assert "Not accepted: it has 8 characters, not 12 or more." in script.text.replace(" The rules", "\n")
+    assert "Not accepted: it has no symbol." in script.text.replace(" The rules", "\n")
+    assert "The two did not match. Type it again." in script.said
+    assert "(any character that is not a letter, a digit or a space" in script.said[script.said.index(
+        "Password (hidden): ") - 1]
+
+
+def test_a_refused_account_says_why(tmp_path):
+    answers = operator_machine() | {("docker", "compose", "exec", "-T", "api"): ok(""), CREATE: inst.Result(
+        1, "", '{"level": "WARNING", "message": "x"}\nError: A user with username \'yogsotho\' already exists\n')}
+    script = Script(answers=["", "ops@home.lan"], secrets=["Night-wolf-2026", "Night-wolf-2026"])
+    s, _ = setup_for(tmp_path, answers, script)
+    with pytest.raises(inst.StepFailedError, match=r"not created \(Error: A user with username"):
+        s.create_account()
+
+
+@pytest.mark.parametrize("password, problem", [
+    ("Aa1!" * 3, ""), ("Night_wolf_2026", ""), ("Night wolf 2026", "it has no symbol"),
+    ("night-wolf-2026", "it has no upper-case letter"), ("NIGHT-WOLF-2026", "it has no lower-case letter"),
+    ("Night-wolf-two", "it has no digit"), ("A1!a" * 33, "it has more than 128 characters"),
+])
+def test_the_setup_checks_the_password_as_the_app_does(password, problem):
+    from src.utils.validators import validate_registration
+    assert inst.password_problem(password) == problem
+    valid, _, _ = validate_registration({"username": "yogsotho", "email": "ops@home.lan", "password": password,
+                                         "password_confirm": password})
+    assert valid == (problem == "")
 
 
 def test_an_existing_account_is_left_alone(tmp_path):
     answers = operator_machine() | {("docker", "compose", "exec", "-T", "api"): ok("yogsotho\n")}
     s, m = setup_for(tmp_path, answers)
     s.create_account()
-    assert not m.run.ran("docker", "compose", "exec", "api")
+    assert not m.run.ran(*CREATE)
 
 
 def test_the_test_alert(tmp_path):

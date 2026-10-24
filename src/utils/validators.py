@@ -159,8 +159,8 @@ class RegisterSchema(BaseModel):
             raise ValueError('Password must contain at least one lowercase letter')
         if not re.search(r'\d', v):
             raise ValueError('Password must contain at least one number')
-        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', v):
-            raise ValueError('Password must contain at least one special character')
+        if not re.search(r'[^A-Za-z0-9\s]', v):
+            raise ValueError('Password must contain at least one symbol (not a letter, digit or space)')
         return v
 
     @model_validator(mode='after')

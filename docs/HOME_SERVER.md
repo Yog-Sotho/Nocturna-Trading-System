@@ -128,7 +128,8 @@ Tailscale and prints a sign-in link. In the [admin console](https://login.tailsc
    - A username: letters, digits and underscores; your login name is offered.
    - An email: it only identifies the account, and nothing is sent to it.
    - A password, typed twice and hidden: at least 12 characters, with upper case, lower case,
-     a digit and a symbol.
+     a digit and a symbol (any character that is not a letter, a digit or a space, such as
+     `-`, `_`, `!` or `#`). If one is missing, it says which and asks again.
 6. **Did the test alert reach your phone?**
 
 When you run the setup again, it offers to keep each value already in `.env` (press Enter).
