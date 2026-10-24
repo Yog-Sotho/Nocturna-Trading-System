@@ -24,6 +24,7 @@ from src.db_migrations import upgrade as upgrade_database
 from src.middleware.security import configure_proxy, setup_rate_limiting, setup_security_headers
 from src.models.user import db
 from src.routes import schemas
+from src.routes.console import console_bp
 from src.routes.openapi import documented
 from src.routes.ops import ops_bp
 from src.routes.trading import trading_bp
@@ -214,14 +215,19 @@ def create_app(config_override=None):
     # Version 1 of the API; /api/version (unversioned) says which versions exist
     app.register_blueprint(user_bp, url_prefix='/api/v1')
     app.register_blueprint(trading_bp, url_prefix='/api/v1/trading')
+    app.register_blueprint(console_bp, url_prefix='/api/v1')
 
     # Live (paper) trading engine: in this process (built and started on demand, never at
     # import), or a separate engine process reached through the database
     from src.trading.alerts import build_alerts
+    from src.trading.app_settings import alert_choices
+    from src.trading.lab import ProcessLauncher
     from src.trading.runtime import RemoteRuntime, TradingRuntime
-    app.extensions['alerts'] = build_alerts(settings)
+    app.extensions['alerts'] = build_alerts(settings, choices=alert_choices(app))
     app.extensions['trading'] = (RemoteRuntime(app, settings) if settings.engine_mode == "external"
                                  else TradingRuntime(app, settings))
+    # The strategy lab's runs execute in a process of their own, started on demand
+    app.extensions['lab'] = ProcessLauncher()
     app.register_blueprint(ops_bp)
 
     # =============================================================================

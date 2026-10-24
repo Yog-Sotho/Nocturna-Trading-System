@@ -764,3 +764,53 @@ class TestLedgerFromAccount:
         assert ledger.starting_cash == D("6000")
         assert ledger.positions == {"SPY": ledger.position("SPY")}
         assert ledger.equity({"SPY": D("510")}) == D("6100")
+
+
+class TestCloseOut:
+    """Symbols held over from an earlier strategy mix are sold, whatever their size."""
+
+    def _engine(self, close_out=(IEF,)):
+        clock = SimulatedClock(ny(2026, 3, 2))
+        broker = SimulatedBroker(clock, {"SPY": SPY, "IEF": IEF}, D("100000"), costs=NO_COSTS)
+        ledger = Ledger.from_account(D("99000"), {"IEF": (D("20"), D("1000"))})  # 1% of equity: inside the band
+        engine = Engine(clock=clock, broker=broker, ledger=ledger, allocations=[Allocation(_Fixed({"SPY": 0.5},
+                                                                                                  (SPY,)), D("1"))],
+                        close_out=close_out)
+        return clock, engine
+
+    def _day(self, clock, engine, day):
+        bars = {"SPY": bar(SPY, ny(2026, 3, day), 100.0, 100.0, 100.0, 100.0),
+                "IEF": bar(IEF, ny(2026, 3, day), 50.0, 50.0, 50.0, 50.0)}
+        clock.advance_to(bars["SPY"].end + timedelta(minutes=15))
+        return {(r.symbol, r.side): r for r in engine.on_bars(bars)}
+
+    def test_a_held_over_position_is_sold_in_full(self):
+        clock, engine = self._engine()
+        assert engine.close_out == ("IEF",) and engine.target_weights()["IEF"] == 0
+        sent = self._day(clock, engine, 2)
+        assert sent[("IEF", Side.SELL)].qty == D("20")  # all of it, though it is inside the 2% band
+        assert ("SPY", Side.BUY) in sent
+
+    def test_without_close_out_a_foreign_position_stays(self):
+        clock, engine = self._engine(close_out=())
+        assert ("IEF", Side.SELL) not in self._day(clock, engine, 2)
+
+    def test_a_symbol_a_strategy_trades_is_not_closed_out(self):
+        clock, engine = self._engine(close_out=(SPY, IEF))
+        assert engine.close_out == ("IEF",)
+        assert self._day(clock, engine, 2)[("SPY", Side.BUY)].qty > 0
+
+    def test_conflicting_definitions_are_refused(self):
+        other = dataclasses.replace(IEF, min_qty=D("5"))
+        with pytest.raises(ValueError, match="conflicting definitions for IEF"):
+            Engine(clock=SimulatedClock(ny(2026, 3, 2)), broker=SimulatedBroker(SimulatedClock(ny(2026, 3, 2)),
+                                                                                  {"IEF": IEF}, D("1")),
+                   ledger=Ledger(D("1")), allocations=[Allocation(_Fixed({"IEF": 0.5}, (IEF,)), D("1"))],
+                   close_out=[other])
+
+    def test_the_cash_sleeve_cannot_be_closed_out(self):
+        clock = SimulatedClock(ny(2026, 3, 2))
+        with pytest.raises(ValueError, match="cash sleeve BIL must not be traded by a strategy or closed out"):
+            Engine(clock=clock, broker=SimulatedBroker(clock, {"SPY": SPY, "BIL": BIL}, D("1")),
+                   ledger=Ledger(D("1")), allocations=[Allocation(_Fixed({"SPY": 0.5}, (SPY,)), D("1"))],
+                   cash_sleeve=BIL, close_out=[BIL])

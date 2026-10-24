@@ -164,3 +164,56 @@ class EngineCommand(Model):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
     expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime)  # None: never (emergency halts)
     completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class TradingProfileRecord(Model):
+    """
+    One saved version of the trading profile (``src/trading/profile.py``): the
+    strategy mix and the risk-limit overrides. Rows are never changed, except
+    ``activated_at``, stamped the first time the engine starts with the version.
+    """
+
+    __tablename__ = 'trading_profiles'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mix: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    risk: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    activated_at: Mapped[datetime | None] = mapped_column(UTCDateTime, index=True)
+
+
+class LabRun(Model):
+    """
+    One run of the dashboard's strategy lab (``src/trading/lab.py``): a backtest
+    of a strategy mix, or the promotion gates for one strategy. A process of its
+    own executes queued runs one at a time and stores the result.
+    """
+
+    __tablename__ = 'lab_runs'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # backtest, validate
+    spec: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)  # queued, running, done, failed
+    created_by: Mapped[str | None] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    #: Touched while the run executes; a stale one means its process died
+    heartbeat_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    result: Mapped[Any] = mapped_column(JSON, nullable=True)
+    report: Mapped[str | None] = mapped_column(Text)  # the validation tear sheet, in Markdown
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+class AppSetting(Model):
+    """A setting changed on the dashboard and shared by every process (the alert choices)."""
+
+    __tablename__ = 'app_settings'
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[Any] = mapped_column(JSON, nullable=False)
+    updated_by: Mapped[str | None] = mapped_column(String(80))
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)

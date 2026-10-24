@@ -155,7 +155,7 @@ def sim_runtime(app):
 
     built = {}
 
-    def factory(flask_app, settings):
+    def factory(flask_app, settings, profile=None):
         clock = SimulatedClock(ny(2026, 3, 2, 12))
         history = {"SPY": daily_bars(SPY, date(2025, 1, 2), date(2026, 6, 30), 500.0, seed=1),
                    "IEF": daily_bars(IEF, date(2025, 1, 2), date(2026, 6, 30), 95.0, seed=2)}

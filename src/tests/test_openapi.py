@@ -221,11 +221,52 @@ class TestResponsesMatchTheDocument:
         api.call("POST", "/api/v1/trading/emergency-stop", 200, headers=bearer,
                  json={"reason": "drill", "close_all_positions": False})
         api.call("POST", "/api/v1/trading/control/resume", 200, headers=bearer)
+
+        # The strategies and the trading profile
+        api.call("GET", "/api/v1/trading/strategies", 200, headers=bearer)
+        api.call("GET", "/api/v1/trading/profile", 200, headers=bearer)
+        api.call("PUT", "/api/v1/trading/profile", 400, headers=bearer, json={"mix": []})
+        mix = {"mix": [{"strategy": "benchmark", "params": {"equity": 0.6}, "weight": "1"}],
+               "risk": {"risk_max_drawdown": "0.08"}}
+        saved = api.call("PUT", "/api/v1/trading/profile", 201, headers=bearer, json=mix).get_json()["data"]
+        assert saved["restart_needed"] is True
+        api.call("POST", "/api/v1/trading/control/restart", 202, headers=bearer)
+        sim_runtime.wait_running()
+        state = api.call("GET", "/api/v1/trading/profile", 200, headers=bearer).get_json()["data"]
+        assert state["running"]["id"] == saved["profile"]["id"] and state["pending"] is False
         api.call("POST", "/api/v1/trading/control/stop", 200, headers=bearer)
         # Without a running engine the emergency stop goes to the broker
         api.call("POST", "/api/v1/trading/emergency-stop", 200, headers=bearer,
                  json={"reason": "drill", "close_all_positions": False})
         api.call("POST", "/api/v1/trading/emergency-stop", 400, headers=bearer, json={"close_all_positions": "x"})
+
+        # The strategy lab: a run is queued, its process executes it, the result is read back
+        from src.trading import lab
+
+        class InlineLab:
+            def launch(self):
+                lab.drain(app, app.extensions["settings"])
+
+        monkeypatch.setitem(app.extensions, "lab", InlineLab())
+        monkeypatch.setattr(lab, "execute", lambda settings, kind, spec: (
+            {"headline": "rejected: fails out-of-sample Sharpe", "passed": False}, "# Validation: tsmom"))
+        api.call("POST", "/api/v1/lab/runs", 400, headers=bearer, json={"kind": "optimise"})
+        run = api.call("POST", "/api/v1/lab/runs", 202, headers=bearer, json={
+            "kind": "validate", "strategy": "tsmom", "start": "2017-01-03", "end": "2026-01-02"}).get_json()["data"]
+        api.call("GET", "/api/v1/lab/runs?limit=5", 200, headers=bearer)
+        done = api.call("GET", f"/api/v1/lab/runs/{run['run']['id']}", 200, headers=bearer).get_json()["data"]
+        assert done["run"]["status"] == "done" and done["run"]["report"] == "# Validation: tsmom"
+        api.call("GET", "/api/v1/lab/runs/9999", 404, headers=bearer)
+        api.call("GET", "/api/v1/trading/strategies", 200, headers=bearer)
+
+        # Alerts and preferences
+        api.call("GET", "/api/v1/settings/alerts", 200, headers=bearer)
+        api.call("PUT", "/api/v1/settings/alerts", 200, headers=bearer, json={"categories": {"fills": True}})
+        api.call("PUT", "/api/v1/settings/alerts", 400, headers=bearer, json={"categories": {"safety": False}})
+        api.call("POST", "/api/v1/settings/alerts/test", 409, headers=bearer)
+        api.call("GET", "/api/v1/me/preferences", 200, headers=bearer)
+        api.call("PUT", "/api/v1/me/preferences", 200, headers=bearer, json={"theme": "dark", "accent": "teal"})
+        api.call("PUT", "/api/v1/me/preferences", 400, headers=bearer, json={"theme": "neon"})
 
         # Sessions end
         second = {**headers, "Authorization": f"Bearer {pair['access_token']}"}

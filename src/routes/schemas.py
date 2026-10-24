@@ -305,3 +305,195 @@ class EmergencyStopResult(Strict):
 class ValidationErrors(Strict):
     validation_errors: list[dict[str, Any]] | None = None
     errors: list[dict[str, Any]] | None = None
+
+
+# -- strategies and the trading profile -------------------------------------------------
+
+
+class ParameterChoice(Strict):
+    value: Any = Field(description="A value from the strategy's validation grid")
+    label: str
+
+
+class StrategyParameter(Strict):
+    name: str
+    label: str
+    choices: list[ParameterChoice]
+
+
+class LabVerdict(Strict):
+    run_id: int
+    passed: bool
+    verdict: str | None
+    data: Literal["alpaca", "history"]
+    start: str
+    end: str
+    finished_at: Timestamp | None
+
+
+class StrategyInfo(Strict):
+    name: str = Field(description="The registered name (flask validate <name>)")
+    title: str
+    summary: str
+    source: str = Field(description="The paper or idea it follows")
+    verdict: Literal["benchmark", "rejected"] = Field(description="What validation concluded")
+    verdict_detail: str
+    doc: str = Field(description="Where the evidence is written up")
+    execution: Literal["open", "close"] = Field(description="Which auction its equity orders go to")
+    symbols: list[str]
+    asset_classes: list[str]
+    defaults: dict[str, Any] = Field(description="The parameters it starts with on the dashboard")
+    parameters: list[StrategyParameter]
+    lab: LabVerdict | None = Field(description="The strategy lab's newest finished validation of it")
+
+
+class Strategies(Strict):
+    strategies: list[StrategyInfo]
+
+
+class MixEntry(Strict):
+    strategy: str
+    params: dict[str, Any]
+    weight: DecimalStr = Field(description="Share of the account, as a fraction; the shares add up to at most 1")
+
+
+class TradingProfile(Strict):
+    id: int | None = Field(description="None: the default profile (nothing saved yet)")
+    mix: list[MixEntry]
+    risk: dict[str, Any] = Field(description="Overrides of the environment's RISK_* / SIZING_* settings")
+    note: str
+    created_by: str | None
+    created_at: Timestamp | None
+    activated_at: Timestamp | None = Field(description="When the engine first traded it")
+
+
+class RiskSetting(Strict):
+    name: str = Field(description="The setting, as its environment variable in lower case")
+    label: str
+    kind: Literal["fraction", "integer", "boolean", "dollars"]
+    minimum: DecimalStr | None
+    maximum: DecimalStr | None
+    off: DecimalStr | None = Field(description="A value outside the bounds that turns the control off")
+    optional: bool = Field(description="null is allowed (no limit)")
+    value: Any = Field(description="What the saved profile trades with")
+    source: Literal["profile", "environment"]
+    environment: Any = Field(description="The value from .env (or its default)")
+
+
+class ProfileState(Strict):
+    saved: TradingProfile = Field(description="What the engine trades from its next start")
+    running: TradingProfile | None = Field(description="What the running engine trades (None: not running)")
+    pending: bool = Field(description="The engine runs and a newer profile is saved: restart to apply it")
+    risk: list[RiskSetting]
+
+
+class ProfileSaved(Strict):
+    profile: TradingProfile
+    restart_needed: bool = Field(description="The engine runs another profile: restart it to apply this one")
+
+
+class ProfileBody(Strict):
+    mix: list[MixEntry]
+    risk: dict[str, Any] = Field(default_factory=dict, description="Only the settings to override")
+    note: str = ""
+
+
+# -- the strategy lab ---------------------------------------------------------------------
+
+
+class LabRunBody(Strict):
+    kind: Literal["backtest", "validate"]
+    start: str = Field(description="First day traded, YYYY-MM-DD; earlier bars warm up the indicators")
+    end: str | None = Field(default=None, description="Last day, YYYY-MM-DD (default: today)")
+    data: Literal["alpaca", "history"] = Field(
+        default="alpaca", description="alpaca: Alpaca's daily bars. history: proxies for SPY, IEF and BIL from 1970")
+    strategy: str | None = Field(default=None, description="validate: the strategy (GET /trading/strategies)")
+    mix: list[MixEntry] | None = Field(default=None, description="backtest: the mix, as in PUT /trading/profile")
+    risk: dict[str, Any] | None = Field(default=None, description="backtest: risk overrides, as in the profile")
+
+
+class LabRunSummary(Strict):
+    id: int
+    kind: Literal["backtest", "validate"]
+    status: Literal["queued", "running", "done", "failed"]
+    title: str
+    spec: dict[str, Any] = Field(description="What was asked: period, data, and the mix or the strategy")
+    created_by: str | None
+    created_at: Timestamp
+    started_at: Timestamp | None
+    finished_at: Timestamp | None
+    headline: str | None = Field(description="The result in one line (the verdict, or returns and drawdown)")
+    error: str | None
+
+
+class LabRunDetail(LabRunSummary):
+    result: dict[str, Any] | None = Field(
+        description="backtest: summary, curve, years, fills, fees. validate: passed, curve (out of sample), "
+                    "report (the JSON tear sheet)")
+    report: str | None = Field(description="validate: the tear sheet in Markdown")
+
+
+class LabRuns(Strict):
+    runs: list[LabRunSummary]
+
+
+class LabRunQueued(Strict):
+    run: LabRunSummary
+
+
+class LabRunData(Strict):
+    run: LabRunDetail
+
+
+# -- alerts and preferences ---------------------------------------------------------------
+
+
+class AlertChannel(Strict):
+    name: Literal["telegram", "ntfy", "webhook"]
+    label: str
+    configured: bool = Field(description="Its address is set in .env (secrets never leave .env)")
+    enabled: bool
+
+
+class AlertCategory(Strict):
+    name: str
+    label: str
+    description: str
+    locked: bool = Field(description="Always sent: it cannot be turned off")
+    enabled: bool
+
+
+class AlertSettings(Strict):
+    channels: list[AlertChannel]
+    categories: list[AlertCategory]
+
+
+class AlertSettingsBody(Strict):
+    channels: dict[str, bool] = Field(default_factory=dict)
+    categories: dict[str, bool] = Field(default_factory=dict)
+
+
+class TestAlertResult(Strict):
+    channel: str
+    sent: bool
+    error: str | None = Field(description="Why it failed: an HTTP status or an error type, never the address")
+
+
+class TestAlertResults(Strict):
+    results: list[TestAlertResult]
+
+
+class Preferences(Strict):
+    display_name: str = Field(description="The name the dashboard greets you by (empty: your username)")
+    theme: Literal["auto", "dark", "light"]
+    accent: Literal["violet", "indigo", "magenta", "teal", "amber"]
+    cards: list[str] = Field(description="The overview's cards, in order")
+    hidden: list[str] = Field(description="Cards not shown")
+
+
+class PreferencesBody(Strict):
+    display_name: str | None = None
+    theme: Literal["auto", "dark", "light"] | None = None
+    accent: Literal["violet", "indigo", "magenta", "teal", "amber"] | None = None
+    cards: list[str] | None = None
+    hidden: list[str] | None = None

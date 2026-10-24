@@ -18,6 +18,7 @@ from pydantic import SecretStr
 from src.trading.alerts import (
     MIN_PING_GAP,
     Alert,
+    AlertChoices,
     AlertDispatcher,
     EngineAlerts,
     EngineMonitor,
@@ -480,3 +481,121 @@ class TestJsonLogs:
             assert audit.propagate is True  # audit events join the main log
         finally:
             root.setLevel(level)
+
+
+class TestAlertChoices:
+    def _named(self, name):
+        sink = Collect()
+        sink.name = name
+        return sink
+
+    @pytest.mark.parametrize("kind, category", [
+        ("kill_switch", "safety"), ("halt", "safety"), ("broker_error", "problems"), ("strategy_error", "warnings"),
+        ("reconciled", "warnings"), ("resume", "lifecycle")])
+    def test_each_event_alert_has_its_category(self, kind, category):
+        assert event_alert(EngineEvent(kind, T0, detail="x")).category == category
+
+    def test_a_fill_is_an_alert_of_its_own_category(self):
+        fill = Fill("f-2", "nt-1", "SPY", Side.SELL, Decimal("2"), Decimal("501"), Decimal("0.01"), T0)
+        alert = event_alert(EngineEvent("fill", T0, fill=fill))
+        assert (alert.title, alert.category, alert.urgent) == ("Filled: sell 2 SPY", "fills", False)
+        assert alert.message == "at 501, fee 0.01 (client order nt-1)"
+
+    def test_optional_categories_follow_the_choices_and_locked_ones_are_always_sent(self):
+        sink = Collect()
+        choices = AlertChoices(categories={"fills": True, "lifecycle": False, "safety": False})
+        dispatcher = AlertDispatcher([sink], retry_delays=(), choices=lambda: choices)
+        for title, category in (("fill", "fills"), ("started", "lifecycle"), ("halt", "safety"),
+                                ("lab", "lab"), ("unknown", "nonsense")):
+            dispatcher.notify(Alert(title, category=category))
+        assert _sent(dispatcher, sink) == ["fill", "halt", "lab", "unknown"]
+
+    def test_by_default_fills_are_not_sent(self):
+        sink = Collect()
+        dispatcher = _dispatcher(sink)
+        dispatcher.notify(Alert("Filled: buy 1 SPY", category="fills"))
+        dispatcher.notify(Alert("Engine failed"))
+        assert _sent(dispatcher, sink) == ["Engine failed"]
+
+    def test_channels_follow_the_choices_but_never_all_off(self):
+        telegram, ntfy = self._named("telegram"), self._named("ntfy")
+        choices = [AlertChoices(channels={"ntfy": False})]
+        dispatcher = AlertDispatcher([telegram, ntfy], retry_delays=(), choices=lambda: choices[0])
+        assert dispatcher.channels == ["telegram", "ntfy"]
+        dispatcher.notify(Alert("one"))
+        assert dispatcher.flush(5)
+        choices[0] = AlertChoices(channels={"telegram": False, "ntfy": False})
+        dispatcher.notify(Alert("two"))
+        assert dispatcher.flush(5)
+        assert [a.title for a in telegram.alerts] == ["one", "two"] and [a.title for a in ntfy.alerts] == ["two"]
+        assert [name for name, _ in dispatcher.deliver_now(Alert("t", category="test"))] == ["telegram", "ntfy"]
+        choices[0] = AlertChoices(channels={"telegram": False}, categories={"lab": False})
+        assert [name for name, _ in dispatcher.deliver_now(Alert("t", category="lab"))] == ["ntfy"]
+
+    def test_unreadable_choices_send_as_by_default(self, caplog):
+        def broken():
+            raise RuntimeError("database gone")
+
+        sink = Collect()
+        dispatcher = AlertDispatcher([sink], retry_delays=(), choices=broken)
+        dispatcher.notify(Alert("Strategy error", category="warnings"))
+        dispatcher.notify(Alert("Filled", category="fills"))
+        assert _sent(dispatcher, sink) == ["Strategy error"]
+        assert "Reading the alert choices failed" in caplog.text
+
+    @pytest.mark.parametrize("stored, expected", [
+        (None, AlertChoices()),
+        ("on", AlertChoices()),
+        ({"channels": {"telegram": False, "pigeon": False, "ntfy": "no"}, "categories": {"fills": True, "x": 1}},
+         AlertChoices({"telegram": False}, {"fills": True})),
+        ({"channels": [], "categories": None}, AlertChoices()),
+    ])
+    def test_stored_choices_that_make_no_sense_are_ignored(self, stored, expected):
+        assert AlertChoices.from_dict(stored) == expected
+
+    def test_build_alerts_passes_the_choices(self, app):
+        settings = app.extensions["settings"].model_copy(update={"alert_webhook_url": SecretStr("https://h.example/x")})
+        dispatcher = build_alerts(settings, choices=lambda: AlertChoices(categories={"lab": False}))
+        assert dispatcher.channels == ["webhook"]
+        assert dispatcher._current_choices().sends("lab") is False
+
+
+class TestSharedSettings:
+    def test_written_and_read_back(self, app):
+        from src.trading import app_settings
+
+        assert app_settings.read(app, "alerts") is None
+        app_settings.write(app, "alerts", {"categories": {"fills": True}}, "adminuser", T0)
+        app_settings.write(app, "alerts", {"categories": {"fills": False}}, "other", T0 + timedelta(hours=1))
+        assert app_settings.read(app, "alerts") == {"categories": {"fills": False}}
+        assert app_settings.alert_choices(app, ttl=0)().sends("fills") is False
+
+    def test_a_value_is_reused_for_its_time_to_live(self, caplog):
+        from src.trading.app_settings import Cached
+
+        clock, loads = FakeClock(), []
+
+        def load():
+            loads.append(clock.t)
+            if len(loads) == 3:
+                raise RuntimeError("database gone")
+            return len(loads)
+
+        cached = Cached(load, fallback=0, ttl=10.0, clock=clock)
+        assert cached() == 1
+        clock.t += 9
+        assert cached() == 1 and len(loads) == 1
+        clock.t += 1
+        assert cached() == 2
+        clock.t += 10
+        assert cached() == 2 and "Reading a dashboard setting failed" in caplog.text  # the last good value
+        clock.t += 10
+        assert cached() == 4
+
+    def test_the_fallback_until_a_value_is_read(self):
+        from src.trading.app_settings import Cached
+
+        def load():
+            raise RuntimeError("no table yet")
+
+        assert Cached(load, fallback="default")() == "default"

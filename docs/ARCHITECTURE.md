@@ -137,6 +137,11 @@ monitor reports an engine process that stops answering, the one failure the engi
 report itself. A dead host cannot report anything, so `HEARTBEAT_URL` (healthchecks.io) is
 pinged while the engine runs and alerts from outside when the pings stop.
 
+Each alert has a kind (`CATEGORIES`). The dashboard's choices of channels and optional kinds
+are stored in the database (`app_settings`) and read, cached for 10 seconds, on the sending
+thread of every process; safety and problem alerts cannot be turned off, and if the choices
+leave no configured channel on, every channel is used.
+
 `/health` is liveness; `/ready` adds the database; `/metrics` serves Prometheus gauges behind
 `METRICS_TOKEN`. Logs are JSON lines on stdout in the Compose stack (`LOG_JSON`,
 `LOG_TO_FILE`). Operations are in [RUNBOOK.md](RUNBOOK.md).
@@ -253,6 +258,28 @@ needs, seeing only its instruments and lookback. `Strategy.min_history` lets a b
 before its slowest component is ready, so a component whose data starts later (Alpaca's crypto
 history begins in 2021) does not hold back the others.
 
+### The trading profile
+
+What the engine trades is a versioned trading profile (`src/trading/profile.py`), saved from the
+dashboard: a mix of registered strategies, each with parameters from its validation grid and a
+share of the account (shares add up to at most 1; T-bills hold the rest), plus overrides of the
+risk settings inside hard bounds. Each strategy of the mix is wrapped in a `Blend` named after
+it, so strategies stay distinct. The engine takes the newest profile when it starts and stamps
+it the first time it trades it; the soak report follows that one. Its warm-up covers the
+slowest strategy of the mix, and positions in symbols another strategy knows but the new mix
+does not trade are closed out (`Engine(close_out=...)`); positions bought by hand in other
+symbols are left alone. `src/trading/catalog.py` describes each strategy in plain words, with
+the verdict of its validation.
+
+### The strategy lab
+
+`src/trading/lab.py` queues backtests of a mix and validations of a strategy from the dashboard.
+The API starts `flask lab run` as a process of its own, which takes queued runs one at a time,
+oldest first (a run is claimed with a conditional update, so two processes never run one), sends
+a heartbeat every 30 seconds and stores the result; a run whose heartbeat is 5 minutes old lost
+its process and is marked failed. `flask validate` and the lab load bars through
+`validation/sources.py` and compute through `validation/runner.py`, so their reports agree.
+
 ## Safety
 
 `src/trading/safety.py` refuses to start the app or build the Alpaca adapter unless
@@ -261,15 +288,18 @@ connects to Alpaca's paper API.
 
 ## Dashboard and Telegram
 
-The dashboard (`src/static/`) is plain HTML, CSS and one JavaScript module, served by the API
-with no build step, so the source is what runs. It signs in with the JWT endpoints, keeps the
+The dashboard (`src/static/`) is plain HTML, CSS and JavaScript modules (`app.js` for the shell
+and the overview, `js/` for the other pages), served by the API with no build step, so the source
+is what runs. Its night theme (and a day one, five accents, each user's card order and name) is
+CSS custom properties switched by attributes on `<html>`; preferences are stored per user. It signs in with the JWT endpoints, keeps the
 access token in memory and the single-use refresh token in `sessionStorage` (or
 `localStorage` with "Stay signed in"), and rotates it one request at a time per tab, under a
 Web Lock across tabs, since presenting a used refresh token revokes every session. It reads
 the same endpoints as any API client and builds every element with DOM calls, never
 `innerHTML`, under the API's `script-src 'self'` policy. Its files are served with
 `Cache-Control: no-cache`, so an upgrade reaches phones at once. `tools/dashboard/` runs the
-app with a simulated engine and drives it in Chromium at phone size.
+app with a simulated engine and a lab on synthetic prices, and drives every page in Chromium at
+phone size, then on a desktop.
 
 Telegram commands (`src/trading/telegram.py`) are a second front end on the same runtime: a
 long-polling bot in the API's serving process, answering only the operator's private chat,

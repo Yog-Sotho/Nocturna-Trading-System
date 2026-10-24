@@ -156,3 +156,67 @@ class TestEmergencyStop:
 
     def test_traders_cannot_trigger_it(self, client, auth_headers):
         assert client.post("/api/v1/trading/emergency-stop", headers=auth_headers, json={}).status_code == 403
+
+
+class TestStrategiesAndProfile:
+    MIX = {"mix": [{"strategy": "benchmark", "params": {"equity": 0.6}, "weight": "0.5"},
+                   {"strategy": "trend-filter", "params": {"months": 10}, "weight": "0.4"}],
+           "risk": {"risk_max_drawdown": "0.08", "risk_max_orders_per_day": 20}, "note": "half and half"}
+
+    def test_the_catalog(self, client, auth_headers):
+        strategies = client.get("/api/v1/trading/strategies", headers=auth_headers).get_json()["data"]["strategies"]
+        assert len(strategies) == 8 and strategies[0]["name"] == "benchmark"
+
+    def test_nothing_saved_shows_the_default_and_the_environment(self, client, auth_headers):
+        data = client.get("/api/v1/trading/profile", headers=auth_headers).get_json()["data"]
+        assert data["saved"]["id"] is None and data["running"] is None and data["pending"] is False
+        assert data["saved"]["mix"] == [{"strategy": "benchmark", "params": {"equity": 0.6}, "weight": "1"}]
+        kill = next(r for r in data["risk"] if r["name"] == "risk_max_drawdown")
+        assert kill == {"name": "risk_max_drawdown", "label": "Kill switch: halt at this drop below the peak",
+                        "kind": "fraction", "minimum": "0.02", "maximum": "0.25", "off": None, "optional": False,
+                        "value": "0.10", "source": "environment", "environment": "0.10"}
+
+    def test_saving_a_new_version(self, app, client, admin_headers, auth_headers):
+        resp = client.put("/api/v1/trading/profile", headers=admin_headers, json=self.MIX)
+        assert resp.status_code == 201, resp.get_json()
+        saved = resp.get_json()["data"]
+        assert saved["restart_needed"] is False and saved["profile"]["note"] == "half and half"
+        assert saved["profile"]["created_by"] == "adminuser" and saved["profile"]["activated_at"] is None
+        data = client.get("/api/v1/trading/profile", headers=auth_headers).get_json()["data"]
+        assert data["saved"]["id"] == saved["profile"]["id"]
+        rows = {r["name"]: r for r in data["risk"]}
+        assert rows["risk_max_drawdown"]["value"] == "0.08" and rows["risk_max_drawdown"]["source"] == "profile"
+        assert rows["risk_max_orders_per_day"]["value"] == 20
+        assert rows["risk_daily_loss_limit"]["source"] == "environment"
+        from src.models.user import AuditLog
+        with app.app_context():
+            entry = AuditLog.query.filter_by(event_type="PROFILE_SAVED").one()
+            assert entry.event_data["profile_id"] == saved["profile"]["id"]
+
+    @pytest.mark.parametrize("body, message", [
+        ({"mix": []}, "the mix needs at least one strategy"),
+        ({"mix": [{"strategy": "benchmark", "params": {"equity": 0.6}, "weight": "1"}],
+          "risk": {"risk_max_drawdown": "0.04"}}, "start shrinking before the kill switch"),
+        (None, "the profile must be an object"),
+    ])
+    def test_the_reason_a_profile_is_refused(self, client, admin_headers, body, message):
+        resp = client.put("/api/v1/trading/profile", headers=admin_headers, json=body)
+        assert resp.status_code == 400 and message in resp.get_json()["error"]
+
+    def test_only_an_admin_saves(self, client, auth_headers):
+        assert client.put("/api/v1/trading/profile", headers=auth_headers, json=self.MIX).status_code == 403
+
+    def test_a_running_engine_needs_a_restart_to_take_it(self, client, admin_headers, auth_headers, sim_runtime):
+        _start(client, admin_headers, sim_runtime)
+        saved = client.put("/api/v1/trading/profile", headers=admin_headers, json=self.MIX).get_json()["data"]
+        assert saved["restart_needed"] is True
+        data = client.get("/api/v1/trading/profile", headers=auth_headers).get_json()["data"]
+        assert data["running"]["id"] is None and data["pending"] is True
+        assert client.post("/api/v1/trading/control/restart", headers=admin_headers).status_code == 202
+        sim_runtime.wait_running()
+        data = client.get("/api/v1/trading/profile", headers=auth_headers).get_json()["data"]
+        assert data["running"]["id"] == saved["profile"]["id"] and data["pending"] is False
+
+    def test_restart_without_keys_explains(self, client, admin_headers):
+        resp = client.post("/api/v1/trading/control/restart", headers=admin_headers)
+        assert resp.status_code == 503 and "ALPACA_API_KEY" in resp.get_json()["error"]

@@ -11,8 +11,13 @@ lives in (``ENGINE_MODE``):
 * ``RemoteRuntime`` (external): the engine runs as its own process; reads come
   from the views it publishes and commands go through the database channel.
 
-Both offer ``configured``, ``views``, ``start``, ``stop``, ``resume``,
-``submit_order``, ``cancel_order``, ``emergency_stop`` and ``autostart``.
+Both offer ``configured``, ``views``, ``start``, ``stop``, ``restart``,
+``resume``, ``submit_order``, ``cancel_order``, ``emergency_stop`` and
+``autostart``.
+
+What the engine trades is the trading profile (``profile.py``): the newest
+saved one when the engine starts. A newer profile saved while the engine
+runs takes effect at the next start, which ``restart`` does in one step.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ from .channel import CommandFailedError, CommandTimeoutError, EngineChannel
 from .domain import AssetClass
 from .engine import EngineListener
 from .operator import OperatorOrder, UnknownSymbolError
+from .profile import Profile
 from .risk import RiskDecision, RiskLimits
 from .service import EngineService, ServiceNotRunningError, ServiceStatus
 from .sizing import SizingPolicy
@@ -93,21 +99,45 @@ def build_broker(settings: Settings) -> Broker:
                         clock=SystemClock(), trading_client=client)
 
 
-def build_service(app: Flask, settings: Settings) -> EngineService:
-    """Wire the paper-trading engine to Alpaca."""
+def held_over(held: list[str], profile: Profile) -> list[tuple[str, AssetClass]]:
+    """
+    Symbols the account holds that some strategy could trade but the profile's
+    mix does not: the engine sells them (``Engine(close_out=...)``). Positions
+    in symbols no strategy knows (bought by hand) are left alone.
+    """
+    from .lineup import CASH_SLEEVE
+    from .profile import symbols
+    from .validation.candidates import CANDIDATES
+
+    known: dict[str, tuple[str, AssetClass]] = {}
+    for spec in CANDIDATES.values():
+        for symbol, asset_class in spec.symbols:
+            # Alpaca reports crypto pairs as "BTC/USD" or, in older responses, "BTCUSD"
+            known[symbol] = known[symbol.replace("/", "")] = (symbol, asset_class)
+    traded = {s for s, _ in symbols(profile)} | {CASH_SLEEVE}
+    found = {known[s] for s in held if s in known}
+    return sorted(p for p in found if p[0] not in traded)
+
+
+def build_service(app: Flask, settings: Settings, profile: Profile) -> EngineService:
+    """Wire the paper-trading engine to Alpaca, trading ``profile``."""
     from .alerts import EngineAlerts
     from .alpaca import AlpacaBroker, TradeUpdateStream, load_instruments
     from .clock import SystemClock
     from .data import AlpacaBarSource
-    from .lineup import CASH_SLEEVE, LINEUP_SYMBOLS, build_lineup
+    from .lineup import CASH_SLEEVE
     from .persistence import EngineRecorder
+    from .profile import allocations, effective_settings, symbols, warm_up_days
 
     key, secret = _credentials(settings)
 
     from alpaca.trading.client import TradingClient
 
     client = TradingClient(key, secret, paper=True)
-    instruments = load_instruments(client, LINEUP_SYMBOLS)
+    effective = effective_settings(settings, profile)
+    positions: Any = client.get_all_positions()
+    close_out = held_over([p.symbol for p in positions], profile)
+    instruments = load_instruments(client, (*symbols(profile), *close_out))
     clock = SystemClock()
     broker = AlpacaBroker(api_key=key, secret_key=secret, instruments=instruments, clock=clock,
                           trading_client=client)
@@ -119,10 +149,12 @@ def build_service(app: Flask, settings: Settings) -> EngineService:
         clock=clock,
         source=AlpacaBarSource(clock, api_key=key, secret_key=secret),
         broker=broker,
-        allocations=build_lineup(instruments),
+        allocations=allocations(profile, instruments),
         cash_sleeve=instruments[CASH_SLEEVE],
-        risk_limits=risk_limits(settings),
-        sizing=sizing_policy(settings),
+        close_out=[instruments[s] for s, _ in close_out],
+        risk_limits=risk_limits(effective),
+        sizing=sizing_policy(effective),
+        warm_up=timedelta(days=warm_up_days(profile)),
         risk_state=recorder.load_risk_state,
         listeners=listeners,
         snapshot_recorder=recorder.record_snapshot,
@@ -132,12 +164,25 @@ def build_service(app: Flask, settings: Settings) -> EngineService:
 
 class TradingRuntime:
     def __init__(self, app: Flask, settings: Settings,
-                 factory: Callable[[Flask, Settings], EngineService] = build_service) -> None:
+                 factory: Callable[[Flask, Settings, Profile], EngineService] = build_service,
+                 profiles: Callable[[Flask], Profile] | None = None,
+                 activate: Callable[[Flask, Profile, datetime], Profile] | None = None) -> None:
+        """
+        Args:
+            profiles: The profile to trade at the next start (default: the newest saved).
+            activate: Records that the engine started with a profile (default: stamps its row).
+        """
+        from . import profile as profiles_module
+
         self._app = app
         self._settings = settings
         self._factory = factory
+        self._profiles = profiles or profiles_module.latest
+        self._activate = activate or profiles_module.mark_activated
         self._lock = threading.Lock()
         self.service: EngineService | None = None
+        #: The profile the current service was built with
+        self.profile: Profile | None = None
 
     @property
     def configured(self) -> bool:
@@ -152,8 +197,18 @@ class TradingRuntime:
             RuntimeError: If it is already running.
         """
         with self._lock:
+            if self.service is not None and self.service.status().state in ("starting", "running"):
+                raise RuntimeError("engine service is already running")
+            profile = self._profiles(self._app)
+            if self.service is not None and not self.service.running and (
+                    self.profile is None or profile.id != self.profile.id):
+                self.service = None  # a newer profile: the engine is rebuilt for it
             if self.service is None:
-                self.service = self._factory(self._app, self._settings)
+                self.service = self._factory(self._app, self._settings, profile)
+                self.profile = profile
+            if self.profile is not None:
+                # Stamped before the engine thread exists: starting up, it writes to the database too
+                self.profile = self._activate(self._app, self.profile, datetime.now(UTC))
             self.service.start()
 
     def stop(self) -> None:
@@ -161,11 +216,18 @@ class TradingRuntime:
             if self.service is not None:
                 self.service.stop()
 
+    def restart(self) -> None:
+        """Stop and start again, taking the newest profile."""
+        self.stop()
+        self.start()
+
     def status(self) -> ServiceStatus | None:
         return self.service.status() if self.service is not None else None
 
     def views(self) -> dict[str, Any]:
-        return engine_views(self.configured, self.status())
+        views = engine_views(self.configured, self.status())
+        views["profile"] = self.profile.to_dict() if self.profile is not None and self.service is not None else None
+        return views
 
     def _running(self) -> EngineService:
         service = self.service
@@ -209,7 +271,8 @@ class TradingRuntime:
             closed = service.halt(reason, flatten=flatten)
             return {"engine": "halted", "close_orders": closed}
         if service is None:
-            service = self._factory(self._app, self._settings)
+            self.profile = self._profiles(self._app)
+            service = self._factory(self._app, self._settings, self.profile)
             self.service = service
         if not flatten:
             return {"engine": "not running", "close_orders": [], "cancelled_orders": service.broker_cancel_all()}
@@ -250,8 +313,8 @@ class RemoteRuntime:
         document = self._published()
         if document is None:
             return {"status": {"configured": self.configured, "state": "unreachable"},
-                    "positions": None, "targets": None, "working": []}
-        return document
+                    "positions": None, "targets": None, "working": [], "profile": None}
+        return {"profile": None, **document}
 
     def _call(self, kind: str, payload: dict[str, Any] | None = None) -> Any:
         if self._published() is None:
@@ -268,6 +331,9 @@ class RemoteRuntime:
 
     def stop(self) -> None:
         self._call("stop")
+
+    def restart(self) -> None:
+        self._call("restart")
 
     def resume(self) -> None:
         self._call("resume")

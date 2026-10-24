@@ -118,6 +118,19 @@ An alert repeated within 15 minutes is sent once.
 | Positions corrected from the broker | no | Reconciliation found the engine's book differed from Alpaca's and adopted Alpaca's |
 | Engine process started / stopped | no | A start without a stop before it was a crash |
 | Trading resumed, Engine answering again | no | Recovery |
+| Filled: buy 3 SPY | no | An order the engine placed was filled (off until you turn fills on) |
+| Lab run #N finished / failed | no | A strategy-lab run is done; its result is on the dashboard's **Lab** page |
+
+On the dashboard's **Alerts** page you choose which channels are used and
+which kinds of alert are sent: warnings (engine, strategy and reconciliation
+errors), comings and goings (the engine process starting and stopping,
+resumes, the engine answering again), fills and lab results. Safety alerts
+(the kill switch, halts, the daily loss limit) and problems (broker errors,
+a fill the engine did not place, a failed or silent engine) are always sent,
+and at least one configured channel is always used. Tokens and addresses
+stay in `.env`; both processes follow a change within about 10 seconds.
+**Send a test alert** on the same page (or `flask --app src.main
+send-test-alert`) reports what each channel answered.
 
 ### Telegram
 
@@ -184,6 +197,18 @@ Alerts come from the stack itself, so they cannot report a dead host. A
   SPDR Bloomberg 1-3 Month T-Bill ETF), not a strategy position. Its size
   moves with the 60/40's: it takes what the volatility target and the
   drawdown ladder leave unused. The kill switch sells it with everything else.
+- **Changing the mix or the limits:** the dashboard's **Strategies** and
+  **Risk** pages save a new version of the trading profile (each save is in
+  the audit log as `PROFILE_SAVED`). The running engine keeps trading the
+  version it started with until it restarts (**Restart now**, or
+  `POST /api/v1/trading/control/restart`); then it sells positions in
+  symbols the new mix does not trade. Restart outside US market hours when
+  you can: orders go to the next auction either way.
+- **The strategy lab:** each run executes in a `flask lab run` process that
+  the API starts inside its own container, one run at a time; queued runs
+  wait. A run whose process dies (for instance when the `api` container is
+  recreated) is marked failed within 5 minutes; queue it again. Long-history
+  runs download Kenneth French's and FRED's files each time.
 - **Logs:** `docker compose logs -f engine` (or `api`); one JSON object per
   line (`LOG_JSON=false` in `.env` for plain text).
 - **Metrics:** with `METRICS_TOKEN` set, `GET /metrics` serves Prometheus

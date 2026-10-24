@@ -42,8 +42,12 @@ ETFs through [Alpaca](https://alpaca.markets), and it's paranoid by design:
   the robot sticks to a plain 60/40 portfolio.
 - 💵 **Idle cash works.** Whatever the safety rules leave unused sits in T-bills (BIL), not in
   cash earning nothing.
-- 📱 **It lives in your pocket.** A phone-first dashboard and a Telegram bot: check positions,
-  start, stop, or hit the emergency stop from anywhere.
+- 🎛️ **You choose what trades.** Pick strategies and the share of the account each one gets,
+  tune the risk limits inside hard bounds, and backtest or validate any mix in the dashboard's
+  strategy lab before it trades. A strategy that failed validation says so, and asks you to
+  confirm that you read why.
+- 📱 **It lives in your pocket.** A phone-first dashboard in a night theme, with the wolf, and a
+  Telegram bot: check positions, start, stop, or hit the emergency stop from anywhere.
 - 🏠 **It runs at home, 24/7.** One setup script turns an Ubuntu machine into the robot's home:
   Docker, daily backups, alerts, and a dead man's switch that tells you if it ever goes quiet.
 - 🔒 **Paper only.** Real-money trading is disabled in the code itself.
@@ -55,15 +59,20 @@ No finance degree required. If you can copy-paste a few commands and use a phone
 ## 🖼️ Gallery
 
 <div align="center">
-  <img src="docs/images/dashboard-desktop.png" alt="The dashboard on a desktop: account figures, controls, equity curve and positions in SPY, IEF and BIL" width="750"/>
-  <p><em>The dashboard on a desktop: the account, its safety figures, the controls, the equity
-  curve and what the robot holds.</em></p>
-  <img src="docs/images/dashboard-phone-dark.png" alt="The dashboard on a phone in dark mode" width="300"/>
+  <img src="docs/images/dashboard-desktop.png" alt="The dashboard on a desktop: the controls, the account, the equity curve, the strategy mix and the positions" width="750"/>
+  <p><em>The overview: the controls, the account, the equity curve, the mix the robot trades and
+  what it holds.</em></p>
+  <img src="docs/images/dashboard-sign-in.png" alt="The moonlit sign-in page with the Nocturna wolf" width="260"/>
   &nbsp;
-  <img src="docs/images/dashboard-emergency-stop.png" alt="The emergency stop dialog: keep the positions or close every position too" width="300"/>
-  <p><em>On your phone, in dark mode, and the emergency stop: one tap halts everything and asks
-  whether to keep the positions or close them. If the robot doesn't answer, Alpaca is asked
-  directly.</em></p>
+  <img src="docs/images/dashboard-phone-mix.png" alt="Editing the strategy mix on a phone: 50% 60/40, 30% trend filter, 20% T-bills" width="260"/>
+  &nbsp;
+  <img src="docs/images/dashboard-emergency-stop.png" alt="The emergency stop dialog: keep the positions or close every position too" width="260"/>
+  <p><em>Signing in under the moon, choosing the mix on your phone (a rejected strategy is marked
+  as such), and the emergency stop: one tap halts everything and asks whether to keep the
+  positions or close them. If the robot doesn't answer, Alpaca is asked directly.</em></p>
+  <img src="docs/images/dashboard-lab.png" alt="A backtest in the strategy lab: yearly return, Sharpe, drawdown, the equity curve and each year's return" width="750"/>
+  <p><em>The strategy lab: a mix backtested through the same engine, costs and limits as paper
+  trading, against T-bills.</em></p>
   <p><sub>Screenshots from the built-in simulator, with made-up prices, not a real account.</sub></p>
 </div>
 
@@ -143,7 +152,8 @@ python tools/dashboard/serve_sim.py . /tmp/dashboard.db 5055
 ```
 
 Open <http://127.0.0.1:5055> and sign in as `ops` / `Harness-Passw0rd!`. Start the engine and
-one simulated trading day passes every three seconds.
+one simulated trading day passes every three seconds. The strategy lab runs on the same made-up
+prices.
 
 ---
 
@@ -157,6 +167,12 @@ one simulated trading day passes every three seconds.
 | stop trading now, keep my positions | **Emergency stop** → *Keep the positions* | `/halt` |
 | stop trading now and sell everything | **Emergency stop** → *Close every position too* | `/flatten` |
 | carry on after a halt | **Resume after halt** | `/resume` |
+| change which strategies trade, and how much each gets | **Strategies** → *Save the mix* → *Restart now* | |
+| change a risk limit | **Risk** → *Save the limits* | |
+| backtest a mix, or validate a strategy | **Lab** → *Run* | |
+| choose which alerts I get, and where | **Alerts** | |
+| make sure my alerts arrive | **Alerts** → *Send a test alert* | |
+| change my name, the theme or the accent colour | **You** | |
 
 Every Telegram command that changes something asks for a `/confirm <code>` first, so a stray
 tap does nothing.
@@ -203,8 +219,8 @@ is saved in the database, so it survives a restart. The fine print is in the
 
 ## 🧪 How a strategy earns the right to trade
 
-Run `flask validate` on any idea and the robot puts it through this gauntlet, with the same
-engine, costs and safety limits as paper trading:
+Run `flask validate` on any idea, or press **Run** in the dashboard's **Lab**, and the robot puts
+it through this gauntlet, with the same engine, costs and safety limits as paper trading:
 
 | Test | What it catches | To pass |
 |---|---|---|
@@ -217,7 +233,8 @@ engine, costs and safety limits as paper trading:
 | **Paper soak** | A backtest the real market doesn't confirm | 60 trading days tracking the backtest |
 
 It writes a full report and ends with its verdict: *rejected*, naming the tests it failed, or
-*eligible for paper trading*. How each test works is in the
+*eligible for paper trading*. The dashboard shows each strategy's verdict next to it, and you
+can still paper-trade a rejected one once you confirm you read why. How each test works is in the
 [technical reference](docs/REFERENCE.md#validating-a-strategy).
 
 ---
@@ -239,12 +256,14 @@ data library and FRED) is downloaded only when you ask for it.
 - ✅ Validation gauntlet: walk-forward, deflated Sharpe, overfitting tests, cost stress
 - ✅ Long-history tests on free data back to 1970
 - ✅ Idle cash in T-bills
-- ✅ Phone-first dashboard, light and dark
+- ✅ Phone-first dashboard in a night theme (or a day one), with five accent colours
+- ✅ A strategy mix you choose on the dashboard, with risk limits inside hard bounds
+- ✅ A strategy lab: backtests and validations from the dashboard, with their reports
 - ✅ Telegram commands with confirmation codes
-- ✅ Alerts (Telegram, ntfy, webhook) and a dead man's switch
+- ✅ Alerts (Telegram, ntfy, webhook) you choose by kind, and a dead man's switch
 - ✅ Home-server setup with Docker Compose, daily backups and an optional HTTPS proxy
 - ✅ Versioned REST API with an OpenAPI 3.1 document
-- ✅ Over 800 automated tests, strict typing on the trading core, mutation testing of the risk code
+- ✅ About 1,000 automated tests, strict typing on the trading core, mutation testing of the risk code
 
 **Coming next:**
 - ⏳ A 60-day paper soak on a real paper account, measured against its backtest

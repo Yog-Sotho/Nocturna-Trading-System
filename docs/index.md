@@ -26,7 +26,9 @@ ETFs through [Alpaca](https://alpaca.markets), and it's paranoid by design:
 - 🧪 **No strategy on faith.** A new idea must survive walk-forward testing, a deflated Sharpe
   ratio, an overfitting test and triple trading costs before it may trade.
 - 💵 **Idle cash works.** Whatever the safety rules leave unused sits in T-bills (BIL).
-- 📱 **It lives in your pocket.** A phone-first dashboard and a Telegram bot.
+- 🎛️ **You choose what trades.** Pick strategies and their shares, tune the risk limits inside
+  hard bounds, and backtest or validate a mix in the dashboard's strategy lab first.
+- 📱 **It lives in your pocket.** A phone-first dashboard in a night theme, and a Telegram bot.
 - 🏠 **It runs at home, 24/7.** One setup script, Docker, daily backups, alerts and a dead
   man's switch.
 
@@ -44,7 +46,13 @@ ETFs through [Alpaca](https://alpaca.markets), and it's paranoid by design:
 ## 🖼️ The dashboard
 
 <div align="center" markdown>
-![The dashboard on a desktop: account figures, controls, equity curve and positions](images/dashboard-desktop.png){ width="750" }
+![The dashboard on a desktop: the controls, the account, the equity curve, the strategy mix and the positions](images/dashboard-desktop.png){ width="750" }
+
+![The moonlit sign-in page with the Nocturna wolf](images/dashboard-sign-in.png){ width="240" }
+![Editing the strategy mix on a phone](images/dashboard-phone-mix.png){ width="240" }
+![The emergency stop dialog](images/dashboard-emergency-stop.png){ width="240" }
+
+![A backtest in the strategy lab](images/dashboard-lab.png){ width="750" }
 
 *Screenshots from the built-in simulator, with made-up prices, not a real account.*
 </div>

@@ -29,7 +29,9 @@ trading; only the clock, the market-data source and the broker are swapped. See
 | Strategies | `src/trading/strategies/` | 60/40 benchmark (traded, idle cash in T-bills), plus month-end rebalancing flows, ETF time-series momentum, a crypto Donchian ensemble, the month-end payment cycle, a trend filter on the 60/40 and a blend; none has passed the promotion gates yet |
 | Trading history (orders, fills, equity snapshots) and audit log | `src/models/` | Working |
 | REST API with JWT and API-key auth (single operator) | `src/main.py`, `src/routes/` | Working; public registration is disabled |
-| Dashboard: sign-in, account and risk figures, equity curve, positions and targets, working orders (cancel), fills and order history, start / stop / resume, emergency stop; phone-first, light and dark | `src/static/` (plain HTML, CSS and JavaScript; no build step) | Working; checked in Chromium at phone size by `tools/dashboard/e2e.cjs` |
+| Dashboard: sign-in, account and risk figures, equity curve, positions and targets, working orders (cancel), fills and order history, start / stop / restart / resume, emergency stop; the strategy mix and its risk limits, the strategy lab, alert choices and each user's preferences (name, night or day theme, accent, card order); phone-first | `src/static/` (plain HTML, CSS and JavaScript modules; no build step) | Working; every page checked in Chromium at phone and desktop size by `tools/dashboard/e2e.cjs` |
+| Trading profile: the strategy mix (strategy, parameters from its validation grid, share of the account) and risk limits inside hard bounds; versioned, applied at the engine's next start | `src/trading/profile.py`, `catalog.py` | Working |
+| Strategy lab: backtests of a mix and validations of a strategy queued from the dashboard, run one at a time by `flask lab run` | `src/trading/lab.py`, `validation/runner.py` | Working |
 | Telegram commands: `/status`, `/positions`, `/start_engine`, `/stop_engine`, `/resume`, `/halt`, `/flatten`, each change confirmed with a code | `src/trading/telegram.py` | Working against a fake Bot API; not yet run against Telegram |
 | Operations: the engine as its own process, alerts (Telegram, ntfy, webhook), a dead man's switch, readiness and Prometheus endpoints, JSON logs, a Compose stack with backups and an HTTPS proxy | `src/trading/worker.py`, `alerts.py`, `docker-compose.yml`, [RUNBOOK.md](RUNBOOK.md) | Working; verified as a full stack without Alpaca keys |
 
@@ -126,6 +128,15 @@ sold by the kill switch like everything else. Orders that only reduce a position
 daily breakers and data checks, so the book can always be reduced. The gate's state (high-water mark, halt, daily counters) is stored in the
 database and restored on restart, so a halt survives a redeploy. After a drawdown halt,
 `POST /api/v1/trading/control/resume` restarts the high-water mark at the current equity.
+
+The dashboard's **Risk** page (`PUT /api/v1/trading/profile`) overrides these limits inside
+hard bounds: the kill switch between 2% and 25%, the daily loss limit between 0.5% and 10%, the
+drawdown ladder's start between 1% and 24% (or off), the volatility target between 2% and 20%
+(or off), the largest position between 5% and 100%, crypto between 1% and 30%, 1 to 200 orders a
+day, a single order of $100 to $10,000,000 (or no dollar limit) and the rebalance band between
+0.5% and 10%. The ladder must start below the kill switch. What the profile does not set comes
+from `.env`. A saved profile applies from the engine's next start (or
+`POST /api/v1/trading/control/restart`).
 Strategies with protective stops size positions with `stop_risk_weight` (0.5% of equity at
 risk per trade by default).
 
@@ -247,7 +258,22 @@ are limited to 1 MB.
 | POST | `/orders` | trader; body `{"symbol": "SPY", "side": "buy", "qty": "10", "order_type": "market", "time_in_force": "day", "limit_price": null, "stop_price": null}`; passes the same risk gate as strategy orders (422 with the reason when refused) |
 | POST | `/orders/<client_order_id>/cancel` | trader |
 | POST | `/control/start`, `/control/stop`, `/control/resume` | admin; resume lifts a halt (after a drawdown halt it also restarts the high-water mark) |
+| POST | `/control/restart` | admin; stop, then start with the newest saved profile |
+| GET | `/strategies` | every registered strategy: what it does, its parameters (its validation grid), the verdict of validation and the lab's newest validation of it |
+| GET | `/profile` | the saved profile, the one the running engine trades, whether a restart is pending, and each risk limit with its bounds, value and source (profile or `.env`) |
+| PUT | `/profile` | admin; body `{"mix": [{"strategy": "benchmark", "params": {"equity": 0.6}, "weight": "0.5"}], "risk": {"risk_max_drawdown": "0.08"}, "note": ""}`. Saves a new version: shares add up to at most 1 (the rest in T-bills), each strategy once, a closing-auction strategy alone. Positions in symbols the new mix does not trade are sold at its start |
 | POST | `/emergency-stop` | admin; body `{"reason": "...", "close_all_positions": true}`. Halts the engine and cancels its orders; with `close_all_positions` also closes every position. Works when the engine is not running by asking Alpaca directly |
+
+**The control panel** (`/api/v1`)
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/lab/runs` | the lab's runs, newest first (`?limit=`, at most 100), without their results |
+| POST | `/lab/runs` | admin; body `{"kind": "backtest", "mix": [...], "risk": {...}, "start": "2017-01-03", "end": null, "data": "alpaca"}` or `{"kind": "validate", "strategy": "tsmom", "start": "2017-01-03", "data": "history"}`. A validation needs at least 4 years; `history` (the long-history proxies from 1970) only fits strategies trading SPY, IEF and BIL. At most 3 runs wait at once (409) |
+| GET | `/lab/runs/<id>` | one run with its result: a backtest's summary against T-bills, equity curve (at most about 600 points), yearly returns, fills and fees; a validation's verdict, gates, out-of-sample equity curve and tear sheet (Markdown and JSON) |
+| GET, PUT | `/settings/alerts` | which configured channels are used and which kinds of alert are sent; `PUT` (admin) body `{"channels": {"ntfy": false}, "categories": {"fills": true}}`. Safety and problem alerts are always sent, to at least one channel. Tokens and addresses stay in `.env` |
+| POST | `/settings/alerts/test` | admin; sends a test alert now to each channel in use and returns what each answered |
+| GET, PUT | `/me/preferences` | the caller's dashboard preferences: `display_name` (at most 40 characters), `theme` (`dark`, `light`, `auto`), `accent` (`violet`, `indigo`, `magenta`, `teal`, `amber`), `cards` (the overview's order) and `hidden` |
 
 ## Configuration
 
@@ -352,7 +378,7 @@ cosmic-ray dump mutation.sqlite | python tools/mutation/gate.py --max-survival 3
 ```
 src/
 ├── main.py          # Flask app factory
-├── cli.py           # operator commands (create-admin, db, validate, soak, engine, openapi, send-test-alert)
+├── cli.py           # operator commands (create-admin, db, validate, lab, soak, engine, openapi, send-test-alert)
 ├── db_migrations.py # Alembic helpers; revisions live in migrations/
 ├── trading/         # the trading core (see docs/ARCHITECTURE.md)
 │   ├── domain.py    #   instruments, bars, orders and their lifecycle, fills
@@ -365,7 +391,10 @@ src/
 │   ├── broker.py    #   broker interface and the simulated broker
 │   ├── alpaca.py    #   Alpaca paper broker and trade-update stream
 │   ├── backtest.py  #   backtest runner
-│   ├── validation/  #   statistics, overfitting tests, walk-forward, gates, tear sheet
+│   ├── validation/  #   statistics, overfitting tests, walk-forward, gates, tear sheet, data sources, runner
+│   ├── profile.py   #   the trading profile: strategy mix and risk limits; catalog.py describes each strategy
+│   ├── lab.py       #   the strategy lab's queue and its process (flask lab run)
+│   ├── app_settings.py #  dashboard choices every process reads (the alert choices)
 │   ├── service.py   #   live engine thread; runtime.py wires it into the app
 │   └── ...          #   clock, calendar, feed, reconcile, persistence, lineup, safety
 ├── routes/          # REST endpoints
@@ -373,6 +402,6 @@ src/
 ├── models/          # SQLAlchemy models (users, keys, audit, trading history)
 ├── migrations/      # Alembic revisions
 ├── utils/           # validators, logging, audit
-├── static/          # the dashboard (index.html, app.js, app.css)
+├── static/          # the dashboard (index.html, app.css, app.js and js/ modules, img/ with the wolf)
 └── tests/
 ```
