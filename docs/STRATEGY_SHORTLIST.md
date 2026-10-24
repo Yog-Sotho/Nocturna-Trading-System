@@ -923,3 +923,60 @@ commodity futures excess return plus French's T-bills.
 | Fund cost | GLD 0.40% | VEA 0.03–0.05%, EFA 0.32% ([comparison](https://www.etfcentral.com/compare-etfs/EFA-vs-VEA)) | DBC about 0.85% ([comparison](https://www.etfcentral.com/compare-etfs/BCI-vs-DBC)) |
 | Chance of passing gate B | Highest | Lowest | In between |
 
+## Decision (24 October 2026): E1
+
+The operator picked E1, to be judged on gate B. These rules were fixed and committed before any
+backtest of it.
+
+**What Alpaca has.** GLD (SPDR Gold Shares, NYSE Arca) is active, tradable and fractionable,
+with daily bars from 4 January 2016. Its median traded value over the last 250 sessions is about
+$3.9 billion a day. No GLD backtest or return was looked at before these rules.
+
+**The free long history.** The World Bank's monthly gold prices (Pink Sheet, release of
+2 October 2026, file SHA-256 beginning `ea1c3508`), January 1960 to September 2026, in dollars
+an ounce. They are averages over each month, not month-end prices.
+
+**Expectation, stated before the test.** As in round 3: E1 will probably beat the 60/40 on
+2017–2026 Alpaca data, because gold quadrupled in it. The long history decides whether that is
+gold's recent run or a lasting gain from diversification; gold's 1980–2001 fall is in its first
+half.
+
+### Fixed rules: `gold`
+
+- **Portfolio.** The live 60/40 with a gold sleeve of weight g, taken equally from stocks and
+  bonds: SPY at 60% − g/2, IEF at 40% − g/2, GLD at g. Idle equity goes to the T-bill sleeve
+  (BIL).
+- **The grid (three variants):** g = 10%, 15% and 20%, that is 55/35/10, 52.5/32.5/15 and
+  50/30/20.
+- **Size.** The engine's standard sizing applies unchanged: the 60% position cap, the 8%
+  volatility target, the drawdown ladder, the 2% rebalance band and the kill switch.
+- **Orders.** At the next session's opening auction, as for the live 60/40. The standard 5 bps
+  per equity fill.
+- **Test.** `flask validate gold --start 2017-01-01 --end 2026-10-23`, with the standard
+  walk-forward, in excess of T-bills.
+- **The comparison.** `flask validate benchmark` on the same dates, as for D1 and D2.
+- **Gate B on Alpaca data, all of:**
+  - walk-forward (out-of-sample) Sharpe ratio over T-bills above the benchmark's;
+  - out-of-sample maximum drawdown no deeper than the benchmark's;
+  - deflated Sharpe ratio ≥ 0.95, probability of backtest overfitting ≤ 0.20, total return
+    above T-bills' at 3× costs, parameter stability ≥ 0.5.
+- **Gate B on the monthly long history.** Computed outside the engine:
+  - **Returns by calendar month.** Stocks, bonds and T-bills are the round-2 daily proxies
+    (`history.py`: French's market, the 7- and 10-year par-bond average from FRED, French's
+    1-month T-bill), compounded by month. Gold is the change in the World Bank's monthly average
+    price, less GLD's 0.40% a year (a twelfth each month); the other proxies carry no fee.
+  - **Portfolios,** rebalanced to their fixed weights every month, without the volatility
+    target or the ladder, the same for both: the 60/40, and E1 at the gold weight the
+    validation selects (the report's *selected* parameters). The other two weights are reported
+    too, for information.
+  - **Two halves:** January 1975 to December 2000, and January 2001 to August 2026 (the last
+    month every series covers).
+  - **In each half, E1 must have** a Sharpe ratio over T-bills (monthly excess returns,
+    annualized by √12) no lower than the 60/40's, and a maximum drawdown on monthly returns no
+    deeper.
+- **What decides.** E1 replaces the 60/40 as the live benchmark only if it passes every part of
+  gate B above and the operator confirms. Then the 60-day paper soak, trading GLD. Otherwise it
+  is recorded as rejected, and the code stays as the `gold` candidate.
+- **No other variant is tested on this data,** whatever the result: no other gold weight or
+  fund (IAU, GLDM), no gold timing, no other split between stocks and bonds.
+
