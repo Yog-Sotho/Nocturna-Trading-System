@@ -54,23 +54,33 @@ def test_scripts_and_styles_load_under_the_csp(client):
     assert script.status_code == 200 and script.mimetype == "text/javascript"
     assert script.headers["Cache-Control"] == "no-cache" and script.headers["X-Content-Type-Options"] == "nosniff"
     assert client.get("/app.css").mimetype == "text/css"
-    assert client.get("/favicon.svg").mimetype == "image/svg+xml"
+    for module in sorted((STATIC / "js").glob("*.js")):
+        response = client.get(f"/js/{module.name}")
+        assert response.status_code == 200 and response.mimetype == "text/javascript", module.name
+    for image in ("/img/favicon.png", "/img/wolf.png"):
+        assert client.get(image).mimetype == "image/png", image
+
+
+SCRIPTS = [STATIC / "app.js", *sorted((STATIC / "js").glob("*.js"))]
 
 
 def test_the_page_never_inserts_markup():
     """Everything is built with DOM calls, so nothing the API returns can inject markup."""
-    code = "\n".join(line for line in (STATIC / "app.js").read_text().splitlines()
-                     if not line.strip().startswith("//"))
-    for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"):
-        assert sink not in code, sink
+    for script in SCRIPTS:
+        code = "\n".join(line for line in script.read_text().splitlines() if not line.strip().startswith("//"))
+        for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"):
+            assert sink not in code, f"{script.name}: {sink}"
 
 
 def test_the_dashboard_uses_endpoints_that_exist(app):
-    source = (STATIC / "app.js").read_text()
-    used = set(re.findall(r'"(/api/[a-z0-9/-]+)', source))
+    source = "\n".join(script.read_text() for script in SCRIPTS)
+    used = set(re.findall(r'["`](/api/[a-z0-9/-]+)', source))
     rules = {rule.rule for rule in app.url_map.iter_rules()}
-    # The cancel path is built from the order's id
-    assert used and used <= rules | {"/api/v1/trading/orders/"}, used - rules
+    # The paths of one order or one lab run are built from its id
+    assert used and used <= rules | {"/api/v1/trading/orders/", "/api/v1/lab/runs/"}, used - rules
+    # Every section of the control panel is reached
+    for path in ("/api/v1/trading/profile", "/api/v1/lab/runs", "/api/v1/settings/alerts", "/api/v1/me/preferences"):
+        assert path in used, path
 
 
 def test_the_compiled_bundle_is_gone():

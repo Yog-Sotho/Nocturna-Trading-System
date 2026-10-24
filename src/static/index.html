@@ -1,85 +1,127 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark" data-accent="violet">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0d0720">
   <title>Nocturna</title>
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/img/favicon.png" type="image/png">
+  <link rel="apple-touch-icon" href="/img/wolf.png">
   <link rel="stylesheet" href="/app.css">
   <script type="module" src="/app.js"></script>
 </head>
 <body>
+  <div class="sky" aria-hidden="true"><div class="stars"></div><div class="stars far"></div><div class="moon"></div></div>
+
   <main id="login" class="login" hidden>
-    <h1>Nocturna</h1>
-    <p class="muted">Paper trading</p>
-    <form id="login-form" autocomplete="on">
-      <label>Username or email
-        <input name="username" autocomplete="username" required autocapitalize="none" spellcheck="false">
-      </label>
-      <label>Password
-        <input name="password" type="password" autocomplete="current-password" required>
-      </label>
-      <label class="check">
-        <input name="remember" type="checkbox"> Stay signed in on this device
-      </label>
-      <button type="submit" class="primary">Sign in</button>
-      <p id="login-error" class="error" role="alert" hidden></p>
-    </form>
+    <div class="login-card">
+      <img src="/img/wolf.png" alt="" class="emblem" width="112" height="112">
+      <h1 class="wordmark">Nocturna</h1>
+      <p class="tagline">Trading system · paper only</p>
+      <form id="login-form" autocomplete="on">
+        <label>Username or email
+          <input name="username" autocomplete="username" required autocapitalize="none" spellcheck="false">
+        </label>
+        <label>Password
+          <input name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <label class="check">
+          <input name="remember" type="checkbox"> Stay signed in on this device
+        </label>
+        <button type="submit" class="primary">Sign in</button>
+        <p id="login-error" class="error" role="alert" hidden></p>
+      </form>
+    </div>
+    <p class="login-foot muted small">Trades an Alpaca paper account while you sleep. No real money, ever.</p>
   </main>
 
   <div id="app" hidden>
     <header class="top">
-      <span class="brand">Nocturna</span>
+      <a class="brand" href="#overview" aria-label="Nocturna overview">
+        <img src="/img/wolf.png" alt="" class="emblem" width="38" height="38">
+        <span class="wordmark">Nocturna</span>
+      </a>
       <span id="engine-badge" class="badge">…</span>
+      <span class="spacer"></span>
+      <span id="who" class="who muted small"></span>
       <button id="logout" class="link">Sign out</button>
     </header>
 
+    <nav id="tabs" class="tabs" aria-label="Sections">
+      <a href="#overview" data-view="overview" data-icon="moon">Overview</a>
+      <a href="#strategies" data-view="strategies" data-icon="layers">Strategies</a>
+      <a href="#lab" data-view="lab" data-icon="flask">Lab</a>
+      <a href="#risk" data-view="risk" data-icon="shield">Risk</a>
+      <a href="#alerts" data-view="alerts" data-icon="bell">Alerts</a>
+      <a href="#settings" data-view="settings" data-icon="sliders">You</a>
+    </nav>
+
+    <p id="greeting" class="greeting"></p>
     <p id="banner" class="banner" role="alert" hidden></p>
     <p id="notice" class="notice" role="status" hidden></p>
 
-    <section class="card" aria-labelledby="h-account">
-      <h2 id="h-account">Account</h2>
-      <dl id="account" class="figures"></dl>
-      <p id="updated" class="muted small"></p>
-    </section>
+    <section id="view-overview" class="view" aria-label="Overview">
+      <section class="card" aria-labelledby="h-controls">
+        <div class="card-head"><h2 id="h-controls" data-icon="power">Controls</h2>
+          <span id="updated" class="muted small"></span></div>
+        <div class="buttons">
+          <button data-action="start" class="primary">Start engine</button>
+          <button data-action="stop">Stop engine</button>
+          <button data-action="restart" hidden>Restart with the new mix</button>
+          <button data-action="resume">Resume after halt</button>
+          <button data-action="halt" class="danger">Emergency stop</button>
+        </div>
+      </section>
 
-    <section class="card" aria-labelledby="h-controls">
-      <h2 id="h-controls">Controls</h2>
-      <div class="buttons">
-        <button data-action="start">Start engine</button>
-        <button data-action="stop">Stop engine</button>
-        <button data-action="resume">Resume after halt</button>
+      <div id="cards" class="cards">
+        <section class="card" data-card="account" aria-labelledby="h-account">
+          <div class="card-head"><h2 id="h-account" data-icon="wallet">Account</h2></div>
+          <dl id="account" class="figures"></dl>
+        </section>
+
+        <section class="card wide" data-card="equity" aria-labelledby="h-equity">
+          <div class="card-head"><h2 id="h-equity" data-icon="chart">Equity</h2></div>
+          <div id="equity-chart" class="chart"></div>
+        </section>
+
+        <section class="card" data-card="mix" aria-labelledby="h-mix">
+          <div class="card-head"><h2 id="h-mix" data-icon="layers">The mix</h2>
+            <a href="#strategies" class="small">Change it</a></div>
+          <div id="mix"></div>
+        </section>
+
+        <section class="card wide" data-card="positions" aria-labelledby="h-positions">
+          <div class="card-head"><h2 id="h-positions" data-icon="stack">Positions</h2></div>
+          <div id="positions"></div>
+        </section>
+
+        <section class="card" data-card="risk" aria-labelledby="h-risk">
+          <div class="card-head"><h2 id="h-risk" data-icon="shield">Risk</h2>
+            <a href="#risk" class="small">Limits</a></div>
+          <div id="risk-now"></div>
+        </section>
+
+        <section class="card wide" data-card="orders" aria-labelledby="h-orders">
+          <div class="card-head"><h2 id="h-orders" data-icon="list">Orders</h2></div>
+          <h3 class="muted small">Working</h3>
+          <div id="working"></div>
+          <h3 class="muted small">History</h3>
+          <div id="history"></div>
+        </section>
+
+        <section class="card" data-card="fills" aria-labelledby="h-fills">
+          <div class="card-head"><h2 id="h-fills" data-icon="check">Recent fills</h2></div>
+          <div id="fills"></div>
+        </section>
       </div>
-      <div class="buttons">
-        <button data-action="halt" class="danger">Emergency stop</button>
-      </div>
     </section>
 
-    <section class="card" aria-labelledby="h-equity">
-      <h2 id="h-equity">Equity</h2>
-      <div id="equity-chart" class="chart"></div>
-    </section>
-
-    <section class="card" aria-labelledby="h-positions">
-      <h2 id="h-positions">Positions</h2>
-      <div id="positions"></div>
-    </section>
-
-    <section class="card" aria-labelledby="h-orders">
-      <h2 id="h-orders">Working orders</h2>
-      <div id="working"></div>
-    </section>
-
-    <section class="card" aria-labelledby="h-fills">
-      <h2 id="h-fills">Recent fills</h2>
-      <div id="fills"></div>
-    </section>
-
-    <section class="card" aria-labelledby="h-history">
-      <h2 id="h-history">Order history</h2>
-      <div id="history"></div>
-    </section>
+    <section id="view-strategies" class="view" aria-label="Strategies" hidden></section>
+    <section id="view-lab" class="view" aria-label="Strategy lab" hidden></section>
+    <section id="view-risk" class="view" aria-label="Risk limits" hidden></section>
+    <section id="view-alerts" class="view" aria-label="Alerts" hidden></section>
+    <section id="view-settings" class="view" aria-label="Your settings" hidden></section>
   </div>
 
   <dialog id="confirm">

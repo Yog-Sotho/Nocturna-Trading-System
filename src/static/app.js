@@ -1,158 +1,117 @@
-// Nocturna dashboard.
+// Nocturna dashboard: the shell (sign-in, sections, theme), the overview and the controls.
 //
-// Talks to the API of this origin with a bearer token. The access token lives
-// in memory only; the single-use refresh token in sessionStorage, or in
-// localStorage with "Stay signed in". Every element is built with DOM calls,
-// never innerHTML, so nothing the API returns can inject markup.
+// Talks to the API of this origin (js/api.js). Every element is built with DOM
+// calls, never innerHTML, so nothing the API returns can inject markup.
+
+import { AuthError, api, freshTokens, readRefreshToken, signIn, signOut } from "./js/api.js";
+import { labView } from "./js/lab.js";
+import { alertsView, settingsView } from "./js/settings.js";
+import { riskView, strategiesView } from "./js/strategies.js";
+import {
+  $, ask, brief, decorateIcons, el, figures, lineChart, mixBar, money, notify, pct, qty, signed, table, weight,
+  when,
+} from "./js/ui.js";
 
 const REFRESH_EVERY_MS = 15000;
-const REMEMBER_KEY = "nocturna.remember";
-const REFRESH_KEY = "nocturna.refresh";
+const LOOK_KEY = "nocturna.look";
 
-class AuthError extends Error {}
+// -- what every section shares ----------------------------------------------------------------
 
-const $ = (id) => document.getElementById(id);
+const ctx = {
+  me: null,
+  admin: false,
+  prefs: null,
+  status: null,
+  profile: null,
+  catalog: null,
+  // The mix being edited on the Strategies page; the lab can backtest it before it is saved
+  draft: null,
 
-// -- tokens ----------------------------------------------------------------------
+  async strategies(force = false) {
+    if (!this.catalog || force) {
+      const result = await api("GET", "/api/v1/trading/strategies");
+      if (!result.ok) throw new Error(result.error);
+      this.catalog = result.data.strategies;
+    }
+    return this.catalog;
+  },
 
-const session = { access: null, expiresAt: 0 };
-let refreshing = null;
+  async loadProfile() {
+    const result = await api("GET", "/api/v1/trading/profile");
+    if (!result.ok) throw new Error(result.error);
+    this.profile = result.data;
+    return this.profile;
+  },
 
-function tokenStore() {
-  try {
-    return localStorage.getItem(REMEMBER_KEY) === "1" ? localStorage : sessionStorage;
-  } catch {
-    return null;
-  }
-}
+  // The strategy's place in the catalog: its colour everywhere
+  colour(name) {
+    const index = (this.catalog || []).findIndex((s) => s.name === name);
+    return index < 0 ? 7 : index;
+  },
 
-function readRefreshToken() {
-  try {
-    return tokenStore()?.getItem(REFRESH_KEY) ?? null;
-  } catch {
-    return null;
-  }
-}
+  title(name) {
+    return (this.catalog || []).find((s) => s.name === name)?.title || name;
+  },
 
-function saveTokens(data) {
-  session.access = data.access_token;
-  session.expiresAt = Date.now() + (data.expires_in ?? 3600) * 1000;
-  try {
-    tokenStore()?.setItem(REFRESH_KEY, data.refresh_token);
-  } catch {
-    // Storage blocked: the session lasts as long as the page
-  }
-}
-
-function clearTokens() {
-  session.access = null;
-  session.expiresAt = 0;
-  for (const store of [localStorage, sessionStorage]) {
+  // Runs an action; a lost session shows the sign-in, anything else is reported
+  async guard(action) {
     try {
-      store.removeItem(REFRESH_KEY);
+      return await action();
+    } catch (error) {
+      if (error instanceof AuthError) return showLogin();
+      notify(error.message, true);
+      return undefined;
+    }
+  },
+
+  applyLook(prefs) {
+    const root = document.documentElement;
+    root.dataset.theme = prefs.theme;
+    root.dataset.accent = prefs.accent;
+    try {
+      localStorage.setItem(LOOK_KEY, JSON.stringify({ theme: prefs.theme, accent: prefs.accent }));
     } catch {
-      // nothing stored
+      // Storage blocked: the look applies to this page
     }
-  }
+  },
+
+  applyCards(prefs) {
+    const box = $("cards");
+    for (const name of prefs.cards) {
+      const node = box.querySelector(`[data-card="${name}"]`);
+      if (!node) continue;
+      node.hidden = prefs.hidden.includes(name);
+      box.append(node);
+    }
+  },
+
+  greet() {
+    const hour = new Date().getHours();
+    const part = hour < 5 ? "Night watch" : hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+    const name = this.prefs?.display_name || this.me?.username || "";
+    const status = this.status;
+    const line = !status ? "" : status.state === "running"
+      ? `The engine is running${status.halted ? ", halted" : ""}.`
+      : `The engine is ${status.state}.`;
+    const waiting = this.profile?.pending ? " A newer mix waits for a restart." : "";
+    $("greeting").replaceChildren(el("strong", {}, `${part}${name ? `, ${name}` : ""}.`),
+      el("span", { class: "muted small" }, line + waiting));
+  },
+};
+
+function restoreLook() {
   try {
-    localStorage.removeItem(REMEMBER_KEY);
+    const look = JSON.parse(localStorage.getItem(LOOK_KEY) || "null");
+    if (look?.theme) document.documentElement.dataset.theme = look.theme;
+    if (look?.accent) document.documentElement.dataset.accent = look.accent;
   } catch {
-    // nothing stored
+    // Nothing stored, or storage blocked: the night theme
   }
 }
 
-async function rotateTokens() {
-  // A refresh token works once; presenting a used one ends every session. Tabs
-  // that share localStorage take turns, and each reads the token inside the lock.
-  const rotate = async () => {
-    const token = readRefreshToken();
-    if (!token) throw new AuthError("signed out");
-    const response = await fetch("/api/v1/auth/refresh", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refresh_token: token }),
-    });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok || !body.success) {
-      clearTokens();
-      throw new AuthError("session ended");
-    }
-    saveTokens(body.data);
-  };
-  return navigator.locks ? navigator.locks.request("nocturna-refresh", rotate) : rotate();
-}
+// -- the engine, on every page ----------------------------------------------------------------
 
-function freshTokens() {
-  // One rotation at a time in this tab, however many requests need it
-  if (!refreshing) refreshing = rotateTokens().finally(() => { refreshing = null; });
-  return refreshing;
-}
-
-async function api(method, path, body) {
-  if (!session.access || Date.now() > session.expiresAt - 60000) await freshTokens();
-  const send = () => fetch(path, {
-    method,
-    headers: {
-      Authorization: `Bearer ${session.access}`,
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const used = session.access;
-  let response = await send();
-  if (response.status === 401) {
-    if (session.access === used) await freshTokens();
-    response = await send();
-    if (response.status === 401) throw new AuthError("unauthorized");
-  }
-  const json = await response.json().catch(() => ({}));
-  return {
-    ok: response.ok && json.success !== false,
-    status: response.status,
-    data: json.data,
-    error: json.error || json.message || `HTTP ${response.status}`,
-    message: json.message,
-  };
-}
-
-// -- formatting --------------------------------------------------------------------
-
-const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
-const money = (v) => (v === null || v === undefined ? "–" : usd.format(Number(v)));
-const pct = (v) => (v === null || v === undefined ? "–" : `${(Number(v) * 100).toFixed(2)}%`);
-const qty = (v) => (v === null || v === undefined ? "–" : String(Number(v)));
-const when = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }) : "–");
-// Tables are narrow on a phone: month/day and time only
-const brief = (iso) => (iso ? new Date(iso).toLocaleString(undefined,
-  { month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" }) : "–");
-const weight = (v) => (v === null || v === undefined ? "–" : `${(Number(v) * 100).toFixed(1)}%`);
-
-function el(tag, props = {}, ...children) {
-  const node = document.createElement(tag);
-  for (const [key, value] of Object.entries(props)) {
-    if (key === "class") node.className = value;
-    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
-    else node.setAttribute(key, value);
-  }
-  for (const child of children.flat()) {
-    if (child !== null && child !== undefined) node.append(child instanceof Node ? child : String(child));
-  }
-  return node;
-}
-
-function table(headers, rows, empty) {
-  if (!rows.length) return el("p", { class: "muted" }, empty);
-  return el("div", { class: "scroll" },
-    el("table", {},
-      el("thead", {}, el("tr", {}, headers.map((h) => el("th", {}, h)))),
-      el("tbody", {}, rows.map((cells) => el("tr", {}, cells.map((c) => el("td", {}, c)))))));
-}
-
-const signed = (value, text) => el("span", { class: Number(value) >= 0 ? "up" : "down" }, text);
-
-// -- rendering ---------------------------------------------------------------------
-
-function renderStatus(status) {
+function renderHeader(status) {
   const risk = status.risk || {};
   const halted = status.halted === true;
   const badge = $("engine-badge");
@@ -170,33 +129,18 @@ function renderStatus(status) {
   const banner = $("banner");
   banner.textContent = problems.join(" ");
   banner.hidden = problems.length === 0;
-
-  const report = status.last_reconciliation;
-  const figures = [
-    ["Equity", money(status.equity)],
-    ["Cash", money(status.cash)],
-    ["Realized P&L", status.realized_pnl === undefined ? "–" : signed(status.realized_pnl, money(status.realized_pnl))],
-    ["Fees", money(status.fees)],
-    ["Drawdown", pct(risk.drawdown)],
-    ["High-water mark", money(risk.high_water_mark)],
-    ["Exposure scale", exposureScale(risk)],
-    ["Orders today", risk.orders_today ?? "–"],
-    ["Last market data", when(status.last_poll)],
-    ["Next poll", when(status.next_poll)],
-    ["Reconciliation", report ? (report.in_sync ? `in sync (${when(report.at)})`
-      : `${report.discrepancies.length} corrected (${when(report.at)})`) : "–"],
-    ["Running since", when(status.started_at)],
-  ];
-  if (status.last_error && status.state !== "failed") figures.push(["Last error", status.last_error, "wide"]);
-  $("account").replaceChildren(...figures.map(([name, value, wide]) =>
-    el("div", wide ? { class: "wide" } : {}, el("dt", {}, name), el("dd", {}, value))));
-
-  const state = status.state;
-  setEnabled("start", ["stopped", "failed"].includes(state) && status.configured);
-  setEnabled("stop", ["running", "starting"].includes(state));
-  setEnabled("resume", state === "running" && halted);
-  setEnabled("halt", true);
 }
+
+async function refreshStatus() {
+  const status = await api("GET", "/api/v1/trading/status");
+  if (!status.ok) throw new Error(status.error);
+  ctx.status = status.data;
+  renderHeader(status.data);
+  ctx.greet();
+  return status.data;
+}
+
+// -- the overview -------------------------------------------------------------------------------
 
 function exposureScale(risk) {
   // Volatility targeting times the drawdown ladder; either is null until it applies
@@ -204,8 +148,77 @@ function exposureScale(risk) {
   return parts.length ? pct(parts.reduce((product, v) => product * Number(v), 1)) : "–";
 }
 
+function renderAccount(status) {
+  const risk = status.risk || {};
+  const report = status.last_reconciliation;
+  const items = [
+    ["Equity", money(status.equity), "big"],
+    ["Cash", money(status.cash)],
+    ["Realized P&L", status.realized_pnl === undefined ? "–" : signed(status.realized_pnl, money(status.realized_pnl))],
+    ["Fees", money(status.fees)],
+    ["High-water mark", money(risk.high_water_mark)],
+    ["Last market data", when(status.last_poll)],
+    ["Next poll", when(status.next_poll)],
+    ["Reconciliation", report ? (report.in_sync ? `in sync (${when(report.at)})`
+      : `${report.discrepancies.length} corrected (${when(report.at)})`) : "–"],
+    ["Running since", when(status.started_at)],
+  ];
+  if (status.last_error && status.state !== "failed") items.push(["Last error", status.last_error, "wide"]);
+  $("account").replaceWith(Object.assign(figures(items), { id: "account" }));
+}
+
+function renderControls(status) {
+  const state = status.state;
+  const halted = status.halted === true;
+  setEnabled("start", ["stopped", "failed"].includes(state) && status.configured);
+  setEnabled("stop", ["running", "starting"].includes(state));
+  setEnabled("resume", state === "running" && halted);
+  setEnabled("halt", true);
+  const restart = document.querySelector('[data-action="restart"]');
+  restart.hidden = !(ctx.profile?.pending && state === "running");
+}
+
 function setEnabled(action, enabled) {
   document.querySelector(`[data-action="${action}"]`).disabled = !enabled;
+}
+
+function renderMix() {
+  const state = ctx.profile;
+  if (!state) return;
+  const shown = state.running || state.saved;
+  const parts = [
+    ...mixBar(shown.mix.map((e) => ({ label: ctx.title(e.strategy), share: Number(e.weight),
+      index: ctx.colour(e.strategy) }))),
+    el("p", { class: "muted small" }, state.running
+      ? `Trading ${shown.id === null ? "the default profile" : `profile #${shown.id}`}`
+        + (shown.activated_at ? ` since ${when(shown.activated_at)}.` : ".")
+      : `${shown.id === null ? "The default profile" : `Profile #${shown.id}`}: the engine trades it when it starts.`),
+  ];
+  if (shown.note) parts.push(el("p", { class: "small" }, `“${shown.note}”`));
+  if (state.pending) {
+    parts.push(el("p", { class: "verdict" }, `A newer mix is saved (profile #${state.saved.id}). `
+      + "It is traded from the engine's next start: restart to trade it now."));
+  }
+  $("mix").replaceChildren(...parts);
+}
+
+function renderRiskNow(status) {
+  const risk = status.risk || {};
+  const rows = Object.fromEntries((ctx.profile?.risk || []).map((r) => [r.name, r]));
+  const kill = Number(rows.risk_max_drawdown?.value ?? 0.1);
+  const drawdown = Math.abs(Number(risk.drawdown ?? 0));
+  const used = kill > 0 ? Math.min(1, drawdown / kill) : 0;
+  $("risk-now").replaceChildren(
+    el("p", { class: "small muted" }, `Drawdown ${pct(risk.drawdown)} of the ${pct(kill, 0)} kill switch`),
+    el("div", { class: "meter", role: "meter", "aria-valuemin": "0", "aria-valuemax": String(kill),
+      "aria-valuenow": String(drawdown), "aria-label": "Drawdown towards the kill switch" },
+    el("span", { style: { width: `${(used * 100).toFixed(1)}%` } })),
+    figures([
+      ["Exposure scale", exposureScale(risk)],
+      ["Daily loss limit", rows.risk_daily_loss_limit ? pct(rows.risk_daily_loss_limit.value, 1) : "–"],
+      ["Orders today", `${risk.orders_today ?? "–"} of ${rows.risk_max_orders_per_day?.value ?? "–"}`],
+      ["Today", risk.cooling_down ? "loss limit reached" : "trading"],
+    ]));
 }
 
 function renderPositions(positions, targets) {
@@ -231,11 +244,6 @@ function renderWorking(working) {
   $("working").replaceChildren(table(["Order", "Type", "Status", "Placed", ""], rows, "No working orders."));
 }
 
-function renderFills(fills) {
-  const rows = fills.map((f) => [brief(f.timestamp), `${f.side} ${qty(f.qty)} ${f.symbol}`, money(f.price), money(f.fee)]);
-  $("fills").replaceChildren(table(["Time", "Fill", "Price", "Fee"], rows, "No fills yet."));
-}
-
 function renderHistory(history) {
   const rows = history.map((o) => [
     brief(o.created_at), `${o.side} ${qty(o.qty)} ${o.symbol}`, o.status,
@@ -244,120 +252,97 @@ function renderHistory(history) {
   $("history").replaceChildren(table(["Time", "Order", "Status", "Filled"], rows, "No orders yet."));
 }
 
+function renderFills(fills) {
+  const rows = fills.map((f) => [brief(f.timestamp), `${f.side} ${qty(f.qty)} ${f.symbol}`, money(f.price), money(f.fee)]);
+  $("fills").replaceChildren(table(["Time", "Fill", "Price", "Fee"], rows, "No fills yet."));
+}
+
 function renderEquity(points) {
-  const box = $("equity-chart");
-  if (points.length < 2) {
-    box.replaceChildren(el("p", { class: "muted" }, "The curve appears after two recorded days."));
-    return;
-  }
-  const values = points.map((p) => Number(p.equity));
-  const low = Math.min(...values);
-  const high = Math.max(...values);
-  const span = high - low || 1;
-  const width = 1000;
-  const height = 300;
-  const coords = values.map((v, i) => `${(i / (values.length - 1)) * width},${height - ((v - low) / span) * height}`);
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  svg.setAttribute("preserveAspectRatio", "none");
-  svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", `Equity from ${money(values[0])} to ${money(values.at(-1))}`);
-  const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
-  line.setAttribute("class", "line");
-  line.setAttribute("points", coords.join(" "));
-  svg.append(line);
-  const change = values.at(-1) - values[0];
-  box.replaceChildren(
-    svg,
-    el("p", { class: "muted small" },
-      `${when(points[0].timestamp)} → ${when(points.at(-1).timestamp)} · low ${money(low)} · high ${money(high)} · `,
-      signed(change, `${change >= 0 ? "+" : ""}${money(change)} (${pct(change / values[0])})`)),
-  );
+  $("equity-chart").replaceChildren(lineChart(points.map((p) => ({ t: p.timestamp, v: Number(p.equity) })),
+    { empty: "The curve appears after two recorded days." }));
 }
 
-// -- loading -----------------------------------------------------------------------
+async function loadOverview() {
+  const status = await refreshStatus();
+  // Positions and targets exist only while the engine has a snapshot
+  const live = status.state === "running";
+  const none = Promise.resolve({ ok: false });
+  const [positions, targets, orders, fills, equity] = await Promise.all([
+    live ? api("GET", "/api/v1/trading/positions") : none,
+    live ? api("GET", "/api/v1/trading/targets") : none,
+    api("GET", "/api/v1/trading/orders?limit=20"),
+    api("GET", "/api/v1/trading/fills?limit=20"),
+    api("GET", "/api/v1/trading/equity-curve?limit=500"),
+    ctx.strategies().catch(() => null),
+    ctx.loadProfile().catch(() => null),
+  ]);
+  renderAccount(status);
+  renderPositions(positions.ok ? positions.data : null, targets.ok ? targets.data.targets : null);
+  if (orders.ok) {
+    renderWorking(orders.data.working);
+    renderHistory(orders.data.history);
+  }
+  if (fills.ok) renderFills(fills.data.fills);
+  if (equity.ok) renderEquity(equity.data.equity_curve);
+  renderMix();
+  renderRiskNow(status);
+  renderControls(status);
+  ctx.greet();
+  $("updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
+}
 
-async function load() {
-  try {
-    const status = await api("GET", "/api/v1/trading/status");
-    if (!status.ok) throw new Error(status.error);
-    // Positions and targets exist only while the engine has a snapshot
-    const live = status.data.state === "running";
-    const none = Promise.resolve({ ok: false });
-    const [positions, targets, orders, fills, equity] = await Promise.all([
-      live ? api("GET", "/api/v1/trading/positions") : none,
-      live ? api("GET", "/api/v1/trading/targets") : none,
-      api("GET", "/api/v1/trading/orders?limit=20"),
-      api("GET", "/api/v1/trading/fills?limit=20"),
-      api("GET", "/api/v1/trading/equity-curve?limit=500"),
-    ]);
-    renderStatus(status.data);
-    renderPositions(positions.ok ? positions.data : null, targets.ok ? targets.data.targets : null);
-    if (orders.ok) {
-      renderWorking(orders.data.working);
-      renderHistory(orders.data.history);
+const overviewView = {
+  async show() {
+    try {
+      await loadOverview();
+    } catch (error) {
+      if (error instanceof AuthError) return showLogin();
+      $("updated").textContent = `Update failed: ${error.message}`;
     }
-    if (fills.ok) renderFills(fills.data.fills);
-    if (equity.ok) renderEquity(equity.data.equity_curve);
-    $("updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
-  } catch (error) {
-    if (error instanceof AuthError) return showLogin();
-    $("updated").textContent = `Update failed: ${error.message}`;
-  }
-}
-
-// -- actions -----------------------------------------------------------------------
-
-const ACTIONS = {
-  start: {
-    title: "Start the engine?",
-    text: "It loads the account from Alpaca, then trades on the latest closed bars.",
-    path: "/api/v1/trading/control/start",
-  },
-  stop: {
-    title: "Stop the engine?",
-    text: "Trading stops. Positions and working orders stay at Alpaca.",
-    path: "/api/v1/trading/control/stop",
-  },
-  resume: {
-    title: "Lift the halt?",
-    text: "Trading resumes and the high-water mark restarts at the current equity.",
-    path: "/api/v1/trading/control/resume",
+    return undefined;
   },
 };
 
-function ask(title, text, extra = [], ready = () => true) {
-  const dialog = $("confirm");
-  $("confirm-title").textContent = title;
-  $("confirm-text").textContent = text;
-  $("confirm-extra").replaceChildren(...extra);
-  const ok = $("confirm-ok");
-  const update = () => { ok.disabled = !ready(); };
-  dialog.oninput = update;
-  dialog.onchange = update;
-  update();
-  dialog.returnValue = "";
-  dialog.showModal();
-  return new Promise((resolve) => {
-    dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok"), { once: true });
-  });
-}
+// -- the controls ---------------------------------------------------------------------------------
 
-async function run(path, body) {
+const ACTIONS = {
+  start: () => ({
+    title: "Start the engine?",
+    text: "It loads the account from Alpaca, then trades the saved mix on the latest closed bars.",
+    path: "/api/v1/trading/control/start",
+  }),
+  stop: () => ({
+    title: "Stop the engine?",
+    text: "Trading stops. Positions and working orders stay at Alpaca.",
+    path: "/api/v1/trading/control/stop",
+  }),
+  restart: () => ({
+    title: "Restart with the new mix?",
+    text: `The engine stops and starts again trading profile #${ctx.profile?.saved?.id}. Positions in symbols `
+      + "the new mix does not trade are sold.",
+    path: "/api/v1/trading/control/restart",
+  }),
+  resume: () => ({
+    title: "Lift the halt?",
+    text: "Trading resumes and the high-water mark restarts at the current equity.",
+    path: "/api/v1/trading/control/resume",
+  }),
+};
+
+async function control(path, body) {
   const result = await api("POST", path, body);
   notify(result.ok ? (result.message || "Done.") : result.error, !result.ok);
-  await load();
+  await overviewView.show();
+  return result.ok;
 }
 
 async function onAction(action) {
-  try {
-    if (action === "halt") return await confirmEmergencyStop();
-    const spec = ACTIONS[action];
-    if (await ask(spec.title, spec.text)) await run(spec.path);
-  } catch (error) {
-    if (error instanceof AuthError) return showLogin();
-    notify(error.message, true);
-  }
+  await ctx.guard(async () => {
+    if (action === "halt") return confirmEmergencyStop();
+    const spec = ACTIONS[action]();
+    if (await ask(spec.title, spec.text)) await control(spec.path);
+    return undefined;
+  });
 }
 
 async function confirmEmergencyStop() {
@@ -374,56 +359,93 @@ async function confirmEmergencyStop() {
     "Trading halts at once. If the engine does not answer, Alpaca is asked directly.",
     extra,
     () => keep.checked || close.checked,
+    "Stop now",
+    "danger",
   );
   if (!confirmed) return;
-  await run("/api/v1/trading/emergency-stop", {
+  await control("/api/v1/trading/emergency-stop", {
     reason: reason.value.trim() || "Emergency stop from the dashboard",
     close_all_positions: close.checked,
   });
 }
 
 async function confirmCancel(order) {
-  try {
+  await ctx.guard(async () => {
     const text = `${order.side} ${qty(order.qty)} ${order.symbol} (${order.client_order_id})`;
     if (await ask("Cancel this order?", text)) {
-      await run(`/api/v1/trading/orders/${encodeURIComponent(order.client_order_id)}/cancel`);
+      await control(`/api/v1/trading/orders/${encodeURIComponent(order.client_order_id)}/cancel`);
     }
-  } catch (error) {
-    if (error instanceof AuthError) return showLogin();
-    notify(error.message, true);
+  });
+}
+
+// -- sections --------------------------------------------------------------------------------------
+
+const VIEWS = {
+  overview: overviewView,
+  strategies: strategiesView,
+  lab: labView,
+  risk: riskView,
+  alerts: alertsView,
+  settings: settingsView,
+};
+
+let current = "overview";
+
+function route() {
+  const [name, query] = location.hash.slice(1).split("?");
+  current = VIEWS[name] ? name : "overview";
+  for (const key of Object.keys(VIEWS)) $(`view-${key}`).hidden = key !== current;
+  for (const link of document.querySelectorAll("#tabs a")) {
+    if (link.dataset.view === current) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
   }
+  // A look tried on the You page and not saved goes away
+  if (ctx.prefs) {
+    ctx.applyLook(ctx.prefs);
+    ctx.applyCards(ctx.prefs);
+  }
+  const params = new URLSearchParams(query || "");
+  ctx.guard(() => VIEWS[current].show(ctx, $(`view-${current}`), params));
 }
 
-let noticeTimer = null;
-
-function notify(text, failed) {
-  const notice = $("notice");
-  notice.textContent = text;
-  notice.className = failed ? "notice failed" : "notice";
-  notice.hidden = false;
-  clearTimeout(noticeTimer);
-  noticeTimer = setTimeout(() => { notice.hidden = true; }, failed ? 15000 : 6000);
-}
-
-// -- screens -----------------------------------------------------------------------
+// -- screens --------------------------------------------------------------------------------------
 
 let timer = null;
 
 function showLogin() {
   clearInterval(timer);
   timer = null;
+  document.body.classList.remove("signed-in");
   $("app").hidden = true;
   $("login").hidden = false;
 }
 
-function showApp() {
+function tick() {
+  if (document.visibilityState !== "visible") return;
+  if (current === "overview") overviewView.show();
+  else ctx.guard(refreshStatus);
+}
+
+async function showApp() {
   $("login").hidden = true;
   $("app").hidden = false;
-  load();
+  document.body.classList.add("signed-in");
+  await ctx.guard(async () => {
+    const [me, prefs] = await Promise.all([api("GET", "/api/v1/auth/me"), api("GET", "/api/v1/me/preferences")]);
+    if (me.ok) {
+      ctx.me = me.data.user;
+      ctx.admin = me.data.user.is_admin === true;
+      $("who").textContent = ctx.me.username;
+    }
+    if (prefs.ok) {
+      ctx.prefs = prefs.data;
+      ctx.applyLook(prefs.data);
+      ctx.applyCards(prefs.data);
+    }
+  });
+  route();
   clearInterval(timer);
-  timer = setInterval(() => {
-    if (document.visibilityState === "visible") load();
-  }, REFRESH_EVERY_MS);
+  timer = setInterval(tick, REFRESH_EVERY_MS);
 }
 
 async function onLogin(event) {
@@ -434,22 +456,9 @@ async function onLogin(event) {
   const button = form.querySelector("button");
   button.disabled = true;
   try {
-    const response = await fetch("/api/v1/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: form.username.value.trim(), password: form.password.value }),
-    });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok || !body.success) throw new Error(body.error || `HTTP ${response.status}`);
-    clearTokens();
-    try {
-      if (form.remember.checked) localStorage.setItem(REMEMBER_KEY, "1");
-    } catch {
-      // Storage blocked: signed in for this page only
-    }
-    saveTokens(body.data);
+    await signIn(form.username.value.trim(), form.password.value, form.remember.checked);
     form.password.value = "";
-    showApp();
+    await showApp();
   } catch (e) {
     error.textContent = e.message;
     error.hidden = false;
@@ -458,38 +467,40 @@ async function onLogin(event) {
   }
 }
 
-async function onLogout() {
-  const refreshToken = readRefreshToken();
+async function logout() {
   try {
-    if (session.access) {
-      await fetch("/api/v1/auth/logout", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${session.access}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh_token: refreshToken }),
-      });
-    }
+    await signOut();
   } finally {
-    clearTokens();
+    ctx.me = null;
+    ctx.profile = null;
+    ctx.draft = null;
     showLogin();
   }
 }
 
+ctx.control = control;
+ctx.logout = logout;
+
 async function start() {
+  restoreLook();
+  decorateIcons();
   $("login-form").addEventListener("submit", onLogin);
-  $("logout").addEventListener("click", onLogout);
+  $("logout").addEventListener("click", logout);
   for (const button of document.querySelectorAll("[data-action]")) {
     button.addEventListener("click", () => onAction(button.dataset.action));
   }
+  window.addEventListener("hashchange", () => { if (timer) route(); });
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && timer) load();
+    if (document.visibilityState === "visible" && timer) tick();
   });
   if (!readRefreshToken()) return showLogin();
   try {
     await freshTokens();
-    showApp();
+    await showApp();
   } catch {
     showLogin();
   }
+  return undefined;
 }
 
 start();
