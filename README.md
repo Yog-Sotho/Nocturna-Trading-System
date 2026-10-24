@@ -80,7 +80,7 @@ No finance degree required. If you can copy-paste a few commands and use a phone
 
 ## 📊 The honest scoreboard
 
-Every idea below follows its published rules (the three newest had theirs written down
+Every idea below follows its published rules (the four newest had theirs written down
 *before* their first backtest) and went through the same tests. The verdicts come from the
 years the tests held back, January 2020 to October 2026, which a strategy never sees while it
 is being chosen:
@@ -95,12 +95,13 @@ is being chosen:
 | 📅 Month-end payment cycle (`month-end`) | ❌ Rejected | 21.4% in almost seven years, against T-bills' 20.3% |
 | 🌊 Trend filter on the 60/40 (`trend-filter`) | ❌ Rejected | A tie with the 60/40 since 2017, a little behind it since 1974. It did hit the kill switch only twice in 52 years, against five times |
 | 🐢 Low-volatility funds instead of SPY (`low-vol`) | ❌ Rejected | 3.6% a year, against the 60/40's 6.3% |
+| 🥇 Gold in the 60/40 (`gold`) | ❌ Rejected | Better since 2020 (7.8% a year, worst drop −11%) because gold quadrupled. But from 1975 to 2000, when gold lost almost two thirds, it earned less per unit of risk than the plain 60/40, and its best gold weight looks overfit |
 
 <sub>The 60/40 row is the live portfolio, held at 60/40. The rejected ideas were compared with the
 60/40 validated the same way they were, with its stock weight (40–80%) re-chosen each year;
 that earned about the same, 6.3% a year since 2020 and 8.2% since 1974.</sub>
 
-Seven rejections out of seven isn't the robot failing. It's the robot doing its job. 🐺 The
+Eight rejections out of eight isn't the robot failing. It's the robot doing its job. 🐺 The
 numbers, sources and reasoning are in the [strategy shortlist](docs/STRATEGY_SHORTLIST.md) and
 the [roadmap](docs/ROADMAP.md).
 

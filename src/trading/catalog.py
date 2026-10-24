@@ -125,6 +125,16 @@ STRATEGIES: dict[str, StrategyInfo] = {
         {"equity": Parameter("Fund", {"USMV": "USMV (iShares MSCI USA Min Vol)",
                                       "SPLV": "SPLV (Invesco S&P 500 Low Volatility)"})},
     ),
+    "gold": StrategyInfo(
+        "Gold in the 60/40",
+        "The 60/40 with a gold fund (GLD) taking 10 to 20% of the account, equally from stocks and bonds.",
+        "Devanathan, Tzikas and Boyd, arXiv 2609.07946 (2026)",
+        REJECTED,
+        "7.8% a year from 2020 to October 2026 against the 60/40's 6.3%, but behind the 60/40 from 1975 to "
+        "2000, when gold fell, and its choice of gold weight looks overfit.",
+        {"gold": 0.2},
+        {"gold": Parameter("Gold", {0.1: "10%", 0.15: "15%", 0.2: "20%"})},
+    ),
     "lineup": StrategyInfo(
         "60/40 + ETF trend + crypto",
         "A 60/40 core with ETF trend following and crypto breakouts, held at fixed shares.",

@@ -32,6 +32,9 @@ CRYPTO = ("BTC/USD", "ETH/USD", "SOL/USD")
 #: Low-volatility equity funds that can stand in for SPY in the 60/40: iShares MSCI USA Min Vol
 #: Factor and Invesco S&P 500 Low Volatility (docs/STRATEGY_SHORTLIST.md, "Fixed rules: low-vol")
 LOW_VOL_ETFS = ("USMV", "SPLV")
+#: Gold sleeve weights for the 60/40, each taken equally from stocks and bonds
+#: (docs/STRATEGY_SHORTLIST.md, "Fixed rules: gold")
+GOLD_WEIGHTS = (0.10, 0.15, 0.20)
 
 
 @dataclass(frozen=True)
@@ -113,6 +116,17 @@ def _low_vol(instruments: Mapping[str, Instrument]) -> Candidate:
     )
 
 
+def _gold(instruments: Mapping[str, Instrument]) -> Candidate:
+    spy, ief, gld = instruments["SPY"], instruments["IEF"], instruments["GLD"]
+    return Candidate(
+        "gold",
+        lambda p: BuyAndHold({spy: round(0.6 - p["gold"] / 2, 6), ief: round(0.4 - p["gold"] / 2, 6),
+                              gld: p["gold"]}),
+        {"gold": list(GOLD_WEIGHTS)},  # fixed before any backtest (docs/STRATEGY_SHORTLIST.md)
+        regime_symbol="SPY",
+    )
+
+
 #: Lineup mixes (core 60/40, ETF trend, crypto trend), fixed from first principles before
 #: any lineup backtest: the core carries the return, trend diversifies it, crypto is held at
 #: the 15% crypto limit
@@ -173,6 +187,12 @@ CANDIDATES: dict[str, CandidateSpec] = {
         "and Wurgler)",
         (*((s, AssetClass.EQUITY) for s in LOW_VOL_ETFS), ("IEF", AssetClass.EQUITY)),
         _low_vol,
+    ),
+    "gold": CandidateSpec(
+        "60/40 with a gold sleeve (GLD) of 10-20%, taken equally from stocks and bonds (Devanathan, Tzikas "
+        "and Boyd)",
+        (("SPY", AssetClass.EQUITY), ("IEF", AssetClass.EQUITY), ("GLD", AssetClass.EQUITY)),
+        _gold,
     ),
     "lineup": CandidateSpec(
         "60/40 core + ETF time-series momentum + crypto Donchian ensemble",

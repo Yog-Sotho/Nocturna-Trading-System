@@ -1,10 +1,10 @@
 # Strategy shortlist (research, 22 October 2026)
 
 > **Status (24 October 2026).** Every pick so far was built and rejected: round 1's B
-> (month-end payment cycle), and round 2's D1 (trend filter) and D2 (low-volatility funds). Each
-> result is under its decision below. [Round 3](#round-3-improving-the-6040-itself-24-october-2026)
-> proposes gold in the mix and asks the operator to decide how a change to the benchmark itself
-> is judged. Nothing is built or backtested for it yet; the live engine trades the 60/40.
+> (month-end payment cycle), round 2's D1 (trend filter) and D2 (low-volatility funds), and
+> round 3's E1 (gold in the 60/40, on gate B). Each result is under its decision below. E2
+> (international stocks) and E3 (commodities) are described but not built. The live engine
+> trades the 60/40.
 
 Phase 5 built four candidates (60/40 benchmark, month-end rebalancing flows, ETF time-series
 momentum, crypto Donchian ensemble) and none passed the promotion gates. This file lists what
@@ -979,4 +979,51 @@ half.
   is recorded as rejected, and the code stays as the `gold` candidate.
 - **No other variant is tested on this data,** whatever the result: no other gold weight or
   fund (IAU, GLDM), no gold timing, no other split between stocks and bonds.
+
+### Result: rejected (24 October 2026)
+
+`flask validate gold --start 2017-01-01 --end 2026-10-23`, and the same for `benchmark`; then
+`tools/research/gold_long_history.py` on the World Bank workbook named in the rules. Nothing was
+changed between the runs.
+
+**Gate B on Alpaca data (walk-forward 2020 to October 2026).** The validation selected the 20%
+gold sleeve (50/30/20).
+
+| | E1 gold | 60/40 | Gate B |
+|---|---|---|---|
+| Sharpe ratio over T-bills | 0.70 | 0.53 | pass |
+| Maximum drawdown | −10.8% | −14.0% | pass |
+| Deflated Sharpe ratio | 0.997 | | pass (≥ 0.95) |
+| Probability of backtest overfitting | 0.54 | | **fail** (≤ 0.20) |
+| At 3× costs | 62.3% against T-bills' 20.3% | | pass |
+| Parameter stability | 0.96 | | pass (≥ 0.5) |
+| Return a year | 7.84% | 6.34% | |
+| Volatility | 7.3% | 7.0% | |
+| 2022 | −8.4% | −12.5% | |
+
+Full-period Sharpe ratios of the three weights: 0.78 (10%), 0.85 (15%), 0.88 (20%). The
+kill switch tripped once out of sample, as for the 60/40.
+
+**Gate B on the monthly long history.** Sharpe ratio over T-bills, maximum drawdown and return
+a year; fixed weights, rebalanced monthly; gold less GLD's fee.
+
+| | 1975–2000: Sharpe | Max drawdown | A year | 2001–Aug 2026: Sharpe | Max drawdown | A year |
+|---|---|---|---|---|---|---|
+| 60/40 | 0.65 | −17.4% | 13.69% | 0.62 | −29.1% | 7.32% |
+| Gold 10% | 0.60 | −15.9% | 12.66% | 0.73 | −25.2% | 7.87% |
+| Gold 15% | 0.56 | −15.2% | 12.13% | 0.78 | −23.5% | 8.14% |
+| **Gold 20% (selected)** | **0.52** | **−15.4%** | **11.58%** | **0.83** | **−22.3%** | **8.40%** |
+| Gold alone | −0.20 | −64.9% | 1.10% | 0.74 | −40.3% | 11.04% |
+
+**The verdict.** Rejected: it fails two parts of gate B.
+- **The first half of the long history.** From 1975 to 2000 every gold weight earned less per
+  unit of risk than the 60/40, and the more gold, the less. Gold returned 1.1% a year then,
+  less than T-bills. The drawdowns were shallower in both halves.
+- **The overfitting test:** 0.54, against at most 0.20. The three weights differ little, so the
+  in-sample winner often lost out of sample.
+
+What the data says: gold has helped this portfolio since 2001, and hurt it in the 26 years
+before. Since gold's real price is now near its all-time high, the earlier half is the warning
+gate B was written to heed. As fixed in advance, no other gold weight, fund or timing rule is
+tested on this data. The code stays as the `gold` candidate.
 

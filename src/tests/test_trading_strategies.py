@@ -367,7 +367,7 @@ class TestBlend:
 
 class TestCandidateRegistry:
     @pytest.mark.parametrize("name", ["benchmark", "rebalancing", "tsmom", "crypto-trend", "month-end",
-                                      "trend-filter", "low-vol", "lineup"])
+                                      "trend-filter", "low-vol", "gold", "lineup"])
     def test_every_candidate_builds_from_its_own_symbols(self, name):
         from src.trading.domain import Instrument
         from src.trading.validation.candidates import CANDIDATES
