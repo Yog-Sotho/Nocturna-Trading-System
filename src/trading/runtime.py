@@ -197,6 +197,8 @@ class TradingRuntime:
             RuntimeError: If it is already running.
         """
         with self._lock:
+            if self.service is not None and self.service.status().state in ("starting", "running"):
+                raise RuntimeError("engine service is already running")
             profile = self._profiles(self._app)
             if self.service is not None and not self.service.running and (
                     self.profile is None or profile.id != self.profile.id):
@@ -204,9 +206,10 @@ class TradingRuntime:
             if self.service is None:
                 self.service = self._factory(self._app, self._settings, profile)
                 self.profile = profile
-            self.service.start()
             if self.profile is not None:
+                # Stamped before the engine thread exists: starting up, it writes to the database too
                 self.profile = self._activate(self._app, self.profile, datetime.now(UTC))
+            self.service.start()
 
     def stop(self) -> None:
         with self._lock:
