@@ -1027,3 +1027,68 @@ before. Since gold's real price is now near its all-time high, the earlier half 
 gate B was written to heed. As fixed in advance, no other gold weight, fund or timing rule is
 tested on this data. The code stays as the `gold` candidate.
 
+## Decision (24 October 2026): E3 and E2
+
+The operator asked for E3 and E2 next, both judged on gate B. These rules were fixed and
+committed before any backtest of either. The 60/40's side of the comparison is the
+`flask validate benchmark` run of E1 (same dates, unchanged since).
+
+**What Alpaca has.** Both funds are active, tradable and fractionable, with daily bars from
+4 January 2016. Median traded value over the last 250 sessions:
+- **DBC** (Invesco DB Commodity Index Tracking Fund; futures on 14 commodities; expense ratio
+  about 0.85%, from [third-party listings](https://etf.pionline.com/fund/DBC), as Invesco's own
+  page did not come up): about $22 million a day.
+- **VEA** (Vanguard FTSE Developed Markets ETF; developed markets outside the US, Canada and
+  Korea included; expense ratio 0.03%, from
+  [Vanguard](https://investor.vanguard.com/investment-products/etfs/profile/VEA)): about $826
+  million a day.
+
+No backtest or return of either fund was looked at before these rules.
+
+**The free long histories, as downloaded on 24 October 2026:**
+- **Commodities:** AQR's "Commodities for the Long Run: Index Level Data, Monthly", the
+  equal-weight commodity futures portfolio's excess return, February 1877 to May 2025 (file
+  SHA-256 beginning `eeb89c65`).
+- **International stocks:** French's "Developed ex US 3 Factors", monthly, July 1990 to August
+  2026 (Bloomberg data; Mkt-RF plus RF is the market's return in dollars; zip SHA-256 beginning
+  `83eda24f`).
+
+**Expectation, stated before the test.** E3: mixed; commodities did well in 2021–22, when the
+60/40 did badly, and poorly in 2014–15 and 2018. E2: US stocks led over both data sets, so E2
+most likely fails gate B; it is tested because it has the strongest long-run evidence.
+
+### Fixed rules: `commodities`
+
+- **Portfolio.** The live 60/40 with a commodity sleeve of weight c, taken equally from stocks
+  and bonds: SPY at 60% − c/2, IEF at 40% − c/2, DBC at c. Idle equity goes to the T-bill
+  sleeve (BIL).
+- **The grid (three variants):** c = 5%, 10% and 15%, that is 57.5/37.5/5, 55/35/10 and
+  52.5/32.5/15.
+- **Size, orders, costs, test and the Alpaca part of gate B:** as in "Fixed rules: gold", with
+  `flask validate commodities --start 2017-01-01 --end 2026-10-23`.
+- **The monthly long history (gate B).** As for gold, except:
+  - commodities are AQR's equal-weight excess return plus the month's T-bill return, less
+    DBC's 0.85% a year (a twelfth each month). AQR's index holds many commodities at equal
+    weights; DBC holds 14 and leans to energy. The check tests the asset class, not the fund;
+  - the halves are January 1975 to December 2000, and January 2001 to May 2025 (AQR's last
+    month).
+- **No other variant is tested on this data,** whatever the result: no other weight or fund
+  (PDBC, BCI, GSG), no timing.
+
+### Fixed rules: `international`
+
+- **Portfolio.** The live 60/40 with a share f of its stocks abroad: SPY at 60% × (1 − f),
+  VEA at 60% × f, IEF at 40%. Idle equity goes to the T-bill sleeve (BIL).
+- **The grid (three variants):** f = a third, a half and two thirds, that is 40/20/40,
+  30/30/40 and 20/40/40 (SPY/VEA/IEF).
+- **Size, orders, costs, test and the Alpaca part of gate B:** as in "Fixed rules: gold", with
+  `flask validate international --start 2017-01-01 --end 2026-10-23`.
+- **The monthly long history (gate B).** As for gold, except:
+  - international stocks are French's developed ex-US market return (Mkt-RF plus RF), less
+    VEA's 0.03% a year;
+  - the data starts in July 1990, not 1975, so the halves are July 1990 to December 2007, and
+    January 2008 to August 2026. This is the one change to gate B's long-history part, and it
+    is fixed here, before the test.
+- **No other variant is tested on this data,** whatever the result: no other share or fund
+  (EFA, VXUS, IEFA), no emerging markets, no currency hedge, no timing.
+
