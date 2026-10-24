@@ -843,3 +843,83 @@ run. A asks a question a long-only mix almost cannot pass.
 - **E1 is not picked yet:** the operator asked for more research first.
 - **If gold is ever traded, the engine trades GLD,** the same fund as in the backtests.
 
+### More variants for path B (24 October 2026)
+
+Each changes one sleeve of the 60/40 and keeps everything else (the 8% volatility target, the
+drawdown ladder, the kill switch, idle cash in T-bills). Each has a free monthly long history,
+so each can be judged on gate B. Nothing is built or backtested.
+
+#### E2. International stocks in the equity sleeve
+
+**Sources.** Anarkulova, Cederburg and O'Doherty, "Stocks for the Long Run? Evidence from a
+Broad Sample of Developed Markets", *Journal of Financial Economics* 2022 (39 developed
+markets, 1841–2019) ([JFE](https://ideas.repec.org/a/eee/jfinec/v143y2022i1p409-433.html)),
+and their lifecycle paper "Beyond the Status Quo" (2025), whose best lifetime mix holds a third
+of its stocks at home and two thirds abroad
+([PDF](https://finance-conference.wpcarey.asu.edu/sites/g/files/litvpz3416/files/2025-01/Beyond%20the%20Status%20Quo.pdf)).
+Asness, Israelov and Liew, "International Diversification Works (Eventually)", *Financial
+Analysts Journal* 2011, updated through 2022 in the *Journal of Portfolio Management* 2023.
+
+**Evidence for.** The strongest academic base of this round: peer-reviewed, data from dozens of
+countries over more than a century. Over long horizons a country's own economy dominates its
+returns, so holding several countries diversifies what one country's bad decades do.
+
+**Evidence against.**
+- Diversification across countries fails in crashes, when markets fall together; it works over
+  decades.
+- US stocks beat the rest of the developed world over most of the data we can test: our Alpaca
+  window (2016–2026) and French's developed ex-US series (from July 1990, which begins with
+  Japan's bust). Gate B asks the variant to beat the 60/40 *in this data*, so E2 is the least
+  likely of the three to pass, whatever its long-run merit.
+- Currency risk: foreign stocks in dollars carry exchange-rate swings.
+
+**Data.** Alpaca: VEA or EFA (EFA, 2001, is already in the TSMOM universe). Long history:
+French's "Developed ex US" market return, monthly from July 1990 (Bloomberg data), with French's
+T-bills.
+
+**Draft grid.** A third, half or two thirds of the equity sleeve abroad.
+
+#### E3. Broad commodities
+
+**Source.** Levine, Ooi, Richardson and Sasseville, "Commodities for the Long Run", *Financial
+Analysts Journal* 2018: commodity futures from 1877 earned positive average excess returns,
+did well in inflationary spells and had low correlation with stocks and bonds
+([NBER w22793](https://www.nber.org/papers/w22793)). AQR publishes the index updated to May
+2025, monthly and free
+([dataset](https://www.aqr.com/Insights/Datasets/Commodities-for-the-Long-Run-Original-Paper-Data)).
+
+**Evidence for.** A long, public, monthly history (1877–2025) to test on; and commodities rose
+when stocks and bonds both fell for inflation, as in 2022.
+
+**Evidence against.**
+- Two of the authors work at AQR, which sells commodity products.
+- Single commodity futures earn about nothing on average; an index's return comes largely from
+  rebalancing (Erb and Harvey, "The Strategic and Tactical Value of Commodity Futures", *FAJ*
+  2006; [NBER w11222](https://www.nber.org/system/files/working_papers/w11222/w11222.pdf)).
+- Since index investing took off around 2004, commodities move more with stocks, and the
+  evidence on whether their returns fell is mixed (see the review
+  "[Financialization of commodity markets ten years later](https://www.sciencedirect.com/science/article/abs/pii/S240585132300003X)",
+  2023).
+- The funds are dear: DBC about 0.85% a year, BCI 0.26% but only listed in 2017.
+
+**Data.** Alpaca: DBC (2006; already in the TSMOM universe). Long history: AQR's equal-weight
+commodity futures excess return plus French's T-bills.
+
+**Draft grid.** A commodity sleeve of 5%, 10% or 15%, taken equally from stocks and bonds.
+
+#### Checked and rejected (more of round 3)
+
+| Idea | Why not |
+|---|---|
+| Inflation-linked bonds (TIPS) in the bond sleeve | Only practitioner evidence turned up, and it disagrees; long TIPS lost with other bonds in 2022, as rates rose |
+
+#### How the three compare, before any test
+
+| | E1 gold | E2 international | E3 commodities |
+|---|---|---|---|
+| Strength of the evidence | One new preprint, issuers' studies | Peer-reviewed, a century, many countries | Peer-reviewed, 1877 on, but by a seller |
+| Our test data | Flatters it (gold ×4 since 2016) | Punishes it (US ahead since 1990) | Mixed (AQR index over T-bills: −22% in 2015, −11% in 2018, +30% in 2021, +17% in 2022) |
+| Free long history | 1975–2026, monthly averages | July 1990–2026 | 1877–May 2025 |
+| Fund cost | GLD 0.40% | VEA 0.03–0.05%, EFA 0.32% ([comparison](https://www.etfcentral.com/compare-etfs/EFA-vs-VEA)) | DBC about 0.85% ([comparison](https://www.etfcentral.com/compare-etfs/BCI-vs-DBC)) |
+| Chance of passing gate B | Highest | Lowest | In between |
+
