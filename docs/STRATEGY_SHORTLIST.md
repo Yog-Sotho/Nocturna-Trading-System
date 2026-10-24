@@ -836,3 +836,10 @@ Two ways to judge E1, to be fixed before any test:
 and B asks exactly that question, with the long history as the guard against gold's recent
 run. A asks a question a long-only mix almost cannot pass.
 
+### Decisions (24 October 2026)
+
+- **Gate: B.** A variant of the benchmark is judged on the path B criteria above, fixed now and
+  before any test of any variant.
+- **E1 is not picked yet:** the operator asked for more research first.
+- **If gold is ever traded, the engine trades GLD,** the same fund as in the backtests.
+
