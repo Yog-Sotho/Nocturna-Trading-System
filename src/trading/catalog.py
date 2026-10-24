@@ -135,6 +135,26 @@ STRATEGIES: dict[str, StrategyInfo] = {
         {"gold": 0.2},
         {"gold": Parameter("Gold", {0.1: "10%", 0.15: "15%", 0.2: "20%"})},
     ),
+    "commodities": StrategyInfo(
+        "Commodities in the 60/40",
+        "The 60/40 with a commodity fund (DBC) taking 5 to 15% of the account, equally from stocks and bonds.",
+        "Levine, Ooi, Richardson and Sasseville, FAJ 2018",
+        REJECTED,
+        "About level with the 60/40 since 2020 and likely overfit; since 2001 its worst drop was deeper than "
+        "the 60/40's.",
+        {"commodities": 0.15},
+        {"commodities": Parameter("Commodities", {0.05: "5%", 0.1: "10%", 0.15: "15%"})},
+    ),
+    "international": StrategyInfo(
+        "International stocks in the 60/40",
+        "The 60/40 with a third to two thirds of its stocks in developed markets outside the US (VEA).",
+        "Anarkulova, Cederburg and O'Doherty, JFE 2022",
+        REJECTED,
+        "5.4% a year from 2020 to October 2026 against the 60/40's 6.3%, and behind it since 1990.",
+        {"abroad": 1 / 3},
+        {"abroad": Parameter("Abroad", {1 / 3: "A third of the stocks", 1 / 2: "Half of the stocks",
+                                         2 / 3: "Two thirds of the stocks"})},
+    ),
     "lineup": StrategyInfo(
         "60/40 + ETF trend + crypto",
         "A 60/40 core with ETF trend following and crypto breakouts, held at fixed shares.",

@@ -2,9 +2,9 @@
 
 > **Status (24 October 2026).** Every pick so far was built and rejected: round 1's B
 > (month-end payment cycle), round 2's D1 (trend filter) and D2 (low-volatility funds), and
-> round 3's E1 (gold in the 60/40, on gate B). Each result is under its decision below. E2
-> (international stocks) and E3 (commodities) are described but not built. The live engine
-> trades the 60/40.
+> round 3's E1 (gold), E3 (commodities) and E2 (international stocks), each judged on gate B.
+> Each result is under its decision below. No candidate is open; the live engine trades the
+> 60/40.
 
 Phase 5 built four candidates (60/40 benchmark, month-end rebalancing flows, ETF time-series
 momentum, crypto Donchian ensemble) and none passed the promotion gates. This file lists what
@@ -1091,4 +1091,77 @@ most likely fails gate B; it is tested because it has the strongest long-run evi
     is fixed here, before the test.
 - **No other variant is tested on this data,** whatever the result: no other share or fund
   (EFA, VXUS, IEFA), no emerging markets, no currency hedge, no timing.
+
+### Result: E3 rejected (24 October 2026)
+
+`flask validate commodities --start 2017-01-01 --end 2026-10-23`, then
+`tools/research/sleeve_long_history.py commodities` on the AQR file named in the rules. The 60/40
+is E1's benchmark run. The validation selected the 15% sleeve.
+
+| Gate B on Alpaca data | E3 | 60/40 | |
+|---|---|---|---|
+| Sharpe ratio over T-bills | 0.56 | 0.53 | pass |
+| Maximum drawdown | −10.9% | −14.0% | pass |
+| Deflated Sharpe ratio | 0.989 | | pass |
+| Probability of backtest overfitting | 0.85 | | **fail** |
+| At 3× costs | 50.5% against T-bills' 20.3% | | pass |
+| Parameter stability | 0.98 | | pass |
+| Return a year | 6.73% | 6.34% | |
+| 2022 | −9.2% | −12.5% | |
+
+Full-period Sharpe ratios of the three weights: 0.72 (5%), 0.73 (10%), 0.74 (15%).
+
+| Long history | 1975–2000: Sharpe | Max drawdown | A year | 2001–May 2025: Sharpe | Max drawdown | A year |
+|---|---|---|---|---|---|---|
+| 60/40 | 0.65 | −17.4% | 13.69% | 0.59 | −29.1% | 6.91% |
+| Commodities 5% | 0.65 | −16.5% | 13.45% | 0.59 | −29.7% | 6.83% |
+| Commodities 10% | 0.65 | −15.5% | 13.20% | 0.58 | −30.3% | 6.75% |
+| **Commodities 15% (selected)** | **0.65** | **−14.6%** | **12.94%** | **0.57** | **−31.0%** | **6.66%** |
+| Commodities alone | 0.07 | −33.2% | 6.91% | 0.22 | −61.9% | 3.90% |
+
+**Rejected,** on two parts of gate B: a 0.85 probability of backtest overfitting (the three
+weights differ by 0.02), and, since 2001, a lower Sharpe ratio and a deeper drawdown than the
+60/40. Commodities cut the 60/40's drawdowns before 2001 and in 2022, and cost it return in
+between; net of DBC's fee they added nothing. The code stays as the `commodities` candidate.
+
+### Result: E2 rejected (24 October 2026)
+
+`flask validate international --start 2017-01-01 --end 2026-10-23`, then
+`tools/research/sleeve_long_history.py international` on the French file named in the rules. The
+validation selected a third abroad.
+
+| Gate B on Alpaca data | E2 | 60/40 | |
+|---|---|---|---|
+| Sharpe ratio over T-bills | 0.39 | 0.53 | **fail** |
+| Maximum drawdown | −12.3% | −14.0% | pass |
+| Deflated Sharpe ratio | 0.961 | | pass |
+| Probability of backtest overfitting | 0.09 | | pass |
+| At 3× costs | 37.9% against T-bills' 20.3% | | pass |
+| Parameter stability | 0.86 | | pass |
+| Return a year | 5.41% | 6.34% | |
+
+Full-period Sharpe ratios: 0.57 (a third abroad), 0.49 (half), 0.43 (two thirds).
+
+| Long history | Jul 1990–2007: Sharpe | Max drawdown | A year | 2008–Aug 2026: Sharpe | Max drawdown | A year |
+|---|---|---|---|---|---|---|
+| 60/40 | 0.67 | −20.6% | 9.79% | 0.70 | −28.1% | 8.12% |
+| **A third abroad (selected)** | **0.64** | **−19.7%** | **9.20%** | **0.60** | **−29.6%** | **6.95%** |
+| Half abroad | 0.60 | −19.5% | 8.88% | 0.54 | −30.3% | 6.36% |
+| Two thirds abroad | 0.55 | −19.7% | 8.55% | 0.47 | −31.1% | 5.76% |
+| Developed ex-US alone | 0.29 | −45.6% | 7.41% | 0.31 | −53.2% | 5.36% |
+
+**Rejected,** as expected before the test: a lower Sharpe ratio than the 60/40 on Alpaca data
+and in both halves of 1990–2026, and a deeper drawdown since 2008. The more abroad, the worse.
+This says that US stocks beat the rest of the developed world over these 36 years, not that
+diversifying abroad cannot pay over a century; but gate B judges the data we can test. The code
+stays as the `international` candidate.
+
+### Where round 3 leaves the 60/40
+
+Three sleeves, each with real evidence behind it, and none beat the plain 60/40 on gate B:
+- gold helped since 2001 and hurt before;
+- commodities cut drawdowns in inflationary years and cost return the rest of the time;
+- international stocks trailed US stocks throughout the testable data.
+
+The live engine keeps the 60/40 with its idle cash in T-bills.
 
