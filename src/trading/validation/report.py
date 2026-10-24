@@ -8,8 +8,9 @@ future dashboard.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 import numpy as np
@@ -42,6 +43,8 @@ class ValidationReport:
     passed: bool
     verdict: str
     settings: dict[str, Any]
+    #: The walk-forward's equity, traded out of sample (not in the JSON report: the lab draws it)
+    out_of_sample_curve: tuple[tuple[datetime, Decimal], ...] = field(default=(), repr=False)
 
     # -- JSON ---------------------------------------------------------------------------------
 

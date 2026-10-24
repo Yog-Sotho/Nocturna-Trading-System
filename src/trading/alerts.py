@@ -15,6 +15,12 @@ answering) is sent to any of:
 Alerts go out from a thread of their own, so the engine never waits on a chat
 service, and one repeated within ``DEDUP_WINDOW`` is sent once.
 
+Each alert has a category (``CATEGORIES``). On the dashboard the operator
+chooses which optional categories are sent and which configured channels are
+used (``AlertChoices``, stored in the database and read by every process);
+safety and problem alerts cannot be turned off, and at least one configured
+channel is always used.
+
 The heartbeat (HEARTBEAT_URL, a healthchecks.io check's ping URL) is the dead
 man's switch: it is pinged while the engine runs and pinged at ``/fail`` when
 the engine has failed. A stopped engine, a dead process or a dead host sends
@@ -31,7 +37,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from urllib.parse import urlsplit, urlunsplit
@@ -57,12 +63,70 @@ MIN_PING_GAP = 15.0
 
 
 @dataclass(frozen=True)
+class Category:
+    label: str
+    description: str
+    #: Always sent: the dashboard cannot turn it off
+    locked: bool = False
+    #: Sent until the operator chooses otherwise
+    default: bool = True
+
+
+CATEGORIES: dict[str, Category] = {
+    "safety": Category("Safety", "The kill switch, a halt, the daily loss limit.", locked=True),
+    "problems": Category("Problems", "Broker errors, a fill the engine did not place, a failed engine, "
+                                     "an engine process that stopped answering.", locked=True),
+    "warnings": Category("Warnings", "Strategy and engine errors, positions corrected from the broker."),
+    "lifecycle": Category("Comings and goings", "The engine process starting and stopping, trading resumed, "
+                                                "the engine answering again."),
+    "fills": Category("Fills", "Every order the engine filled.", default=False),
+    "lab": Category("Strategy lab", "A lab run finished or failed."),
+}
+CHANNELS: dict[str, str] = {"telegram": "Telegram", "ntfy": "ntfy", "webhook": "Webhook"}
+
+
+@dataclass(frozen=True)
 class Alert:
     title: str
     message: str = ""
     urgent: bool = False
     #: Alerts with the same key are sent once per DEDUP_WINDOW; empty never deduplicates
     key: str = ""
+    #: A CATEGORIES name; an alert without one is a problem, so it is never silenced by mistake
+    category: str = "problems"
+
+
+@dataclass(frozen=True)
+class AlertChoices:
+    """What the operator chose on the dashboard; a channel or category not mentioned keeps its default."""
+
+    channels: Mapping[str, bool] = field(default_factory=dict)
+    categories: Mapping[str, bool] = field(default_factory=dict)
+
+    def sends(self, category: str) -> bool:
+        known = CATEGORIES.get(category)
+        if known is None or known.locked:
+            return True
+        return self.categories.get(category, known.default)
+
+    def uses(self, channel: str) -> bool:
+        return self.channels.get(channel, True)
+
+    def to_dict(self) -> dict[str, dict[str, bool]]:
+        return {"channels": dict(self.channels), "categories": dict(self.categories)}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> AlertChoices:
+        """Stored choices; anything unrecognised is ignored, so a bad row cannot silence an alert."""
+        if not isinstance(data, Mapping):
+            return cls()
+
+        def flags(value: Any, known: Mapping[str, Any]) -> dict[str, bool]:
+            if not isinstance(value, Mapping):
+                return {}
+            return {k: v for k, v in value.items() if k in known and isinstance(v, bool)}
+
+        return cls(flags(data.get("channels"), CHANNELS), flags(data.get("categories"), CATEGORIES))
 
 
 Post = Callable[[str, bytes, Mapping[str, str]], None]
@@ -188,12 +252,15 @@ class _Background:
 
 class AlertDispatcher:
     def __init__(self, sinks: list[Sink], clock: Clock | None = None, dedup_window: timedelta = DEDUP_WINDOW,
-                 retry_delays: tuple[float, ...] = (2.0, 10.0)) -> None:
+                 retry_delays: tuple[float, ...] = (2.0, 10.0),
+                 choices: Callable[[], AlertChoices] | None = None) -> None:
         """
         Args:
             retry_delays: Waits before each retry of a send that failed for a reason worth retrying.
+            choices: The operator's current choices; read on the sending thread, never the caller's.
         """
         self._sinks = list(sinks)
+        self._choices = choices or AlertChoices
         self._now = clock.now if clock is not None else (lambda: datetime.now(UTC))
         self._window = dedup_window
         self._retry_delays = retry_delays
@@ -204,6 +271,22 @@ class AlertDispatcher:
     @property
     def enabled(self) -> bool:
         return bool(self._sinks)
+
+    @property
+    def channels(self) -> list[str]:
+        """The configured channels."""
+        return [sink.name for sink in self._sinks]
+
+    def _current_choices(self) -> AlertChoices:
+        try:
+            return self._choices()
+        except Exception:
+            logger.exception("Reading the alert choices failed; sending as by default")
+            return AlertChoices()
+
+    def _chosen_sinks(self, choices: AlertChoices) -> list[Sink]:
+        """The channels in use; all of them if the choices turned every configured one off."""
+        return [sink for sink in self._sinks if choices.uses(sink.name)] or list(self._sinks)
 
     def notify(self, alert: Alert) -> None:
         logger.log(logging.WARNING if alert.urgent else logging.INFO, "Alert: %s. %s", alert.title, alert.message)
@@ -220,7 +303,11 @@ class AlertDispatcher:
             logger.error("Too many alerts waiting; dropped: %s", alert.title)
 
     def _deliver(self, alert: Alert) -> None:
-        for sink in self._sinks:
+        choices = self._current_choices()
+        if not choices.sends(alert.category):
+            logger.info("Alert not sent (%s alerts are turned off): %s", alert.category, alert.title)
+            return
+        for sink in self._chosen_sinks(choices):
             for attempt, delay in enumerate((0.0, *self._retry_delays), start=1):
                 time.sleep(delay)
                 try:
@@ -235,9 +322,12 @@ class AlertDispatcher:
         return self._background.flush(timeout)
 
     def deliver_now(self, alert: Alert) -> list[tuple[str, str | None]]:
-        """Send once to every sink on this thread: each sink's name and why it failed (None if sent)."""
+        """
+        Send once on this thread, whatever its category, to every channel in use:
+        each channel's name and why it failed (None if sent).
+        """
         results: list[tuple[str, str | None]] = []
-        for sink in self._sinks:
+        for sink in self._chosen_sinks(self._current_choices()):
             try:
                 sink.send(alert)
                 results.append((sink.name, None))
@@ -246,7 +336,7 @@ class AlertDispatcher:
         return results
 
 
-def build_alerts(settings: Settings) -> AlertDispatcher:
+def build_alerts(settings: Settings, choices: Callable[[], AlertChoices] | None = None) -> AlertDispatcher:
     sinks: list[Sink] = []
     if settings.alert_telegram_bot_token is not None and settings.alert_telegram_chat_id:
         sinks.append(TelegramSink(settings.alert_telegram_bot_token.get_secret_value(),
@@ -256,7 +346,7 @@ def build_alerts(settings: Settings) -> AlertDispatcher:
         sinks.append(NtfySink(settings.alert_ntfy_url.get_secret_value(), token))
     if settings.alert_webhook_url is not None:
         sinks.append(WebhookSink(settings.alert_webhook_url.get_secret_value()))
-    return AlertDispatcher(sinks)
+    return AlertDispatcher(sinks, choices=choices)
 
 
 # -- what is worth an alert ------------------------------------------------------------
@@ -279,22 +369,26 @@ def event_alert(event: EngineEvent) -> Alert | None:
     match event.kind:
         case "kill_switch":
             # The halt that follows carries the same reason, so it is not sent twice
-            return Alert("Kill switch: trading halted", detail, urgent=True, key=f"halt:{detail}")
+            return Alert("Kill switch: trading halted", detail, urgent=True, key=f"halt:{detail}", category="safety")
         case "halt":
-            return Alert("Trading halted", detail, urgent=True, key=f"halt:{detail}")
+            return Alert("Trading halted", detail, urgent=True, key=f"halt:{detail}", category="safety")
         case "resume":
-            return Alert("Trading resumed")
+            return Alert("Trading resumed", category="lifecycle")
         case "broker_error":
             return Alert("Broker error", detail, urgent=True, key=f"broker_error:{detail}")
         case "strategy_error":
-            return Alert("Strategy error", detail, key=f"strategy_error:{detail}")
+            return Alert("Strategy error", detail, key=f"strategy_error:{detail}", category="warnings")
         case "unknown_fill" if event.fill is not None:
             fill = event.fill
             return Alert("Fill the engine did not place",
                          f"{fill.side.value} {fill.qty} {fill.symbol} at {fill.price} "
                          f"(client order {fill.client_order_id})", urgent=True, key=f"unknown_fill:{fill.fill_id}")
+        case "fill" if event.fill is not None:
+            fill = event.fill
+            return Alert(f"Filled: {fill.side.value} {fill.qty} {fill.symbol}",
+                         f"at {fill.price}, fee {fill.fee} (client order {fill.client_order_id})", category="fills")
         case "reconciled":
-            return Alert("Positions corrected from the broker", detail, key="reconciled")
+            return Alert("Positions corrected from the broker", detail, key="reconciled", category="warnings")
     return None
 
 
@@ -364,13 +458,13 @@ class EngineMonitor:
             self._alerts.notify(Alert("Engine failed", error or "", urgent=True))
         if state == "running" and error and error != self._error:
             category = error.partition(":")[0]
-            self._alerts.notify(Alert("Engine error", error, key=f"engine_error:{category}"))
+            self._alerts.notify(Alert("Engine error", error, key=f"engine_error:{category}", category="warnings"))
         cooling_down = bool((status.get("risk") or {}).get("cooling_down"))
         if cooling_down and not self._cooling_down:
             self._alerts.notify(Alert(
                 "Daily loss limit reached",
                 f"No new orders until the next New York trading day (equity {status.get('equity')})",
-                urgent=True, key="cooling_down"))
+                urgent=True, key="cooling_down", category="safety"))
         self._state, self._error, self._cooling_down = state, error, cooling_down
         if self._heartbeat is not None and state in ("running", "failed"):
             self._heartbeat.beat(state == "running", _summary(status))
@@ -405,7 +499,7 @@ class ReachabilityMonitor:
                 "trading may have stopped. The emergency stop still reaches the broker.",
                 urgent=True, key="engine_unreachable"))
         elif self._state == "unreachable" and state != "unreachable":
-            self._alerts.notify(Alert("Engine answering again", f"state {state}"))
+            self._alerts.notify(Alert("Engine answering again", f"state {state}", category="lifecycle"))
         if state != "unreachable" or self._state is not None:
             self._state = state
 

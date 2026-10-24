@@ -160,6 +160,7 @@ def validate(candidate: Candidate, bars: Mapping[str, Sequence[Bar]], config: Va
         gates=results,
         passed=passed,
         verdict=summary,
+        out_of_sample_curve=walk.result.equity_curve,
         settings={
             "data": config.data_label,
             "sharpe_in_excess_of": config.hurdle_label if hurdle is not None else "zero",

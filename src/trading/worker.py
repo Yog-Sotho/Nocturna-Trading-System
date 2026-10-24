@@ -127,4 +127,5 @@ class EngineWorker:
 
     def _notify(self, title: str, detail: str = "") -> None:
         if self._alerts is not None:
-            self._alerts.notify(Alert(title, f"instance {self.instance}" + (f"; {detail}" if detail else "")))
+            self._alerts.notify(Alert(title, f"instance {self.instance}" + (f"; {detail}" if detail else ""),
+                                      category="lifecycle"))

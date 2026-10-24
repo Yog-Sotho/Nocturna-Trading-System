@@ -36,6 +36,7 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 from flask import Flask
@@ -243,7 +244,8 @@ class TelegramCommands:
             return reply
 
     def _status(self) -> str:
-        status = self._runtime_of().views()["status"]
+        views = self._runtime_of().views()
+        status = views["status"]
         lines = [f"Engine: {status['state']}"]
         if not status.get("configured"):
             lines.append("Alpaca keys are not set.")
@@ -262,6 +264,9 @@ class TelegramCommands:
             lines.append(f"Last market data: {_when(status['last_poll'])}")
         if status.get("last_error"):
             lines.append(f"Error: {status['last_error']}")
+        profile = views.get("profile")
+        if profile:
+            lines.append(f"Mix: {_mix(profile)}")
         return "\n".join(lines)
 
     def _positions(self) -> str:
@@ -276,6 +281,15 @@ class TelegramCommands:
             lines.append("Working orders:")
             lines += [f"{o['side']} {o['qty']} {o['symbol']} ({o['order_type']}, {o['status']})" for o in working]
         return "\n".join(lines)
+
+
+def _mix(profile: Mapping[str, Any]) -> str:
+    """``60% benchmark, 25% tsmom, 15% T-bills (profile #3)``."""
+    shares = [(Decimal(e["weight"]), e["strategy"]) for e in profile["mix"]]
+    rest = Decimal(1) - sum((w for w, _ in shares), Decimal(0))
+    parts = [f"{w:.0%} {name}" for w, name in shares] + ([f"{rest:.0%} T-bills"] if rest > 0 else [])
+    which = f"profile #{profile['id']}" if profile.get("id") is not None else "the default profile"
+    return f"{', '.join(parts)} ({which})"
 
 
 def _help() -> str:

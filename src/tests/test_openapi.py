@@ -240,6 +240,34 @@ class TestResponsesMatchTheDocument:
                  json={"reason": "drill", "close_all_positions": False})
         api.call("POST", "/api/v1/trading/emergency-stop", 400, headers=bearer, json={"close_all_positions": "x"})
 
+        # The strategy lab: a run is queued, its process executes it, the result is read back
+        from src.trading import lab
+
+        class InlineLab:
+            def launch(self):
+                lab.drain(app, app.extensions["settings"])
+
+        monkeypatch.setitem(app.extensions, "lab", InlineLab())
+        monkeypatch.setattr(lab, "execute", lambda settings, kind, spec: (
+            {"headline": "rejected: fails out-of-sample Sharpe", "passed": False}, "# Validation: tsmom"))
+        api.call("POST", "/api/v1/lab/runs", 400, headers=bearer, json={"kind": "optimise"})
+        run = api.call("POST", "/api/v1/lab/runs", 202, headers=bearer, json={
+            "kind": "validate", "strategy": "tsmom", "start": "2017-01-03", "end": "2026-01-02"}).get_json()["data"]
+        api.call("GET", "/api/v1/lab/runs?limit=5", 200, headers=bearer)
+        done = api.call("GET", f"/api/v1/lab/runs/{run['run']['id']}", 200, headers=bearer).get_json()["data"]
+        assert done["run"]["status"] == "done" and done["run"]["report"] == "# Validation: tsmom"
+        api.call("GET", "/api/v1/lab/runs/9999", 404, headers=bearer)
+        api.call("GET", "/api/v1/trading/strategies", 200, headers=bearer)
+
+        # Alerts and preferences
+        api.call("GET", "/api/v1/settings/alerts", 200, headers=bearer)
+        api.call("PUT", "/api/v1/settings/alerts", 200, headers=bearer, json={"categories": {"fills": True}})
+        api.call("PUT", "/api/v1/settings/alerts", 400, headers=bearer, json={"categories": {"safety": False}})
+        api.call("POST", "/api/v1/settings/alerts/test", 409, headers=bearer)
+        api.call("GET", "/api/v1/me/preferences", 200, headers=bearer)
+        api.call("PUT", "/api/v1/me/preferences", 200, headers=bearer, json={"theme": "dark", "accent": "teal"})
+        api.call("PUT", "/api/v1/me/preferences", 400, headers=bearer, json={"theme": "neon"})
+
         # Sessions end
         second = {**headers, "Authorization": f"Bearer {pair['access_token']}"}
         api.call("POST", "/api/v1/auth/logout", 200, headers=second, json={"refresh_token": pair["refresh_token"]})

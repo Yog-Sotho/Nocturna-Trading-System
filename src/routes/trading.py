@@ -19,6 +19,7 @@ from src.middleware.auth import require_admin, require_auth, require_trading_per
 from src.models.trading import EquitySnapshot, TradingFill, TradingOrder
 from src.routes import schemas
 from src.routes.openapi import documented
+from src.trading import lab
 from src.trading import profile as profiles
 from src.trading.catalog import catalog
 from src.trading.operator import OperatorOrder, UnknownSymbolError
@@ -376,12 +377,13 @@ def _running_profile() -> dict[str, Any] | None:
 
 @trading_bp.route('/strategies', methods=['GET'])
 @documented("The strategies the engine can trade", tag="strategies", access="user",
-            description="Every registered strategy with its parameters (its validation grid) and what "
-                        "validation concluded about it.",
+            description="Every registered strategy with its parameters (its validation grid), what "
+                        "validation concluded about it, and the strategy lab's newest validation of it.",
             responses={200: ("The strategies", schemas.Strategies)})
 @require_auth
 def list_strategies():
-    return format_response(True, data={'strategies': catalog()})
+    verdicts = lab.latest_verdicts(current_app._get_current_object())
+    return format_response(True, data={'strategies': [{**s, 'lab': verdicts.get(s['name'])} for s in catalog()]})
 
 
 @trading_bp.route('/profile', methods=['GET'])

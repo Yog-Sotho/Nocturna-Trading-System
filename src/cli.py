@@ -8,6 +8,7 @@ Usage:
     flask --app src.main validate benchmark --start 2017-01-01 --output reports/benchmark.md
     flask --app src.main engine run          # the engine as its own process (ENGINE_MODE=external)
     flask --app src.main soak report         # paper trading against a backtest of the same days (Phase 9)
+    flask --app src.main lab run             # the strategy lab's queued runs (the API starts it)
 """
 
 import json
@@ -134,63 +135,34 @@ def register_cli(app: Flask) -> None:
         Idle cash is held in T-bills (BIL) and Sharpe ratios are measured in excess of them.
         Exit code 1 means rejected.
         """
-        from src.trading.backtest import BacktestConfig
-        from src.trading.data import DEFAULT_FEED_DELAY
-        from src.trading.domain import AssetClass
-        from src.trading.lineup import CASH_SLEEVE
-        from src.trading.runtime import TradingNotConfiguredError, risk_limits, sizing_policy
-        from src.trading.validation import market
+        from src.trading.runtime import TradingNotConfiguredError
+        from src.trading.validation import runner, sources
         from src.trading.validation.candidates import CANDIDATES
         from src.trading.validation.experiment import WalkForwardConfig
         from src.trading.validation.gates import PromotionGates
-        from src.trading.validation.pipeline import ValidationConfig, validate
-        from src.trading.validation.stats import hurdle_returns
 
         spec = CANDIDATES.get(candidate)
         if spec is None:
             raise click.ClickException(f"unknown candidate {candidate!r}; known: {', '.join(sorted(CANDIDATES))}")
-        settings = current_app.extensions["settings"]
         start = start.replace(tzinfo=UTC)
         end = (end.replace(tzinfo=UTC) if end else datetime.now(UTC)).replace(hour=0, minute=0, second=0,
                                                                               microsecond=0)
         if end <= start:
             raise click.ClickException("--end must be after --start")
-        symbols = spec.symbols if no_tbills else (*spec.symbols, (CASH_SLEEVE, AssetClass.EQUITY))
-        data_label, hurdle_label = "Alpaca daily bars", f"T-bills ({CASH_SLEEVE})"
-        if data_source == "history":
-            from src.trading.validation import history
 
-            unknown = sorted({s for s, _ in symbols} - set(history.SYMBOLS))
-            if unknown:
-                raise click.ClickException(f"the long history has proxies for {', '.join(history.SYMBOLS)} only, "
-                                           f"not {', '.join(unknown)}")
-            try:
-                instruments, bars, sources = history.load(start - timedelta(days=spec.warm_up_days), end)
-            except (ValueError, OSError) as e:
-                raise click.ClickException(f"long-history data: {e}") from e
-            bars = {s: bars[s] for s, _ in symbols}
-            for source in sources:
+        def loaded(market: sources.MarketData) -> None:
+            for source in market.sources:
                 click.echo(f"Data: {source.url} ({source.first} to {source.last}, sha256 {source.sha256})")
-            data_label = ("long-history proxies for SPY, IEF and BIL from French's Data Library and FRED "
-                          "(docs/STRATEGY_SHORTLIST.md, Fixed rules: trend-filter)")
-            hurdle_label = f"T-bills (French's 1-month rate, as {CASH_SLEEVE})"
-        else:
-            try:
-                instruments, bars = market.load(settings, symbols, start - timedelta(days=spec.warm_up_days), end)
-            except TradingNotConfiguredError as e:
-                raise click.ClickException(str(e)) from e
-        gates = PromotionGates() if min_sharpe is None else PromotionGates(min_oos_sharpe=min_sharpe)
-        config = ValidationConfig(
-            BacktestConfig(start=start, end=end, risk_limits=risk_limits(settings), sizing=sizing_policy(settings),
-                           resume_after_kill=timedelta(days=resume_after_kill_days),
-                           cash_sleeve=None if no_tbills else instruments[CASH_SLEEVE]),
-            walk_forward=WalkForwardConfig(train_months, test_months), gates=gates,
-            hurdle=None if no_tbills else hurdle_returns(bars[CASH_SLEEVE], DEFAULT_FEED_DELAY[AssetClass.EQUITY]),
-            hurdle_label=hurdle_label, data_label=data_label)
-        click.echo(f"Validating {candidate} ({spec.description}) from {start:%Y-%m-%d} to {end:%Y-%m-%d}...")
+            click.echo(f"Validating {candidate} ({spec.description}) from {start:%Y-%m-%d} to {end:%Y-%m-%d}...")
+
         try:
-            report = validate(spec.build(instruments), bars, config)
-        except ValueError as e:
+            report, _ = runner.validate_candidate(
+                current_app.extensions["settings"], candidate, start, end, data=data_source, tbills=not no_tbills,
+                resume_after_kill=timedelta(days=resume_after_kill_days),
+                walk_forward=WalkForwardConfig(train_months, test_months),
+                gates=PromotionGates() if min_sharpe is None else PromotionGates(min_oos_sharpe=min_sharpe),
+                loaded=loaded)
+        except (sources.DataError, TradingNotConfiguredError, ValueError) as e:
             raise click.ClickException(str(e)) from e
         markdown = report.to_markdown()
         if output is None:
@@ -203,6 +175,23 @@ def register_cli(app: Flask) -> None:
         click.echo(f"Verdict: {report.verdict}")
         if not report.passed:
             raise SystemExit(1)
+
+    @app.cli.group("lab")
+    def lab_group() -> None:
+        """The dashboard's strategy lab."""
+
+    @lab_group.command("run")
+    def lab_run() -> None:
+        """Execute the queued lab runs one at a time, then exit (the API starts this when it queues one)."""
+        from src.trading.lab import drain
+
+        flask_app = current_app._get_current_object()
+        alerts = flask_app.extensions["alerts"]
+        try:
+            count = drain(flask_app, flask_app.extensions["settings"], alerts)
+        finally:
+            alerts.flush(timeout=15)
+        click.echo(f"Lab: {count} run(s) executed.")
 
     @app.cli.group("soak")
     def soak_group() -> None:
@@ -252,7 +241,7 @@ def register_cli(app: Flask) -> None:
             raise click.ClickException(
                 "No alert channel is configured: set ALERT_TELEGRAM_BOT_TOKEN and ALERT_TELEGRAM_CHAT_ID, "
                 "ALERT_NTFY_URL or ALERT_WEBHOOK_URL")
-        results = alerts.deliver_now(Alert("NOCTURNA test alert", "Alerts reach you.", urgent=True))
+        results = alerts.deliver_now(Alert("NOCTURNA test alert", "Alerts reach you.", urgent=True, category="test"))
         for name, error in results:
             click.echo(f"{name}: " + ("sent" if error is None else f"FAILED ({error})"))
         if any(error is not None for _, error in results):

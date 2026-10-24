@@ -189,6 +189,17 @@ class TestReads:
             "HALTED: drawdown 10.0%", "Daily loss limit reached: no new orders today.",
             "Positions: 2  Working orders: 1", "Last market data: 2026-03-02 21:05 UTC"])
 
+    def test_status_names_the_mix(self, make):
+        mix = [{"strategy": "benchmark", "params": {"equity": 0.6}, "weight": "0.6000"},
+               {"strategy": "tsmom", "params": {"rule": "sign", "long_only": True}, "weight": "0.2500"}]
+        views = {"status": {"configured": True, "state": "running"}, "profile": {"id": 3, "mix": mix}}
+        commands, _, _ = make(runtime=Runtime(views))
+        assert commands.handle("/status", NOW) == \
+            "Engine: running\nMix: 60% benchmark, 25% tsmom, 15% T-bills (profile #3)"
+        whole = {"id": None, "mix": [{"strategy": "benchmark", "params": {"equity": 0.6}, "weight": "1"}]}
+        commands, _, _ = make(runtime=Runtime({**views, "profile": whole}))
+        assert commands.handle("/status", NOW).endswith("Mix: 100% benchmark (the default profile)")
+
     def test_status_without_keys(self, make):
         commands, _, _ = make(runtime=Runtime({"status": {"configured": False, "state": "unreachable"}}))
         assert commands.handle("/status", NOW) == "Engine: unreachable\nAlpaca keys are not set."

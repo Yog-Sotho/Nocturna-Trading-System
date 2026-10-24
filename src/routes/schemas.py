@@ -321,6 +321,16 @@ class StrategyParameter(Strict):
     choices: list[ParameterChoice]
 
 
+class LabVerdict(Strict):
+    run_id: int
+    passed: bool
+    verdict: str | None
+    data: Literal["alpaca", "history"]
+    start: str
+    end: str
+    finished_at: Timestamp | None
+
+
 class StrategyInfo(Strict):
     name: str = Field(description="The registered name (flask validate <name>)")
     title: str
@@ -334,6 +344,7 @@ class StrategyInfo(Strict):
     asset_classes: list[str]
     defaults: dict[str, Any] = Field(description="The parameters it starts with on the dashboard")
     parameters: list[StrategyParameter]
+    lab: LabVerdict | None = Field(description="The strategy lab's newest finished validation of it")
 
 
 class Strategies(Strict):
@@ -385,3 +396,104 @@ class ProfileBody(Strict):
     mix: list[MixEntry]
     risk: dict[str, Any] = Field(default_factory=dict, description="Only the settings to override")
     note: str = ""
+
+
+# -- the strategy lab ---------------------------------------------------------------------
+
+
+class LabRunBody(Strict):
+    kind: Literal["backtest", "validate"]
+    start: str = Field(description="First day traded, YYYY-MM-DD; earlier bars warm up the indicators")
+    end: str | None = Field(default=None, description="Last day, YYYY-MM-DD (default: today)")
+    data: Literal["alpaca", "history"] = Field(
+        default="alpaca", description="alpaca: Alpaca's daily bars. history: proxies for SPY, IEF and BIL from 1970")
+    strategy: str | None = Field(default=None, description="validate: the strategy (GET /trading/strategies)")
+    mix: list[MixEntry] | None = Field(default=None, description="backtest: the mix, as in PUT /trading/profile")
+    risk: dict[str, Any] | None = Field(default=None, description="backtest: risk overrides, as in the profile")
+
+
+class LabRunSummary(Strict):
+    id: int
+    kind: Literal["backtest", "validate"]
+    status: Literal["queued", "running", "done", "failed"]
+    title: str
+    spec: dict[str, Any] = Field(description="What was asked: period, data, and the mix or the strategy")
+    created_by: str | None
+    created_at: Timestamp
+    started_at: Timestamp | None
+    finished_at: Timestamp | None
+    headline: str | None = Field(description="The result in one line (the verdict, or returns and drawdown)")
+    error: str | None
+
+
+class LabRunDetail(LabRunSummary):
+    result: dict[str, Any] | None = Field(
+        description="backtest: summary, curve, years, fills, fees. validate: passed, curve (out of sample), "
+                    "report (the JSON tear sheet)")
+    report: str | None = Field(description="validate: the tear sheet in Markdown")
+
+
+class LabRuns(Strict):
+    runs: list[LabRunSummary]
+
+
+class LabRunQueued(Strict):
+    run: LabRunSummary
+
+
+class LabRunData(Strict):
+    run: LabRunDetail
+
+
+# -- alerts and preferences ---------------------------------------------------------------
+
+
+class AlertChannel(Strict):
+    name: Literal["telegram", "ntfy", "webhook"]
+    label: str
+    configured: bool = Field(description="Its address is set in .env (secrets never leave .env)")
+    enabled: bool
+
+
+class AlertCategory(Strict):
+    name: str
+    label: str
+    description: str
+    locked: bool = Field(description="Always sent: it cannot be turned off")
+    enabled: bool
+
+
+class AlertSettings(Strict):
+    channels: list[AlertChannel]
+    categories: list[AlertCategory]
+
+
+class AlertSettingsBody(Strict):
+    channels: dict[str, bool] = Field(default_factory=dict)
+    categories: dict[str, bool] = Field(default_factory=dict)
+
+
+class TestAlertResult(Strict):
+    channel: str
+    sent: bool
+    error: str | None = Field(description="Why it failed: an HTTP status or an error type, never the address")
+
+
+class TestAlertResults(Strict):
+    results: list[TestAlertResult]
+
+
+class Preferences(Strict):
+    display_name: str = Field(description="The name the dashboard greets you by (empty: your username)")
+    theme: Literal["auto", "dark", "light"]
+    accent: Literal["violet", "indigo", "magenta", "teal", "amber"]
+    cards: list[str] = Field(description="The overview's cards, in order")
+    hidden: list[str] = Field(description="Cards not shown")
+
+
+class PreferencesBody(Strict):
+    display_name: str | None = None
+    theme: Literal["auto", "dark", "light"] | None = None
+    accent: Literal["violet", "indigo", "magenta", "teal", "amber"] | None = None
+    cards: list[str] | None = None
+    hidden: list[str] | None = None
