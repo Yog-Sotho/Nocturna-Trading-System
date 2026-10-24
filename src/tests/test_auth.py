@@ -523,6 +523,15 @@ class TestCreateAdminCommand:
             assert admin.email == "ops@example.com"
             assert admin.check_password("Str0ng!Passw0rd")
 
+    def test_takes_the_password_from_the_environment(self, app, db):
+        """How setup.sh calls it: no prompt, and any symbol counts."""
+        result = app.test_cli_runner().invoke(args=[
+            "create-admin", "--username", "yogsotho", "--email", "ops@home.lan",
+        ], env={"ADMIN_PASSWORD": "Night-wolf-2026"}, input="")
+        assert result.exit_code == 0, result.output
+        with app.app_context():
+            assert User.query.filter_by(username="yogsotho").first().check_password("Night-wolf-2026")
+
     def test_rejects_weak_password(self, app, db):
         result = app.test_cli_runner().invoke(args=[
             "create-admin", "--email", "ops@example.com", "--password", "weakpassword",
