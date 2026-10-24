@@ -32,6 +32,13 @@ CRYPTO = ("BTC/USD", "ETH/USD", "SOL/USD")
 #: Low-volatility equity funds that can stand in for SPY in the 60/40: iShares MSCI USA Min Vol
 #: Factor and Invesco S&P 500 Low Volatility (docs/STRATEGY_SHORTLIST.md, "Fixed rules: low-vol")
 LOW_VOL_ETFS = ("USMV", "SPLV")
+#: Gold sleeve weights for the 60/40, each taken equally from stocks and bonds
+#: (docs/STRATEGY_SHORTLIST.md, "Fixed rules: gold")
+GOLD_WEIGHTS = (0.10, 0.15, 0.20)
+#: Commodity sleeve weights for the 60/40, taken equally from stocks and bonds ("Fixed rules: commodities")
+COMMODITY_WEIGHTS = (0.05, 0.10, 0.15)
+#: Shares of the 60/40's stocks held abroad ("Fixed rules: international")
+ABROAD_SHARES = (1 / 3, 1 / 2, 2 / 3)
 
 
 @dataclass(frozen=True)
@@ -113,6 +120,38 @@ def _low_vol(instruments: Mapping[str, Instrument]) -> Candidate:
     )
 
 
+def _gold(instruments: Mapping[str, Instrument]) -> Candidate:
+    spy, ief, gld = instruments["SPY"], instruments["IEF"], instruments["GLD"]
+    return Candidate(
+        "gold",
+        lambda p: BuyAndHold({spy: round(0.6 - p["gold"] / 2, 6), ief: round(0.4 - p["gold"] / 2, 6),
+                              gld: p["gold"]}),
+        {"gold": list(GOLD_WEIGHTS)},  # fixed before any backtest (docs/STRATEGY_SHORTLIST.md)
+        regime_symbol="SPY",
+    )
+
+
+def _commodities(instruments: Mapping[str, Instrument]) -> Candidate:
+    spy, ief, dbc = instruments["SPY"], instruments["IEF"], instruments["DBC"]
+    return Candidate(
+        "commodities",
+        lambda p: BuyAndHold({spy: round(0.6 - p["commodities"] / 2, 6),
+                              ief: round(0.4 - p["commodities"] / 2, 6), dbc: p["commodities"]}),
+        {"commodities": list(COMMODITY_WEIGHTS)},  # fixed before any backtest (docs/STRATEGY_SHORTLIST.md)
+        regime_symbol="SPY",
+    )
+
+
+def _international(instruments: Mapping[str, Instrument]) -> Candidate:
+    spy, vea, ief = instruments["SPY"], instruments["VEA"], instruments["IEF"]
+    return Candidate(
+        "international",
+        lambda p: BuyAndHold({spy: round(0.6 * (1 - p["abroad"]), 6), vea: round(0.6 * p["abroad"], 6), ief: 0.4}),
+        {"abroad": list(ABROAD_SHARES)},  # fixed before any backtest (docs/STRATEGY_SHORTLIST.md)
+        regime_symbol="SPY",
+    )
+
+
 #: Lineup mixes (core 60/40, ETF trend, crypto trend), fixed from first principles before
 #: any lineup backtest: the core carries the return, trend diversifies it, crypto is held at
 #: the 15% crypto limit
@@ -173,6 +212,23 @@ CANDIDATES: dict[str, CandidateSpec] = {
         "and Wurgler)",
         (*((s, AssetClass.EQUITY) for s in LOW_VOL_ETFS), ("IEF", AssetClass.EQUITY)),
         _low_vol,
+    ),
+    "gold": CandidateSpec(
+        "60/40 with a gold sleeve (GLD) of 10-20%, taken equally from stocks and bonds (Devanathan, Tzikas "
+        "and Boyd)",
+        (("SPY", AssetClass.EQUITY), ("IEF", AssetClass.EQUITY), ("GLD", AssetClass.EQUITY)),
+        _gold,
+    ),
+    "commodities": CandidateSpec(
+        "60/40 with a commodity sleeve (DBC) of 5-15%, taken equally from stocks and bonds (Levine, Ooi, "
+        "Richardson and Sasseville)",
+        (("SPY", AssetClass.EQUITY), ("IEF", AssetClass.EQUITY), ("DBC", AssetClass.EQUITY)),
+        _commodities,
+    ),
+    "international": CandidateSpec(
+        "60/40 with a third to two thirds of its stocks abroad (VEA) (Anarkulova, Cederburg and O'Doherty)",
+        (("SPY", AssetClass.EQUITY), ("VEA", AssetClass.EQUITY), ("IEF", AssetClass.EQUITY)),
+        _international,
     ),
     "lineup": CandidateSpec(
         "60/40 core + ETF time-series momentum + crypto Donchian ensemble",

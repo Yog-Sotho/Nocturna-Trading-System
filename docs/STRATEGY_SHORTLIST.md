@@ -1,8 +1,10 @@
 # Strategy shortlist (research, 22 October 2026)
 
-> **Status (23 October 2026).** Every pick so far was built and rejected: round 1's B
-> (month-end payment cycle), and round 2's D1 (trend filter) and D2 (low-volatility funds). Each
-> result is under its decision below. No candidate is open; the live engine trades the 60/40.
+> **Status (24 October 2026).** Every pick so far was built and rejected: round 1's B
+> (month-end payment cycle), round 2's D1 (trend filter) and D2 (low-volatility funds), and
+> round 3's E1 (gold), E3 (commodities) and E2 (international stocks), each judged on gate B.
+> Each result is under its decision below. No candidate is open; the live engine trades the
+> 60/40.
 
 Phase 5 built four candidates (60/40 benchmark, month-end rebalancing flows, ETF time-series
 momentum, crypto Donchian ensemble) and none passed the promotion gates. This file lists what
@@ -713,3 +715,453 @@ doesn't show why. The constructions differ:
 
 **As fixed in advance,** no other fund, weighting or switch is tested on this data. The code
 stays as the `low-vol` candidate.
+
+## Round 3: improving the 60/40 itself (24 October 2026)
+
+**Why a different question.** Eight ideas have failed the gates, and the gates may be the wrong
+yardstick for a long-only, unlevered fund mix. The live 60/40 earns a Sharpe ratio of 0.53 over
+T-bills out of sample (2020 to October 2026); the gate asks for 1.0. The best simple long-only
+portfolio in the newest research below reaches 0.82 over 2006–2026. So this round looks for a
+change to the benchmark that earns more for the same risk, and asks the operator how such a
+change should be judged (see [The gate question](#the-gate-question-the-operators-decision)).
+
+### E1. Gold in the mix
+
+**Source.** Devanathan, Tzikas and Boyd (Stanford), "Simple Dynamic Stock/Bond/Gold
+Portfolios", [arXiv 2609.07946](https://arxiv.org/abs/2609.07946), 7 September 2026.
+
+**What they tested.** SPY, AGG and GLD, January 2006 to January 2026, long-only, no leverage,
+with cash at the federal funds rate:
+- fixed 60/40 and 50/30/20 (stocks/bonds/gold), rebalanced yearly;
+- the same mixes with volatility control: monthly, scaled down to a 7% volatility target
+  (11-day estimate), the rest in cash. Our engine already does this (8% target, plus the
+  drawdown ladder), so the only new piece here is the gold sleeve;
+- two optimizer portfolios (below, under *checked and rejected*).
+
+**Evidence for.** Their results, Sharpe ratios in excess of the federal funds rate:
+
+| Portfolio | Return a year | Volatility | Sharpe | Max drawdown |
+|---|---|---|---|---|
+| 50/30/20, volatility control | 7.8% | 7.3% | 0.82 | −15.9% |
+| 60/40, volatility control | 7.1% | 7.4% | 0.71 | −16.9% |
+| 50/30/20 | 9.1% | 10.3% | 0.70 | −27.1% |
+| 60/40 | 8.1% | 11.3% | 0.56 | −33.7% |
+
+- Without 2008–09 the order holds: 0.93 against 0.83 with volatility control.
+- Costs barely matter: at 20 bps a trade the volatility-controlled 50/30/20 still has 0.80.
+- Gold helps most when stocks and bonds fall together. Their correlation turned positive in
+  2022 ([one secondary source](https://dataporium.tech/articles/do-bonds-still-diversify-stocks-stock-bond-correlation-from-2022-to-2026)
+  puts it at +0.42 in 2026; I have not checked it against primary data).
+
+**Evidence against.**
+- **The samples flatter gold.** GLD returned 10.6% a year over 2006–2026, about as much as SPY.
+  Over our own Alpaca window gold went from $1,076 an ounce (December 2015, monthly average)
+  to $4,319 (September 2026): about four times, 14% a year
+  ([World Bank Pink Sheet](https://www.worldbank.org/en/research/commodity-markets), October
+  2026 release). A backtest on 2017–2026 will very likely like gold for that reason alone.
+- **A high real price has preceded weak returns.** Erb and Harvey find that when the real gold
+  price is high, the following decade's real return has been low, and that gold has not hedged
+  inflation over 10-year spans since 1975 ([NBER w18706](https://www.nber.org/system/files/working_papers/w18706/w18706.pdf);
+  [2024 update](https://www.fuqua.duke.edu/duke-fuqua-insights/future-gold-prices)). The real
+  price is near its all-time high now, with gold around $4,000 on 23 October 2026
+  ([Kitco](https://www.kitco.com/gold-price-today-usa/)).
+- **Long losing spells.** $675 an ounce in January 1980, $256 in July 1999 (monthly averages):
+  −62% over almost 20 years, before inflation.
+- Gold pays nothing, and the funds charge for storage: GLD 0.40% a year, GLDM 0.10%.
+- The paper is a new preprint with no independent replication yet. Its authors note that their
+  confidence intervals do not account for their specification search.
+
+**How it can be tested here, with free data.**
+- **The gates:** `flask validate` on Alpaca bars, SPY/IEF/GLD from 2017, the same engine, costs
+  and limits as the 60/40.
+- **The long history, monthly (the real test):** 1975–2026, through gold's 1980–2001 bear market.
+  - US market and 1-month T-bills from French's Data Library;
+  - 10-year Treasury returns from FRED's yields, as in round 2;
+  - gold from the World Bank's monthly prices, free and CC BY 4.0 (from January 1960; US
+    citizens could own gold again from 31 December 1974). They are monthly *averages*, which
+    smooth gold's month-to-month moves, so its volatility will read low.
+- FRED no longer serves the LBMA gold price (both series answer 404), so there is no free daily
+  gold history before GLD (November 2004).
+
+**Draft rules (to fix if chosen).**
+- The live 60/40 with a gold sleeve of 10%, 15% or 20% (the grid, for the stability gate),
+  taken equally from stocks and bonds: 20% gives the paper's 50/30/20.
+- GLD in the backtests, for its history. Which fund the engine then trades (GLD or the cheaper
+  GLDM) is fixed with the rules.
+- Everything else as the 60/40: the 8% volatility target, the drawdown ladder, the kill switch,
+  idle cash in T-bills, trades at the open.
+
+**Expectation, stated before any test.** E1 will probably beat the 60/40 on 2017–2026 Alpaca
+data because gold quadrupled in it, and probably still miss the 1.0 gate. The long history
+decides whether the gain is gold's recent run or a lasting effect of diversification.
+
+### Checked and rejected (round 3)
+
+| Idea | Source | Why not |
+|---|---|---|
+| Optimizer portfolios (return forecasts from 42 market and economic features) | Devanathan, Tzikas and Boyd, arXiv 2609.07946 (2026) | Best numbers in the paper (Sharpe 1.08), but about 280% turnover a year, many data series, and settings chosen by the authors with hindsight; too many free choices to validate honestly with nine years of Alpaca data |
+| Faster trend following | Kurth, Eisler, Rej and Bouchaud, [arXiv 2607.01550](https://arxiv.org/abs/2607.01550) (2026) | Short-term trend profits have been unreliable since about 2009 in futures data; our slower ETF trend (Phase 5) and trend filter (D1) already failed |
+| Long-only trend on single stocks | Zarattini, Pagani and Wilcox, SSRN 5084316 (2025) | Holds up out of sample, but needs a survivorship-free single-stock history, which is not free |
+
+### Small changes that need no strategy test
+
+These change costs, not exposure; each is worth a few basis points a year. They wait for the
+operator and are best made after the paper soak, so the soak measures one setup.
+- **SGOV instead of BIL for the T-bill sleeve:** 0.09% a year against 0.1356%, about 4.5 bps
+  less on the cash. SGOV only exists since May 2020, so the gates would keep measuring against
+  BIL ([comparison](https://www.trackinsight.com/en/compare-etfs/SGOV,BIL)).
+- **GLDM instead of GLD,** only if E1 is adopted: 0.10% against 0.40%
+  ([ETF.com](https://www.etf.com/sections/news/gld-vs-gldm-vs-iau-which-gold-etf-should-you-actually-buy)).
+
+### The gate question (the operator's decision)
+
+A long-only, unlevered fund mix is unlikely to reach a Sharpe ratio of 1.0 out of sample: the
+60/40 has 0.53, and the newest paper's best simple mix 0.82 over twenty years that include 2008.
+Two ways to judge E1, to be fixed before any test:
+
+- **A. Keep the gates as they are.** E1 is judged like every candidate. It will most likely be
+  rejected on the 1.0 gate, and we learn whether gold helps.
+- **B. A separate path for changing the benchmark itself.** A variant of the 60/40 (same engine
+  and limits, a different fixed mix) replaces it only if *all* of these hold, as fixed in
+  writing before the test:
+  - out of sample on Alpaca data (2020 to October 2026): a higher Sharpe ratio over T-bills than
+    the 60/40, and a maximum drawdown no worse;
+  - deflated Sharpe ratio, overfitting probability, 3× costs and parameter stability: the usual
+    gates;
+  - on the monthly long history, in each half of 1975–2026: a Sharpe ratio over T-bills no
+    lower than the 60/40's, and a maximum drawdown no worse;
+  - then the 60-day paper soak, like any change.
+
+**Recommendation: B, with E1 as its first test.** Your goal is more income at the same risk,
+and B asks exactly that question, with the long history as the guard against gold's recent
+run. A asks a question a long-only mix almost cannot pass.
+
+### Decisions (24 October 2026)
+
+- **Gate: B.** A variant of the benchmark is judged on the path B criteria above, fixed now and
+  before any test of any variant.
+- **E1 is not picked yet:** the operator asked for more research first.
+- **If gold is ever traded, the engine trades GLD,** the same fund as in the backtests.
+
+### More variants for path B (24 October 2026)
+
+Each changes one sleeve of the 60/40 and keeps everything else (the 8% volatility target, the
+drawdown ladder, the kill switch, idle cash in T-bills). Each has a free monthly long history,
+so each can be judged on gate B. Nothing is built or backtested.
+
+#### E2. International stocks in the equity sleeve
+
+**Sources.** Anarkulova, Cederburg and O'Doherty, "Stocks for the Long Run? Evidence from a
+Broad Sample of Developed Markets", *Journal of Financial Economics* 2022 (39 developed
+markets, 1841–2019) ([JFE](https://ideas.repec.org/a/eee/jfinec/v143y2022i1p409-433.html)),
+and their lifecycle paper "Beyond the Status Quo" (2025), whose best lifetime mix holds a third
+of its stocks at home and two thirds abroad
+([PDF](https://finance-conference.wpcarey.asu.edu/sites/g/files/litvpz3416/files/2025-01/Beyond%20the%20Status%20Quo.pdf)).
+Asness, Israelov and Liew, "International Diversification Works (Eventually)", *Financial
+Analysts Journal* 2011, updated through 2022 in the *Journal of Portfolio Management* 2023.
+
+**Evidence for.** The strongest academic base of this round: peer-reviewed, data from dozens of
+countries over more than a century. Over long horizons a country's own economy dominates its
+returns, so holding several countries diversifies what one country's bad decades do.
+
+**Evidence against.**
+- Diversification across countries fails in crashes, when markets fall together; it works over
+  decades.
+- US stocks beat the rest of the developed world over most of the data we can test: our Alpaca
+  window (2016–2026) and French's developed ex-US series (from July 1990, which begins with
+  Japan's bust). Gate B asks the variant to beat the 60/40 *in this data*, so E2 is the least
+  likely of the three to pass, whatever its long-run merit.
+- Currency risk: foreign stocks in dollars carry exchange-rate swings.
+
+**Data.** Alpaca: VEA or EFA (EFA, 2001, is already in the TSMOM universe). Long history:
+French's "Developed ex US" market return, monthly from July 1990 (Bloomberg data), with French's
+T-bills.
+
+**Draft grid.** A third, half or two thirds of the equity sleeve abroad.
+
+#### E3. Broad commodities
+
+**Source.** Levine, Ooi, Richardson and Sasseville, "Commodities for the Long Run", *Financial
+Analysts Journal* 2018: commodity futures from 1877 earned positive average excess returns,
+did well in inflationary spells and had low correlation with stocks and bonds
+([NBER w22793](https://www.nber.org/papers/w22793)). AQR publishes the index updated to May
+2025, monthly and free
+([dataset](https://www.aqr.com/Insights/Datasets/Commodities-for-the-Long-Run-Original-Paper-Data)).
+
+**Evidence for.** A long, public, monthly history (1877–2025) to test on; and commodities rose
+when stocks and bonds both fell for inflation, as in 2022.
+
+**Evidence against.**
+- Two of the authors work at AQR, which sells commodity products.
+- Single commodity futures earn about nothing on average; an index's return comes largely from
+  rebalancing (Erb and Harvey, "The Strategic and Tactical Value of Commodity Futures", *FAJ*
+  2006; [NBER w11222](https://www.nber.org/system/files/working_papers/w11222/w11222.pdf)).
+- Since index investing took off around 2004, commodities move more with stocks, and the
+  evidence on whether their returns fell is mixed (see the review
+  "[Financialization of commodity markets ten years later](https://www.sciencedirect.com/science/article/abs/pii/S240585132300003X)",
+  2023).
+- The funds are dear: DBC about 0.85% a year, BCI 0.26% but only listed in 2017.
+
+**Data.** Alpaca: DBC (2006; already in the TSMOM universe). Long history: AQR's equal-weight
+commodity futures excess return plus French's T-bills.
+
+**Draft grid.** A commodity sleeve of 5%, 10% or 15%, taken equally from stocks and bonds.
+
+#### Checked and rejected (more of round 3)
+
+| Idea | Why not |
+|---|---|
+| Inflation-linked bonds (TIPS) in the bond sleeve | Only practitioner evidence turned up, and it disagrees; long TIPS lost with other bonds in 2022, as rates rose |
+
+#### How the three compare, before any test
+
+| | E1 gold | E2 international | E3 commodities |
+|---|---|---|---|
+| Strength of the evidence | One new preprint, issuers' studies | Peer-reviewed, a century, many countries | Peer-reviewed, 1877 on, but by a seller |
+| Our test data | Flatters it (gold ×4 since 2016) | Punishes it (US ahead since 1990) | Mixed (AQR index over T-bills: −22% in 2015, −11% in 2018, +30% in 2021, +17% in 2022) |
+| Free long history | 1975–2026, monthly averages | July 1990–2026 | 1877–May 2025 |
+| Fund cost | GLD 0.40% | VEA 0.03–0.05%, EFA 0.32% ([comparison](https://www.etfcentral.com/compare-etfs/EFA-vs-VEA)) | DBC about 0.85% ([comparison](https://www.etfcentral.com/compare-etfs/BCI-vs-DBC)) |
+| Chance of passing gate B | Highest | Lowest | In between |
+
+## Decision (24 October 2026): E1
+
+The operator picked E1, to be judged on gate B. These rules were fixed and committed before any
+backtest of it.
+
+**What Alpaca has.** GLD (SPDR Gold Shares, NYSE Arca) is active, tradable and fractionable,
+with daily bars from 4 January 2016. Its median traded value over the last 250 sessions is about
+$3.9 billion a day. No GLD backtest or return was looked at before these rules.
+
+**The free long history.** The World Bank's monthly gold prices (Pink Sheet, release of
+2 October 2026, file SHA-256 beginning `ea1c3508`), January 1960 to September 2026, in dollars
+an ounce. They are averages over each month, not month-end prices.
+
+**Expectation, stated before the test.** As in round 3: E1 will probably beat the 60/40 on
+2017–2026 Alpaca data, because gold quadrupled in it. The long history decides whether that is
+gold's recent run or a lasting gain from diversification; gold's 1980–2001 fall is in its first
+half.
+
+### Fixed rules: `gold`
+
+- **Portfolio.** The live 60/40 with a gold sleeve of weight g, taken equally from stocks and
+  bonds: SPY at 60% − g/2, IEF at 40% − g/2, GLD at g. Idle equity goes to the T-bill sleeve
+  (BIL).
+- **The grid (three variants):** g = 10%, 15% and 20%, that is 55/35/10, 52.5/32.5/15 and
+  50/30/20.
+- **Size.** The engine's standard sizing applies unchanged: the 60% position cap, the 8%
+  volatility target, the drawdown ladder, the 2% rebalance band and the kill switch.
+- **Orders.** At the next session's opening auction, as for the live 60/40. The standard 5 bps
+  per equity fill.
+- **Test.** `flask validate gold --start 2017-01-01 --end 2026-10-23`, with the standard
+  walk-forward, in excess of T-bills.
+- **The comparison.** `flask validate benchmark` on the same dates, as for D1 and D2.
+- **Gate B on Alpaca data, all of:**
+  - walk-forward (out-of-sample) Sharpe ratio over T-bills above the benchmark's;
+  - out-of-sample maximum drawdown no deeper than the benchmark's;
+  - deflated Sharpe ratio ≥ 0.95, probability of backtest overfitting ≤ 0.20, total return
+    above T-bills' at 3× costs, parameter stability ≥ 0.5.
+- **Gate B on the monthly long history.** Computed outside the engine:
+  - **Returns by calendar month.** Stocks, bonds and T-bills are the round-2 daily proxies
+    (`history.py`: French's market, the 7- and 10-year par-bond average from FRED, French's
+    1-month T-bill), compounded by month. Gold is the change in the World Bank's monthly average
+    price, less GLD's 0.40% a year (a twelfth each month); the other proxies carry no fee.
+  - **Portfolios,** rebalanced to their fixed weights every month, without the volatility
+    target or the ladder, the same for both: the 60/40, and E1 at the gold weight the
+    validation selects (the report's *selected* parameters). The other two weights are reported
+    too, for information.
+  - **Two halves:** January 1975 to December 2000, and January 2001 to August 2026 (the last
+    month every series covers).
+  - **In each half, E1 must have** a Sharpe ratio over T-bills (monthly excess returns,
+    annualized by √12) no lower than the 60/40's, and a maximum drawdown on monthly returns no
+    deeper.
+- **What decides.** E1 replaces the 60/40 as the live benchmark only if it passes every part of
+  gate B above and the operator confirms. Then the 60-day paper soak, trading GLD. Otherwise it
+  is recorded as rejected, and the code stays as the `gold` candidate.
+- **No other variant is tested on this data,** whatever the result: no other gold weight or
+  fund (IAU, GLDM), no gold timing, no other split between stocks and bonds.
+
+### Result: rejected (24 October 2026)
+
+`flask validate gold --start 2017-01-01 --end 2026-10-23`, and the same for `benchmark`; then
+`tools/research/gold_long_history.py` on the World Bank workbook named in the rules. Nothing was
+changed between the runs.
+
+**Gate B on Alpaca data (walk-forward 2020 to October 2026).** The validation selected the 20%
+gold sleeve (50/30/20).
+
+| | E1 gold | 60/40 | Gate B |
+|---|---|---|---|
+| Sharpe ratio over T-bills | 0.70 | 0.53 | pass |
+| Maximum drawdown | −10.8% | −14.0% | pass |
+| Deflated Sharpe ratio | 0.997 | | pass (≥ 0.95) |
+| Probability of backtest overfitting | 0.54 | | **fail** (≤ 0.20) |
+| At 3× costs | 62.3% against T-bills' 20.3% | | pass |
+| Parameter stability | 0.96 | | pass (≥ 0.5) |
+| Return a year | 7.84% | 6.34% | |
+| Volatility | 7.3% | 7.0% | |
+| 2022 | −8.4% | −12.5% | |
+
+Full-period Sharpe ratios of the three weights: 0.78 (10%), 0.85 (15%), 0.88 (20%). The
+kill switch tripped once out of sample, as for the 60/40.
+
+**Gate B on the monthly long history.** Sharpe ratio over T-bills, maximum drawdown and return
+a year; fixed weights, rebalanced monthly; gold less GLD's fee.
+
+| | 1975–2000: Sharpe | Max drawdown | A year | 2001–Aug 2026: Sharpe | Max drawdown | A year |
+|---|---|---|---|---|---|---|
+| 60/40 | 0.65 | −17.4% | 13.69% | 0.62 | −29.1% | 7.32% |
+| Gold 10% | 0.60 | −15.9% | 12.66% | 0.73 | −25.2% | 7.87% |
+| Gold 15% | 0.56 | −15.2% | 12.13% | 0.78 | −23.5% | 8.14% |
+| **Gold 20% (selected)** | **0.52** | **−15.4%** | **11.58%** | **0.83** | **−22.3%** | **8.40%** |
+| Gold alone | −0.20 | −64.9% | 1.10% | 0.74 | −40.3% | 11.04% |
+
+**The verdict.** Rejected: it fails two parts of gate B.
+- **The first half of the long history.** From 1975 to 2000 every gold weight earned less per
+  unit of risk than the 60/40, and the more gold, the less. Gold returned 1.1% a year then,
+  less than T-bills. The drawdowns were shallower in both halves.
+- **The overfitting test:** 0.54, against at most 0.20. The three weights differ little, so the
+  in-sample winner often lost out of sample.
+
+What the data says: gold has helped this portfolio since 2001, and hurt it in the 26 years
+before. Since gold's real price is now near its all-time high, the earlier half is the warning
+gate B was written to heed. As fixed in advance, no other gold weight, fund or timing rule is
+tested on this data. The code stays as the `gold` candidate.
+
+## Decision (24 October 2026): E3 and E2
+
+The operator asked for E3 and E2 next, both judged on gate B. These rules were fixed and
+committed before any backtest of either. The 60/40's side of the comparison is the
+`flask validate benchmark` run of E1 (same dates, unchanged since).
+
+**What Alpaca has.** Both funds are active, tradable and fractionable, with daily bars from
+4 January 2016. Median traded value over the last 250 sessions:
+- **DBC** (Invesco DB Commodity Index Tracking Fund; futures on 14 commodities; expense ratio
+  about 0.85%, from [third-party listings](https://etf.pionline.com/fund/DBC), as Invesco's own
+  page did not come up): about $22 million a day.
+- **VEA** (Vanguard FTSE Developed Markets ETF; developed markets outside the US, Canada and
+  Korea included; expense ratio 0.03%, from
+  [Vanguard](https://investor.vanguard.com/investment-products/etfs/profile/VEA)): about $826
+  million a day.
+
+No backtest or return of either fund was looked at before these rules.
+
+**The free long histories, as downloaded on 24 October 2026:**
+- **Commodities:** AQR's "Commodities for the Long Run: Index Level Data, Monthly", the
+  equal-weight commodity futures portfolio's excess return, February 1877 to May 2025 (file
+  SHA-256 beginning `eeb89c65`).
+- **International stocks:** French's "Developed ex US 3 Factors", monthly, July 1990 to August
+  2026 (Bloomberg data; Mkt-RF plus RF is the market's return in dollars; zip SHA-256 beginning
+  `83eda24f`).
+
+**Expectation, stated before the test.** E3: mixed; commodities did well in 2021–22, when the
+60/40 did badly, and poorly in 2014–15 and 2018. E2: US stocks led over both data sets, so E2
+most likely fails gate B; it is tested because it has the strongest long-run evidence.
+
+### Fixed rules: `commodities`
+
+- **Portfolio.** The live 60/40 with a commodity sleeve of weight c, taken equally from stocks
+  and bonds: SPY at 60% − c/2, IEF at 40% − c/2, DBC at c. Idle equity goes to the T-bill
+  sleeve (BIL).
+- **The grid (three variants):** c = 5%, 10% and 15%, that is 57.5/37.5/5, 55/35/10 and
+  52.5/32.5/15.
+- **Size, orders, costs, test and the Alpaca part of gate B:** as in "Fixed rules: gold", with
+  `flask validate commodities --start 2017-01-01 --end 2026-10-23`.
+- **The monthly long history (gate B).** As for gold, except:
+  - commodities are AQR's equal-weight excess return plus the month's T-bill return, less
+    DBC's 0.85% a year (a twelfth each month). AQR's index holds many commodities at equal
+    weights; DBC holds 14 and leans to energy. The check tests the asset class, not the fund;
+  - the halves are January 1975 to December 2000, and January 2001 to May 2025 (AQR's last
+    month).
+- **No other variant is tested on this data,** whatever the result: no other weight or fund
+  (PDBC, BCI, GSG), no timing.
+
+### Fixed rules: `international`
+
+- **Portfolio.** The live 60/40 with a share f of its stocks abroad: SPY at 60% × (1 − f),
+  VEA at 60% × f, IEF at 40%. Idle equity goes to the T-bill sleeve (BIL).
+- **The grid (three variants):** f = a third, a half and two thirds, that is 40/20/40,
+  30/30/40 and 20/40/40 (SPY/VEA/IEF).
+- **Size, orders, costs, test and the Alpaca part of gate B:** as in "Fixed rules: gold", with
+  `flask validate international --start 2017-01-01 --end 2026-10-23`.
+- **The monthly long history (gate B).** As for gold, except:
+  - international stocks are French's developed ex-US market return (Mkt-RF plus RF), less
+    VEA's 0.03% a year;
+  - the data starts in July 1990, not 1975, so the halves are July 1990 to December 2007, and
+    January 2008 to August 2026. This is the one change to gate B's long-history part, and it
+    is fixed here, before the test.
+- **No other variant is tested on this data,** whatever the result: no other share or fund
+  (EFA, VXUS, IEFA), no emerging markets, no currency hedge, no timing.
+
+### Result: E3 rejected (24 October 2026)
+
+`flask validate commodities --start 2017-01-01 --end 2026-10-23`, then
+`tools/research/sleeve_long_history.py commodities` on the AQR file named in the rules. The 60/40
+is E1's benchmark run. The validation selected the 15% sleeve.
+
+| Gate B on Alpaca data | E3 | 60/40 | |
+|---|---|---|---|
+| Sharpe ratio over T-bills | 0.56 | 0.53 | pass |
+| Maximum drawdown | −10.9% | −14.0% | pass |
+| Deflated Sharpe ratio | 0.989 | | pass |
+| Probability of backtest overfitting | 0.85 | | **fail** |
+| At 3× costs | 50.5% against T-bills' 20.3% | | pass |
+| Parameter stability | 0.98 | | pass |
+| Return a year | 6.73% | 6.34% | |
+| 2022 | −9.2% | −12.5% | |
+
+Full-period Sharpe ratios of the three weights: 0.72 (5%), 0.73 (10%), 0.74 (15%).
+
+| Long history | 1975–2000: Sharpe | Max drawdown | A year | 2001–May 2025: Sharpe | Max drawdown | A year |
+|---|---|---|---|---|---|---|
+| 60/40 | 0.65 | −17.4% | 13.69% | 0.59 | −29.1% | 6.91% |
+| Commodities 5% | 0.65 | −16.5% | 13.45% | 0.59 | −29.7% | 6.83% |
+| Commodities 10% | 0.65 | −15.5% | 13.20% | 0.58 | −30.3% | 6.75% |
+| **Commodities 15% (selected)** | **0.65** | **−14.6%** | **12.94%** | **0.57** | **−31.0%** | **6.66%** |
+| Commodities alone | 0.07 | −33.2% | 6.91% | 0.22 | −61.9% | 3.90% |
+
+**Rejected,** on two parts of gate B: a 0.85 probability of backtest overfitting (the three
+weights differ by 0.02), and, since 2001, a lower Sharpe ratio and a deeper drawdown than the
+60/40. Commodities cut the 60/40's drawdowns before 2001 and in 2022, and cost it return in
+between; net of DBC's fee they added nothing. The code stays as the `commodities` candidate.
+
+### Result: E2 rejected (24 October 2026)
+
+`flask validate international --start 2017-01-01 --end 2026-10-23`, then
+`tools/research/sleeve_long_history.py international` on the French file named in the rules. The
+validation selected a third abroad.
+
+| Gate B on Alpaca data | E2 | 60/40 | |
+|---|---|---|---|
+| Sharpe ratio over T-bills | 0.39 | 0.53 | **fail** |
+| Maximum drawdown | −12.3% | −14.0% | pass |
+| Deflated Sharpe ratio | 0.961 | | pass |
+| Probability of backtest overfitting | 0.09 | | pass |
+| At 3× costs | 37.9% against T-bills' 20.3% | | pass |
+| Parameter stability | 0.86 | | pass |
+| Return a year | 5.41% | 6.34% | |
+
+Full-period Sharpe ratios: 0.57 (a third abroad), 0.49 (half), 0.43 (two thirds).
+
+| Long history | Jul 1990–2007: Sharpe | Max drawdown | A year | 2008–Aug 2026: Sharpe | Max drawdown | A year |
+|---|---|---|---|---|---|---|
+| 60/40 | 0.67 | −20.6% | 9.79% | 0.70 | −28.1% | 8.12% |
+| **A third abroad (selected)** | **0.64** | **−19.7%** | **9.20%** | **0.60** | **−29.6%** | **6.95%** |
+| Half abroad | 0.60 | −19.5% | 8.88% | 0.54 | −30.3% | 6.36% |
+| Two thirds abroad | 0.55 | −19.7% | 8.55% | 0.47 | −31.1% | 5.76% |
+| Developed ex-US alone | 0.29 | −45.6% | 7.41% | 0.31 | −53.2% | 5.36% |
+
+**Rejected,** as expected before the test: a lower Sharpe ratio than the 60/40 on Alpaca data
+and in both halves of 1990–2026, and a deeper drawdown since 2008. The more abroad, the worse.
+This says that US stocks beat the rest of the developed world over these 36 years, not that
+diversifying abroad cannot pay over a century; but gate B judges the data we can test. The code
+stays as the `international` candidate.
+
+### Where round 3 leaves the 60/40
+
+Three sleeves, each with real evidence behind it, and none beat the plain 60/40 on gate B:
+- gold helped since 2001 and hurt before;
+- commodities cut drawdowns in inflationary years and cost return the rest of the time;
+- international stocks trailed US stocks throughout the testable data.
+
+The live engine keeps the 60/40 with its idle cash in T-bills.
+

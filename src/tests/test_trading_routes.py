@@ -165,7 +165,7 @@ class TestStrategiesAndProfile:
 
     def test_the_catalog(self, client, auth_headers):
         strategies = client.get("/api/v1/trading/strategies", headers=auth_headers).get_json()["data"]["strategies"]
-        assert len(strategies) == 8 and strategies[0]["name"] == "benchmark"
+        assert len(strategies) == 11 and strategies[0]["name"] == "benchmark"
 
     def test_nothing_saved_shows_the_default_and_the_environment(self, client, auth_headers):
         data = client.get("/api/v1/trading/profile", headers=auth_headers).get_json()["data"]
