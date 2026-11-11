@@ -45,6 +45,7 @@ ALPACA_PAPER = "https://paper-api.alpaca.markets"
 TELEGRAM = "https://api.telegram.org"
 DEFAULT_API_PORT = 5000
 IMAGE = "nocturna:latest"
+BOOT_UNIT = "nocturna.service"
 #: Funnel can only expose these ports; the dashboard never uses one
 FUNNEL_PORTS = (443, 8443, 10000)
 #: Where the dashboard's private Tailscale HTTPS port is looked for
@@ -370,6 +371,7 @@ class Machine:
     services: list[dict] = field(default_factory=list)
     admins: list[str] | None = None  # None: unknown (the API is not running)
     unreachable: list[str] = field(default_factory=list)
+    boot_unit: bool = False  # nocturna.service is installed as written by this setup, and enabled
 
     @property
     def env_file(self) -> Path:
@@ -667,6 +669,9 @@ def inspect_stack(m: Machine) -> None:
     area = "Stack"
     if not m.docker_ok:
         return
+    m.boot_unit = boot_unit_installed(m)
+    m.add("ok" if m.boot_unit else "fix", area, f"starts at every boot ({BOOT_UNIT})" if m.boot_unit else
+          f"not started at boot: a service that was down stays down after a reboot ({BOOT_UNIT} is missing)")
     m.db_volume = postgres_volume_exists(m.run, m.root)
     if m.db_volume and not m.env.get("DB_PASSWORD"):
         m.add("fix", area, "the database exists, but .env has no DB_PASSWORD: it needs the one the database "
@@ -700,6 +705,37 @@ def inspect_stack(m: Machine) -> None:
     if dumps:
         age = (time.time() - dumps[-1].stat().st_mtime) / 3600
         m.add("ok" if age < 26 else "warn", area, f"newest backup {age:.0f} hours old ({len(dumps)} kept)")
+
+
+def boot_unit(root: Path) -> str:
+    """
+    The systemd unit that starts the stack at boot. Docker restarts on its own only the containers
+    that were running when it stopped: one stopped by hand (docker compose stop) or left down
+    stays down. `docker compose up -d` starts whatever is down, in the order of depends_on.
+    """
+    docker = shutil.which("docker") or "/usr/bin/docker"
+    return (f"# Written by setup.sh: starts Nocturna at boot ({root})\n"
+            "[Unit]\n"
+            "Description=Nocturna trading system (docker compose up -d)\n"
+            "Requires=docker.service\n"
+            "After=docker.service network-online.target\n"
+            "Wants=network-online.target\n"
+            "\n"
+            "[Service]\n"
+            "Type=oneshot\n"
+            "RemainAfterExit=yes\n"
+            f"WorkingDirectory={root}\n"
+            f"ExecStart={docker} compose up -d\n"
+            "TimeoutStartSec=600\n"
+            "\n"
+            "[Install]\n"
+            "WantedBy=multi-user.target\n")
+
+
+def boot_unit_installed(m: Machine) -> bool:
+    path = m.etc / "systemd" / "system" / BOOT_UNIT
+    return (path.is_file() and path.read_text() == boot_unit(m.root) and
+            m.run(["systemctl", "is-enabled", BOOT_UNIT]).out.strip() == "enabled")
 
 
 def api_running(m: Machine) -> bool:
@@ -860,6 +896,9 @@ def plan(m: Machine) -> Plan:
             f" ({', '.join(sorted(problems))})" if problems else ""), Setup.write_env))
     p.steps.append(Step("Build and start Nocturna (docker compose up -d --build), and wait until every service "
                         "is healthy", Setup.start_stack))
+    if not m.boot_unit:
+        p.steps.append(Step(f"Start Nocturna at every boot: a systemd unit ({BOOT_UNIT}) runs docker compose up -d "
+                            "once Docker runs, so a service that was down comes back", Setup.install_boot_unit))
     if not m.admins:
         p.steps.append(Step("Create your dashboard account (you choose the username and password)",
                             Setup.create_account))
@@ -1072,6 +1111,15 @@ class Setup:
             raise StepFailedError(f"the API does not answer on 127.0.0.1:{self.m.api_port} ({ready.status or ready.error})")
         self.m.services = _compose_services(self.m)
         self.d.say("Every service is running and healthy.")
+
+    def install_boot_unit(self) -> None:
+        unit = self.m.etc / "systemd" / "system" / BOOT_UNIT
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        unit.write_text(boot_unit(self.m.root))
+        self.must(["systemctl", "daemon-reload"], "systemctl daemon-reload", stream=False)
+        self.must(["systemctl", "enable", BOOT_UNIT], f"systemctl enable {BOOT_UNIT}", stream=False)
+        self.m.boot_unit = True
+        self.d.say(f"{BOOT_UNIT} starts Nocturna at every boot.")
 
     def create_account(self) -> None:
         listed = self.m.run(["docker", "compose", "exec", "-T", "api", "flask", "--app", "src.main", "list-admins"])
