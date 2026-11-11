@@ -49,8 +49,12 @@ When you say yes, it does each change and verifies it:
 6. **`.env`:** generates the passwords and secrets, and asks you only for what it cannot work out
    (see [What it asks you](#what-it-asks-you)). It tests each value as you give it.
 7. **The stack:** builds and starts it, and waits until every service is healthy.
-8. **Your dashboard account:** creates it.
-9. **Alerts:** sends a test alert to Telegram.
+8. **Starting at boot:** installs `nocturna.service`, a systemd unit that runs `docker compose up -d`
+   once Docker has started. Docker by itself restarts only the services that were running when it
+   stopped; with the unit, one that was down, such as one stopped with `docker compose stop`,
+   comes back after a reboot too. Trading still waits for you.
+9. **Your dashboard account:** creates it.
+10. **Alerts:** sends a test alert to Telegram.
 
 It ends by checking everything again and printing your dashboard's address.
 
@@ -198,7 +202,9 @@ in the README's safety limits, in the [technical reference](REFERENCE.md#risk-co
    `engine` check stays silent and reports it after its grace time: pause the check if you start
    later.
 3. **Test a restart.** Run `sudo reboot`. The "Engine process started … trading waits" alert
-   arrives, `/status` says `stopped`, and `/start_engine` starts trading again.
+   arrives, `/status` says `stopped`, and `/start_engine` starts trading again. The dashboard
+   answers again about a minute after the machine is up; if it does not, `sudo ./setup.sh --check`
+   shows which service is down.
 4. **Keep a copy of the backups.** After the first day, `sudo ./setup.sh --check` shows
    `newest backup … hours old`. Copy `./backups` to another machine from time to time: a backup
    on the same disk is lost with the disk.

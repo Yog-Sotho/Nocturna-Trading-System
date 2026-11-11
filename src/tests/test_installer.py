@@ -283,6 +283,8 @@ def test_the_operators_server(tmp_path):
         "Create .env: the passwords are generated; you give the Alpaca keys, the Telegram bot and the "
         "healthchecks.io URLs, and each is tested",
         "Build and start Nocturna (docker compose up -d --build), and wait until every service is healthy",
+        "Start Nocturna at every boot: a systemd unit (nocturna.service) runs docker compose up -d once Docker "
+        "runs, so a service that was down comes back",
         "Create your dashboard account (you choose the username and password)",
         "Send a test alert to Telegram",
     ]
@@ -361,9 +363,11 @@ def test_a_finished_setup(tmp_path):
                                                   for s in ("api", "engine", "postgres", "redis"))),
         ("docker", "compose", "exec", "-T", "api", "flask", "--app", "src.main", "list-admins"): ok("yogsotho\n"),
         ("ss", "-ltnpH"): ok(SS + '\nLISTEN 0 4096 127.0.0.1:5000 0.0.0.0:* users:(("docker-proxy",pid=5,fd=4))'),
+        ("systemctl", "is-enabled", "nocturna.service"): ok("enabled\n"),
     }
     m = machine(tmp_path, answers)
     write(m.env_file, GOOD)
+    put_unit(m, inst.boot_unit(m.root))
     inspect = inst.inspect(m)
     found = texts(inspect.findings)
     assert texts(inspect.findings, "fix") == []
@@ -410,6 +414,12 @@ class Script:
     @property
     def text(self):
         return "\n".join(self.said)
+
+
+def put_unit(m, text):
+    unit = m.etc / "systemd" / "system" / "nocturna.service"
+    unit.parent.mkdir(parents=True, exist_ok=True)
+    unit.write_text(text)
 
 
 def setup_for(tmp_path, answers, script=None, http=None):
@@ -494,6 +504,28 @@ def test_starting_the_stack(tmp_path):
 
 
 CREATE = ("docker", "compose", "exec", "-T", "-e", "LOG_LEVEL=WARNING")
+
+
+def test_the_boot_unit(tmp_path):
+    answers = operator_machine() | {("systemctl", "daemon-reload"): ok(), ("systemctl", "enable"): ok()}
+    s, m = setup_for(tmp_path, answers)
+    s.install_boot_unit()
+    unit = (m.etc / "systemd" / "system" / "nocturna.service").read_text()
+    assert f"WorkingDirectory={m.root}\n" in unit and " compose up -d\n" in unit
+    assert "Requires=docker.service\nAfter=docker.service network-online.target\n" in unit
+    assert "--build" not in unit and "ExecStop" not in unit  # it only starts what is down
+    assert m.run.calls[-2:] == [["systemctl", "daemon-reload"], ["systemctl", "enable", "nocturna.service"]]
+    assert m.boot_unit
+
+
+@pytest.mark.parametrize("contents, enabled, installed", [
+    (None, "enabled", False), ("old", "enabled", False), ("ours", "disabled", False), ("ours", "enabled", True),
+])
+def test_the_check_reads_the_boot_unit(tmp_path, contents, enabled, installed):
+    m = machine(tmp_path, operator_machine() | {("systemctl", "is-enabled", "nocturna.service"): ok(enabled + "\n")})
+    if contents:
+        put_unit(m, inst.boot_unit(m.root) if contents == "ours" else contents)
+    assert inst.boot_unit_installed(m) == installed
 
 
 def test_creating_the_account(tmp_path):
