@@ -573,7 +573,7 @@ class TestValidateCommand:
 
         calls = []
 
-        def load(start, end):
+        def load(start, end, shorten=False):
             calls.append((start, end))
             bars = {**_bars(), "BIL": daily_bars(BIL, date(2014, 1, 2), date(2025, 12, 31), 91.0, seed=5,
                                                  vol=0.0001)}
@@ -612,7 +612,7 @@ class TestValidateCommand:
     def test_long_history_errors_are_reported(self, app, monkeypatch):
         from src.trading.validation import history
 
-        def load(start, end):
+        def load(start, end, shorten=False):
             raise ValueError("https://example.test/french.zip ends on 2026-08-31")
 
         monkeypatch.setattr(history, "load", load)

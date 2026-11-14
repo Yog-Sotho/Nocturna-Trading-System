@@ -89,6 +89,59 @@ def get_lab_run(run_id: int):
     return format_response(True, data={'run': run})
 
 
+@console_bp.route('/lab/runs/<int:run_id>', methods=['DELETE'])
+@documented("Delete a finished lab run", tag="lab", access="admin",
+            responses={200: "Deleted", 404: "No such run", 409: "It is queued or running: cancel it first"})
+@require_auth
+@require_admin
+def delete_lab_run(run_id: int):
+    try:
+        found = lab.remove(_app(), run_id)
+    except lab.LabStateError as e:
+        return format_response(False, error=str(e), status_code=409)
+    if not found:
+        return format_response(False, error='No such run', status_code=404)
+    record_audit_event('LAB_RUN_DELETED', True, {'run_id': run_id})
+    return format_response(True, message='Deleted')
+
+
+@console_bp.route('/lab/runs/<int:run_id>/cancel', methods=['POST'])
+@documented("Cancel a queued or running lab run", tag="lab", access="admin",
+            description="A queued run never starts. A running run stops within seconds, at its next heartbeat; "
+                        "its result, if it finishes first, is dropped.",
+            responses={200: ("Cancelled", schemas.LabRunQueued), 404: "No such run",
+                       409: "It has already finished"})
+@require_auth
+@require_admin
+def cancel_lab_run(run_id: int):
+    try:
+        run = lab.cancel(_app(), run_id, datetime.now(UTC))
+    except lab.LabStateError as e:
+        return format_response(False, error=str(e), status_code=409)
+    if run is None:
+        return format_response(False, error='No such run', status_code=404)
+    record_audit_event('LAB_RUN_CANCELLED', True, {'run_id': run_id})
+    return format_response(True, data={'run': run}, message='Cancelled')
+
+
+@console_bp.route('/lab/runs/<int:run_id>/equity', methods=['GET'])
+@documented("A finished lab run's daily equity, as CSV", tag="lab", access="user",
+            description="A backtest: the mix and the 60/40 side by side. A validation: the equity traded out of "
+                        "sample. Each row is dated by the session it covers.",
+            responses={200: ("The CSV and a file name for it", schemas.LabEquity), 404: "No such run",
+                       409: "The run has no equity to download (not finished, failed, or older than downloads)"})
+@require_auth
+def lab_run_equity(run_id: int):
+    try:
+        found = lab.equity_csv(_app(), run_id)
+    except lab.LabStateError as e:
+        return format_response(False, error=str(e), status_code=409)
+    if found is None:
+        return format_response(False, error='No such run', status_code=404)
+    filename, text = found
+    return format_response(True, data={'filename': filename, 'csv': text})
+
+
 # =============================================================================
 # ALERTS
 # =============================================================================

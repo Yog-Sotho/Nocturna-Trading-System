@@ -15,8 +15,8 @@ held in it and Sharpe ratios are measured in excess of its return.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
-from datetime import date, datetime
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime, timedelta
 
 from src.config import Settings
 
@@ -28,6 +28,8 @@ from .stats import hurdle_returns
 
 ALPACA, HISTORY = "alpaca", "history"
 DATA_SOURCES = (ALPACA, HISTORY)
+#: Bars that start this long after the day asked for are worth a word (holidays and weekends are not)
+LATE = timedelta(days=7)
 
 
 class DataError(RuntimeError):
@@ -40,12 +42,61 @@ class MarketData:
     bars: dict[str, list[Bar]]
     data_label: str
     hurdle_label: str
+    #: Where the period ends (exclusive): the end asked for, or once the long history's last bar is final
+    end: datetime
     #: The files downloaded for the long history (empty for Alpaca)
     sources: list[history.Source] = field(default_factory=list)
+    #: What the source is called in a sentence
+    name: str = "Alpaca"
 
     def hurdle(self) -> dict[date, float]:
         """T-bills' return per day (BIL or its proxy)."""
         return dict(hurdle_returns(self.bars[CASH_SLEEVE], DEFAULT_FEED_DELAY[AssetClass.EQUITY]))
+
+    #: Where the bars were asked to start, warm-up included
+    first: datetime | None = None
+
+    def covers(self, symbols: Sequence[tuple[str, AssetClass]], first: datetime) -> bool:
+        """It holds every one of ``symbols``, loaded from ``first`` or earlier."""
+        return (self.first is not None and self.first <= first
+                and all(s in self.bars and s in self.instruments for s, _ in symbols))
+
+    def only(self, symbols: Sequence[tuple[str, AssetClass]]) -> MarketData:
+        """The same data, for ``symbols`` alone."""
+        wanted = {s for s, _ in symbols}
+        return replace(self, instruments={s: i for s, i in self.instruments.items() if s in wanted},
+                       bars={s: b for s, b in self.bars.items() if s in wanted})
+
+    def late(self, start: datetime) -> dict[date, list[str]]:
+        """The symbols whose bars begin well after ``start``, by the day they begin."""
+        found: dict[date, list[str]] = {}
+        for symbol, bars in sorted(self.bars.items()):
+            if bars and bars[0].start > start + LATE:
+                found.setdefault(bars[0].start.date(), []).append(symbol)
+        return dict(sorted(found.items()))
+
+    def notes(self, start: datetime, end: datetime) -> list[str]:
+        """
+        Where the bars fall short of the period asked for, [``start``, ``end``), in sentences
+        for the operator: a run on less data than its title says would mislead otherwise.
+        """
+        notes = []
+        if self.end < end:
+            last = max(bars[-1].start for bars in self.bars.values() if bars).date()
+            notes.append(f"{self.name} ends on {_long(last)}: the run stops there.")
+        empty = sorted(s for s, bars in self.bars.items() if not bars)
+        if empty:
+            notes.append(f"{self.name} has no bars for {', '.join(empty)} in this period.")
+        for day, symbols in self.late(start).items():
+            everything = len(symbols) == len(self.bars) - len(empty)
+            notes.append(f"{self.name} has no bars for {', '.join(symbols)} before {_long(day)}: "
+                         + ("the run starts there." if everything else "until then the run cannot trade "
+                            f"{'it' if len(symbols) == 1 else 'them'}."))
+        return notes
+
+
+def _long(day: date) -> str:
+    return f"{day.day} {day:%B %Y}"
 
 
 def with_tbills(symbols: Sequence[tuple[str, AssetClass]]) -> tuple[tuple[str, AssetClass], ...]:
@@ -65,9 +116,11 @@ def check_history_symbols(symbols: Sequence[tuple[str, AssetClass]]) -> None:
 
 
 def load(settings: Settings, symbols: Sequence[tuple[str, AssetClass]], start: datetime, end: datetime,
-         data: str = ALPACA) -> MarketData:
+         data: str = ALPACA, shorten: bool = False) -> MarketData:
     """
-    Bars for ``symbols`` from ``start`` (warm-up included) to ``end``.
+    Bars for ``symbols`` from ``start`` (warm-up included) to ``end``. The long
+    history ends some weeks before today: with ``shorten`` the period ends
+    where it does (``MarketData.end``) instead of that being an error.
 
     Raises:
         DataError: For an unknown source, a symbol the long history lacks, or long-history data that
@@ -77,7 +130,7 @@ def load(settings: Settings, symbols: Sequence[tuple[str, AssetClass]], start: d
     if data == HISTORY:
         check_history_symbols(symbols)
         try:
-            instruments, bars, sources = history.load(start, end)
+            instruments, bars, sources = history.load(start, end, shorten=shorten)
         except (ValueError, OSError) as e:
             raise DataError(f"long-history data: {e}") from e
         wanted = {s for s, _ in symbols}
@@ -85,8 +138,11 @@ def load(settings: Settings, symbols: Sequence[tuple[str, AssetClass]], start: d
                           {s: b for s, b in bars.items() if s in wanted},
                           "long-history proxies for SPY, IEF and BIL from French's Data Library and FRED "
                           "(docs/STRATEGY_SHORTLIST.md, Fixed rules: trend-filter)",
-                          f"T-bills (French's 1-month rate, as {CASH_SLEEVE})", sources)
+                          f"T-bills (French's 1-month rate, as {CASH_SLEEVE})",
+                          # A day past the last bar, so that it becomes final, and is traded, within the period
+                          min(end, history.covered_until(sources) + timedelta(days=1)) if shorten else end,
+                          sources, name="The long history", first=start)
     if data != ALPACA:
         raise DataError(f"unknown data source {data!r}; known: {', '.join(DATA_SOURCES)}")
     instruments, bars = market.load(settings, symbols, start, end)
-    return MarketData(instruments, bars, "Alpaca daily bars", f"T-bills ({CASH_SLEEVE})")
+    return MarketData(instruments, bars, "Alpaca daily bars", f"T-bills ({CASH_SLEEVE})", end, first=start)

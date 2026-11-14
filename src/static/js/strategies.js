@@ -5,13 +5,15 @@
 import { api } from "./api.js";
 import { ask, card, chip, el, icon, mixBar, notify, pct, weight } from "./ui.js";
 
-const round2 = (n) => Math.round(n * 100) / 100;
+export const round2 = (n) => Math.round(n * 100) / 100;
+
+// Mix entries as the API gives them (weight as a fraction), as the editors hold them (pct)
+export function editableMix(mix) {
+  return mix.map((e) => ({ strategy: e.strategy, params: { ...e.params }, pct: round2(Number(e.weight) * 100) }));
+}
 
 function draftFrom(profile) {
-  return {
-    mix: profile.mix.map((e) => ({ strategy: e.strategy, params: { ...e.params }, pct: round2(Number(e.weight) * 100) })),
-    note: profile.note || "",
-  };
+  return { mix: editableMix(profile.mix), note: profile.note || "" };
 }
 
 export function mixForApi(draft) {
@@ -27,7 +29,7 @@ function changed(draft, saved) {
   return JSON.stringify(mixForApi(draft)) !== JSON.stringify(mixForApi(theirs)) || draft.note.trim() !== theirs.note;
 }
 
-function closingConflict(ctx, mix) {
+export function closingConflict(ctx, mix) {
   const of = (name) => (ctx.catalog || []).find((s) => s.name === name)?.execution;
   const closing = mix.filter((e) => of(e.strategy) === "close").map((e) => e.strategy);
   if (!closing.length || closing.length === mix.length) return null;
@@ -101,7 +103,6 @@ export const strategiesView = {
 function mixEditor(ctx, state, { save, rerender }) {
   const draft = ctx.draft;
   const admin = ctx.admin;
-  const strategyOf = (name) => ctx.catalog.find((s) => s.name === name);
   const bar = el("div");
   const total = el("div", { class: "total" });
   const problems = el("p", { class: "error small", role: "alert" });
@@ -128,40 +129,8 @@ function mixEditor(ctx, state, { save, rerender }) {
       : chip(state.saved.id === null ? "the default mix" : `saved: profile #${state.saved.id}`, "done"));
   };
 
-  const rows = draft.mix.map((entry, i) => {
-    const info = strategyOf(entry.strategy);
-    const number = el("input", { type: "number", min: "0.5", max: "100", step: "0.5", value: String(entry.pct),
-      disabled: !admin, "aria-label": `${ctx.title(entry.strategy)} share, percent` });
-    const range = el("input", { type: "range", min: "0", max: "100", step: "0.5", value: String(entry.pct),
-      disabled: !admin, "aria-label": `${ctx.title(entry.strategy)} share` });
-    const set = (value) => {
-      entry.pct = round2(Math.min(100, Math.max(0, Number(value) || 0)));
-      number.value = String(entry.pct);
-      range.value = String(entry.pct);
-      range.style.setProperty("--fill", `${entry.pct}%`);
-      update();
-    };
-    range.style.setProperty("--fill", `${entry.pct}%`);
-    number.addEventListener("change", () => set(number.value));
-    range.addEventListener("input", () => set(range.value));
-    const params = (info?.parameters || []).map((p) => {
-      const current = p.choices.findIndex((c) => sameValue(c.value, entry.params[p.name]));
-      const select = el("select", { disabled: !admin, onchange: () => {
-        entry.params[p.name] = p.choices[Number(select.value)].value;
-        update();
-      } }, p.choices.map((c, index) => el("option", { value: String(index), selected: index === current }, c.label)));
-      return el("label", {}, p.label, select);
-    });
-    return el("div", { class: "mix-row" },
-      el("div", { class: "title" }, el("span", { class: `swatch c${ctx.colour(entry.strategy) % 8}` }),
-        ctx.title(entry.strategy), info?.verdict === "rejected" ? chip("rejected", "rejected") : null),
-      admin ? el("button", { class: "link", "aria-label": `Remove ${ctx.title(entry.strategy)}`, onclick: () => {
-        draft.mix.splice(i, 1);
-        rerender();
-      } }, icon("x")) : el("span"),
-      el("div", { class: "weight" }, range, el("label", { class: "check" }, number, "%")),
-      params.length ? el("div", { class: "params" }, params) : null);
-  });
+  const rows = draft.mix.map((entry, i) => mixRow(ctx, entry, {
+    editable: admin, onChange: update, onRemove: () => { draft.mix.splice(i, 1); rerender(); } }));
 
   const note = el("input", { maxlength: "200", value: draft.note, placeholder: "Why this mix? (optional)",
     disabled: !admin, oninput: () => { draft.note = note.value; update(); } });
@@ -186,6 +155,40 @@ function mixEditor(ctx, state, { save, rerender }) {
   const node = el("section", { class: "card" }, parts);
   update();
   return node;
+}
+
+// One strategy of a mix: its share (slider and number) and its parameters (its validation grid)
+export function mixRow(ctx, entry, { editable, onChange, onRemove }) {
+  const info = ctx.catalog.find((s) => s.name === entry.strategy);
+  const number = el("input", { type: "number", min: "0.5", max: "100", step: "0.5", value: String(entry.pct),
+    disabled: !editable, "aria-label": `${ctx.title(entry.strategy)} share, percent` });
+  const range = el("input", { type: "range", min: "0", max: "100", step: "0.5", value: String(entry.pct),
+    disabled: !editable, "aria-label": `${ctx.title(entry.strategy)} share` });
+  const set = (value) => {
+    entry.pct = round2(Math.min(100, Math.max(0, Number(value) || 0)));
+    number.value = String(entry.pct);
+    range.value = String(entry.pct);
+    range.style.setProperty("--fill", `${entry.pct}%`);
+    onChange();
+  };
+  range.style.setProperty("--fill", `${entry.pct}%`);
+  number.addEventListener("change", () => set(number.value));
+  range.addEventListener("input", () => set(range.value));
+  const params = (info?.parameters || []).map((p) => {
+    const current = p.choices.findIndex((c) => sameValue(c.value, entry.params[p.name]));
+    const select = el("select", { disabled: !editable, onchange: () => {
+      entry.params[p.name] = p.choices[Number(select.value)].value;
+      onChange();
+    } }, p.choices.map((c, index) => el("option", { value: String(index), selected: index === current }, c.label)));
+    return el("label", {}, p.label, select);
+  });
+  return el("div", { class: "mix-row" },
+    el("div", { class: "title" }, el("span", { class: `swatch c${ctx.colour(entry.strategy) % 8}` }),
+      ctx.title(entry.strategy), info?.verdict === "rejected" ? chip("rejected", "rejected") : null),
+    editable ? el("button", { class: "link", "aria-label": `Remove ${ctx.title(entry.strategy)}`, onclick: onRemove },
+      icon("x")) : el("span"),
+    el("div", { class: "weight" }, range, el("label", { class: "check" }, number, "%")),
+    params.length ? el("div", { class: "params" }, params) : null);
 }
 
 function strategyCard(ctx, s, { add }) {

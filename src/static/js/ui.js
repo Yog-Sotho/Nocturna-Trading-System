@@ -26,7 +26,7 @@ export function el(tag, props = {}, ...children) {
 }
 
 function append(node, children) {
-  for (const child of children.flat()) {
+  for (const child of children.flat(Infinity)) {
     if (child !== null && child !== undefined && child !== false) {
       node.append(child instanceof Node ? child : String(child));
     }
@@ -192,18 +192,35 @@ let gradients = 0;
 const W = 1000;
 const H = 300;
 
-// points: [{t: ISO time, v: number}]
-export function lineChart(points, { format = money, empty = "Not enough data yet.", label = "Equity" } = {}) {
+// points: [{t: ISO time, v: number}]. compare: {label, points} drawn as a second, dashed line on the
+// same scale; both are then placed by time, since their marks need not fall on the same days.
+export function lineChart(points, { format = money, empty = "Not enough data yet.", label = "Equity", compare = null } = {}) {
   if (points.length < 2) return el("p", { class: "muted" }, empty);
   const values = points.map((p) => p.v);
-  let low = Math.min(...values);
-  let high = Math.max(...values);
+  const others = compare && compare.points.length > 1 ? compare.points : null;
+  const all = others ? [...values, ...others.map((p) => p.v)] : values;
+  let low = Math.min(...all);
+  let high = Math.max(...all);
   const pad = (high - low) * 0.06 || Math.abs(high) * 0.01 || 1;
   low -= pad;
   high += pad;
-  const x = (i) => (i / (points.length - 1)) * W;
+  const time = (p) => new Date(p.t).getTime();
+  const t0 = Math.min(time(points[0]), others ? time(others[0]) : Infinity);
+  const t1 = Math.max(time(points.at(-1)), others ? time(others.at(-1)) : -Infinity);
+  const at = (p, i, n) => (others ? ((time(p) - t0) / (t1 - t0 || 1)) * W : (i / (n - 1)) * W);
+  const x = (i) => at(points[i], i, points.length);
   const y = (v) => H - ((v - low) / (high - low)) * H;
   const coords = values.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+  const second = others ? others.map((p, i) => `${at(p, i, others.length).toFixed(1)},${y(p.v).toFixed(1)}`) : null;
+  // The compared value at a time: its last mark on or before it
+  const otherAt = (t) => {
+    let found = null;
+    for (const p of others || []) {
+      if (time(p) > t) break;
+      found = p.v;
+    }
+    return found;
+  };
   const id = `area-${++gradients}`;
   const cursor = svg("line", { class: "cursor", x1: "0", x2: "0", y1: "0", y2: String(H), visibility: "hidden" });
   const chart = svg("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", role: "img",
@@ -212,7 +229,9 @@ export function lineChart(points, { format = money, empty = "Not enough data yet
     svg("stop", { offset: "0", class: "stop-top" }), svg("stop", { offset: "1", class: "stop-bottom" }))),
   [0.25, 0.5, 0.75].map((f) => svg("line", { class: "grid", x1: "0", x2: String(W), y1: String(H * f),
     y2: String(H * f) })),
-  svg("path", { d: `M0,${H} L${coords.join(" L")} L${W},${H} Z`, fill: `url(#${id})` }),
+  svg("path", { d: `M${x(0).toFixed(1)},${H} L${coords.join(" L")} L${x(points.length - 1).toFixed(1)},${H} Z`,
+    fill: `url(#${id})` }),
+  second ? svg("polyline", { class: "line second", points: second.join(" ") }) : null,
   svg("polyline", { class: "line", points: coords.join(" ") }),
   cursor);
   const dot = el("div", { class: "chart-dot", hidden: true });
@@ -221,7 +240,12 @@ export function lineChart(points, { format = money, empty = "Not enough data yet
   const hide = () => { cursor.setAttribute("visibility", "hidden"); dot.hidden = true; tip.hidden = true; };
   chart.addEventListener("pointermove", (event) => {
     const rect = chart.getBoundingClientRect();
-    const i = Math.round(Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)) * (points.length - 1));
+    const share = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+    let i = Math.round(share * (points.length - 1));
+    if (others) {  // the mark nearest the pointer in time
+      const target = t0 + share * (t1 - t0);
+      i = points.reduce((best, p, j) => (Math.abs(time(p) - target) < Math.abs(time(points[best]) - target) ? j : best), 0);
+    }
     const px = (x(i) / W) * rect.width;
     const py = (y(values[i]) / H) * rect.height;
     cursor.setAttribute("x1", String(x(i)));
@@ -229,25 +253,34 @@ export function lineChart(points, { format = money, empty = "Not enough data yet
     cursor.setAttribute("visibility", "visible");
     Object.assign(dot.style, { left: `${px}px`, top: `${py}px` });
     dot.hidden = false;
-    tip.textContent = `${day(points[i].t)} · ${format(values[i])}`;
+    const other = others ? otherAt(time(points[i])) : null;
+    tip.textContent = `${day(points[i].t)} · ${others ? `${label} ` : ""}${format(values[i])}`
+      + (other !== null ? ` · ${compare.label} ${format(other)}` : "");
     Object.assign(tip.style, { left: `${Math.min(Math.max(px, 70), rect.width - 70)}px` });
     tip.hidden = false;
   });
   chart.addEventListener("pointerleave", hide);
   const change = values.at(-1) / values[0] - 1;
+  const otherChange = others ? others.at(-1).v / others[0].v - 1 : null;
   return el("div", {}, box,
     el("div", { class: "chart-foot muted small" },
       el("span", {}, day(points[0].t)),
-      el("span", {}, `low ${format(Math.min(...values))} · high ${format(Math.max(...values))} · `,
-        signed(change, signedPct(change))),
+      others
+        ? el("span", {}, el("span", { class: "key" }, `${label} `), signed(change, signedPct(change)),
+          el("span", { class: "key second" }, ` · ${compare.label} `), signed(otherChange, signedPct(otherChange)))
+        : el("span", {}, `low ${format(Math.min(...values))} · high ${format(Math.max(...values))} · `,
+          signed(change, signedPct(change))),
       el("span", {}, day(points.at(-1).t))));
 }
 
-// rows: [{label, value}] around zero, e.g. the return of each year
-export function barChart(rows, { format = signedPct } = {}) {
+// rows: [{label, value}] around zero, e.g. the return of each year. compare: {label, values: Map label -> value},
+// drawn as a thinner, fainter bar beside each one.
+export function barChart(rows, { format = signedPct, compare = null } = {}) {
   if (!rows.length) return el("p", { class: "muted" }, "No full year yet.");
-  const top = Math.max(0, ...rows.map((r) => r.value));
-  const bottom = Math.min(0, ...rows.map((r) => r.value));
+  const theirs = (r) => (compare ? compare.values.get(r.label) : undefined);
+  const extra = compare ? rows.map(theirs).filter((v) => v !== undefined) : [];
+  const top = Math.max(0, ...rows.map((r) => r.value), ...extra);
+  const bottom = Math.min(0, ...rows.map((r) => r.value), ...extra);
   const span = top - bottom || 1;
   const zero = (top / span) * H;
   const slot = W / rows.length;
@@ -257,14 +290,22 @@ export function barChart(rows, { format = signedPct } = {}) {
   svg("line", { class: "grid", x1: "0", x2: String(W), y1: String(zero), y2: String(zero) }),
   rows.map((r, i) => {
     const h = (Math.abs(r.value) / span) * H;
-    return svg("rect", { class: `bar ${r.value >= 0 ? "up" : "down"}`, x: String(i * slot + slot * 0.15),
-      width: String(slot * 0.7), y: String(r.value >= 0 ? zero - h : zero), height: String(Math.max(h, 1)) });
+    const bar = svg("rect", { class: `bar ${r.value >= 0 ? "up" : "down"}`, x: String(i * slot + slot * 0.15),
+      width: String(slot * (compare ? 0.45 : 0.7)), y: String(r.value >= 0 ? zero - h : zero),
+      height: String(Math.max(h, 1)) });
+    const other = theirs(r);
+    if (other === undefined) return bar;
+    const oh = (Math.abs(other) / span) * H;
+    return [bar, svg("rect", { class: "bar second", x: String(i * slot + slot * 0.62), width: String(slot * 0.23),
+      y: String(other >= 0 ? zero - oh : zero), height: String(Math.max(oh, 1)) })];
   }));
   const box = el("div", { class: "chart bars" }, chart, tip);
   chart.addEventListener("pointermove", (event) => {
     const rect = chart.getBoundingClientRect();
     const i = Math.min(rows.length - 1, Math.max(0, Math.floor(((event.clientX - rect.left) / rect.width) * rows.length)));
-    tip.textContent = `${rows[i].label}: ${format(rows[i].value)}`;
+    const other = theirs(rows[i]);
+    tip.textContent = `${rows[i].label}: ${format(rows[i].value)}`
+      + (other !== undefined ? ` · ${compare.label} ${format(other)}` : "");
     const px = ((i + 0.5) / rows.length) * rect.width;
     Object.assign(tip.style, { left: `${Math.min(Math.max(px, 60), rect.width - 60)}px` });
     tip.hidden = false;

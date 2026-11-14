@@ -110,18 +110,125 @@ const base = process.argv[3] || "http://127.0.0.1:5055";
   await page.waitForSelector("#view-lab .verdict", { timeout: 120000 });
   await page.waitForSelector("#view-lab .bars svg");
   step(`backtest done: "${await page.textContent("#view-lab .verdict")}"`);
+  // Next to the 60/40: a table of both, a second (dashed) line and a second bar each year
+  const compared = await page.evaluate(() => {
+    const view = document.querySelector("#view-lab");
+    return { heading: [...view.querySelectorAll("h3")].some((h) => h.textContent === "Next to the 60/40 stocks and bonds"),
+             columns: [...view.querySelectorAll("table th")].map((th) => th.textContent),
+             lines: view.querySelectorAll(".chart .line.second").length,
+             bars: view.querySelectorAll(".chart .bar.second").length };
+  });
+  if (!compared.heading || !compared.columns.includes("60/40 stocks and bonds") || compared.lines !== 1
+      || compared.bars < 1) {
+    throw new Error(`the backtest is not compared with the 60/40: ${JSON.stringify(compared)}`);
+  }
+  step(`compared with the 60/40: ${compared.bars} years side by side`);
   await page.screenshot({ path: `${out}/4-lab-backtest.png`, fullPage: true });
 
+  // The long history, with the dates the form offers: it ends before today, and the run says so
+  await page.selectOption("#view-lab select[name=data]", "history");
+  if (await page.inputValue("#view-lab input[name=start]") !== "1972-01-03") {
+    throw new Error("choosing the long history did not move the first day to 1972");
+  }
+  await page.click("#view-lab button.primary");
+  await notice(page, "Queued run");
+  await page.waitForSelector("#view-lab .run-notes", { timeout: 120000 });
+  const stops = await page.textContent("#view-lab .run-notes");
+  if (!/The long history ends on 31 August 2026: the run stops there\./.test(stops)) {
+    throw new Error(`the long-history run does not say where it stops: "${stops}"`);
+  }
+  step(`long-history backtest done: "${stops}"`);
+  await page.screenshot({ path: `${out}/4b-lab-long-history.png`, fullPage: true });
+
   await page.click("#view-lab >> text=Validate a strategy");
+  // A strategy the long history cannot serve: the option is off, Alpaca's dates are back, and the form says why
+  await page.selectOption("#view-lab select[name=strategy]", "gold");
+  const offered = await page.evaluate(() => {
+    const form = document.querySelector("#view-lab");
+    const data = form.querySelector("select[name=data]");
+    return { disabled: data.options[1].disabled, data: data.value, start: form.querySelector("input[name=start]").value,
+             why: [...form.querySelectorAll("p")].map((p) => p.textContent).find((t) => /not offered here/.test(t)) };
+  });
+  if (!offered.disabled || offered.data !== "alpaca" || offered.start !== "2017-01-03"
+      || !/Gold in the 60\/40 \(GLD\) trades more/.test(offered.why || "")) {
+    throw new Error(`the long history for gold: ${JSON.stringify(offered)}`);
+  }
+  step(`long history off for gold: "${offered.why}"`);
   await page.selectOption("#view-lab select[name=strategy]", "benchmark");
   await page.fill("#view-lab input[name=start]", "2016-01-04");
   await page.fill("#view-lab input[name=end]", "2021-01-01");
   await page.click("#view-lab button.primary");
-  await notice(page, "Queued run #2");
+  await notice(page, "Queued run #3");
   await page.waitForSelector("#view-lab .verdict.passed, #view-lab .verdict.rejected", { timeout: 300000 });
   const gates = await page.$$("#view-lab table tbody tr");
   step(`validation done: "${await page.textContent("#view-lab .verdict")}" (${gates.length} gates)`);
   await page.screenshot({ path: `${out}/5-lab-validation.png`, fullPage: true });
+
+  // The validation's equity, downloaded as CSV
+  const [csv] = await Promise.all([page.waitForEvent("download"),
+    page.click("#view-lab button:has-text('Equity (CSV)')")]);
+  if (!/^lab-3-benchmark-out-of-sample\.csv$/.test(csv.suggestedFilename())) {
+    throw new Error(`unexpected download: ${csv.suggestedFilename()}`);
+  }
+  step(`equity downloaded: ${csv.suggestedFilename()}`);
+
+  // Run it again: a new run, the same request
+  await page.click("#view-lab button:has-text('Run again')");
+  const rerun = await notice(page, "as run #3");
+  step(`run again: "${rerun}"`);
+  // Another behind it waits its turn: cancel that one, and it never starts
+  await page.click("#view-lab button.primary");
+  const waiting = (await notice(page, "^Queued run #\\d+\\.$")).match(/#(\d+)/)[1];
+  const shows = (id) => page.waitForFunction((title) => [...document.querySelectorAll("#view-lab .card-head h2")]
+    .some((h) => h.textContent.trim() === title), `Run #${id}`, { timeout: 30000 });
+  await shows(waiting);  // its own card, not the running one's
+  await page.waitForSelector("#view-lab .runs button[aria-current=true] .chip.queued");
+  await page.click("#view-lab button:has-text('Cancel')");
+  await page.waitForSelector("#view-lab .chip.cancelled", { timeout: 30000 });
+  await page.waitForFunction(() => /Cancelled\. Nothing was stored\./.test(document.querySelector("#view-lab").textContent),
+    null, { timeout: 30000 });
+  step("cancelled: nothing stored");
+  // Delete it, after confirming
+  await page.click("#view-lab button.danger:has-text('Delete')");
+  await page.click("#confirm-ok");
+  await notice(page, "deleted");
+  await page.waitForFunction((id) => ![...document.querySelectorAll("#view-lab .runs strong")]
+    .some((s) => s.textContent.trim() === `#${id}`), waiting, { timeout: 30000 });
+  step("deleted: gone from the runs");
+
+  // Copy the first backtest into the form, change the mix there, and run it
+  await page.click("#view-lab .runs button:has-text('#1 ')");
+  await shows(1);  // the details follow the click after a round trip
+  await page.click("#view-lab button:has-text('Copy into the form')");
+  await notice(page, "The form now holds run #1");
+  const rows = await page.$$eval("#view-lab .lab-mix .mix-row .title", (titles) => titles.map((t) => t.textContent));
+  if (!(rows.length === 2 && /60\/40/.test(rows[0]) && /Trend filter/.test(rows[1]))) {
+    throw new Error(`the form did not take run #1's mix: ${JSON.stringify(rows)}`);
+  }
+  await page.selectOption("#view-lab .lab-mix select[aria-label='Add a strategy']", "gold");
+  await page.waitForFunction(() => document.querySelectorAll("#view-lab .lab-mix .mix-row").length === 3);
+  const goldShare = page.locator("#view-lab .lab-mix .mix-row", { hasText: "Gold in the 60/40" }).locator("input[type=number]");
+  await goldShare.fill("10");
+  await goldShare.press("Tab");
+  await page.click("#view-lab button.primary");
+  // (SQLite gives the deleted run's number again; PostgreSQL does not)
+  await notice(page, "^Queued run #\\d+\\.$");
+  await page.waitForFunction(() => {
+    const current = document.querySelector("#view-lab .runs button[aria-current=true]");
+    return current && /10% gold/.test(current.textContent) && current.querySelector(".chip.done");
+  }, null, { timeout: 120000 });
+  const fifth = await page.textContent("#view-lab .runs button[aria-current=true]");
+  const took = await page.textContent("#view-lab .runs button[aria-current=true] .when");
+  if (!/took \d+ s/.test(took)) throw new Error(`no elapsed time: "${took}"`);
+  step(`edited mix run: "${fifth.replace(/\s+/g, " ").slice(0, 90)}…" (${took.split("·").pop().trim()})`);
+  // The yearly returns of the mix and the 60/40, downloaded
+  const [years] = await Promise.all([page.waitForEvent("download"),
+    page.click("#view-lab button:has-text('Each year (CSV)')")]);
+  step(`yearly returns downloaded: ${years.suggestedFilename()}`);
+  // The engine's saved mix did not change
+  await go(page, "strategies");
+  if (await page.$$eval("#view-strategies .mix-row", (r) => r.length) !== 2) throw new Error("the lab changed the saved mix");
+  await go(page, "lab");
 
   // -- risk limits --------------------------------------------------------------------------
   await go(page, "risk");

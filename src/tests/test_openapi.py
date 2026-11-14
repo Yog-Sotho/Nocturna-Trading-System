@@ -257,6 +257,27 @@ class TestResponsesMatchTheDocument:
         done = api.call("GET", f"/api/v1/lab/runs/{run['run']['id']}", 200, headers=bearer).get_json()["data"]
         assert done["run"]["status"] == "done" and done["run"]["report"] == "# Validation: tsmom"
         api.call("GET", "/api/v1/lab/runs/9999", 404, headers=bearer)
+        run_id = run["run"]["id"]
+        api.call("GET", f"/api/v1/lab/runs/{run_id}/equity", 409, headers=bearer)  # stored before downloads
+        api.call("GET", "/api/v1/lab/runs/9999/equity", 404, headers=bearer)
+        api.call("POST", f"/api/v1/lab/runs/{run_id}/cancel", 409, headers=bearer)  # already finished
+        api.call("POST", "/api/v1/lab/runs/9999/cancel", 404, headers=bearer)
+        monkeypatch.setitem(app.extensions, "lab", type("Idle", (), {"launch": lambda self: None})())
+        waiting = api.call("POST", "/api/v1/lab/runs", 202, headers=bearer, json={
+            "kind": "validate", "strategy": "tsmom", "start": "2017-01-03", "end": "2026-01-02"}).get_json()["data"]
+        api.call("DELETE", f"/api/v1/lab/runs/{waiting['run']['id']}", 409, headers=bearer)  # queued
+        cancelled = api.call("POST", f"/api/v1/lab/runs/{waiting['run']['id']}/cancel", 200,
+                             headers=bearer).get_json()["data"]
+        assert cancelled["run"]["status"] == "cancelled"
+        api.call("DELETE", f"/api/v1/lab/runs/{waiting['run']['id']}", 200, headers=bearer)
+        api.call("DELETE", "/api/v1/lab/runs/9999", 404, headers=bearer)
+        monkeypatch.setitem(app.extensions, "lab", InlineLab())
+        monkeypatch.setattr(lab, "execute", lambda settings, kind, spec: (
+            {"headline": "x", "passed": False, "daily": [["2019-01-02", "100000"]]}, "# Validation: tsmom"))
+        fresh = api.call("POST", "/api/v1/lab/runs", 202, headers=bearer, json={
+            "kind": "validate", "strategy": "tsmom", "start": "2017-01-03", "end": "2026-01-02"}).get_json()["data"]
+        csv = api.call("GET", f"/api/v1/lab/runs/{fresh['run']['id']}/equity", 200, headers=bearer).get_json()
+        assert csv["data"]["csv"] == "date,tsmom out of sample\n2019-01-02,100000\n"
         api.call("GET", "/api/v1/trading/strategies", 200, headers=bearer)
 
         # Alerts and preferences

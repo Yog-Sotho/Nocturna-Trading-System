@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -38,6 +38,18 @@ RESUME_AFTER_KILL = timedelta(days=30)
 CURVE_POINTS = 600
 
 
+def daily(curve: Sequence[tuple[datetime, Decimal]]) -> list[list[str]]:
+    """
+    One ``[day, equity]`` per day, for a download: the last mark of each UTC day,
+    labelled with the session it covers (a day's bars are final the next morning,
+    as ``daily_returns`` dates them), so the last session of a year is in that year.
+    """
+    last: dict[date, Decimal] = {}
+    for timestamp, equity in curve:
+        last[timestamp.astimezone(UTC).date() - timedelta(days=1)] = equity
+    return [[day.isoformat(), str(equity)] for day, equity in sorted(last.items())]
+
+
 def thin(curve: Sequence[tuple[datetime, Decimal]], points: int = CURVE_POINTS) -> list[dict[str, str]]:
     """An equity curve with at most about ``points`` marks, evenly spaced, the last one always kept."""
     step = max(1, -(-len(curve) // points))
@@ -48,13 +60,15 @@ def thin(curve: Sequence[tuple[datetime, Decimal]], points: int = CURVE_POINTS) 
 
 
 def validate_candidate(settings: Settings, name: str, start: datetime, end: datetime, *,
-                       data: str = sources.ALPACA, tbills: bool = True,
+                       data: str = sources.ALPACA, tbills: bool = True, shorten: bool = False,
                        resume_after_kill: timedelta = RESUME_AFTER_KILL,
                        walk_forward: WalkForwardConfig | None = None, gates: PromotionGates | None = None,
                        loaded: Callable[[sources.MarketData], None] | None = None,
                        ) -> tuple[ValidationReport, sources.MarketData]:
     """
     Args:
+        shorten: End where the long history does when it stops before ``end``, instead of that being
+            an error (the lab; ``flask validate`` keeps to the period its rules name).
         loaded: Told the data once it is loaded, before the long computation (the CLI prints it).
 
     Raises:
@@ -64,11 +78,12 @@ def validate_candidate(settings: Settings, name: str, start: datetime, end: date
     """
     spec = CANDIDATES[name]
     wanted = sources.with_tbills(spec.symbols) if tbills else spec.symbols
-    market = sources.load(settings, wanted, start - timedelta(days=spec.warm_up_days), end, data)
+    market = sources.load(settings, wanted, start - timedelta(days=spec.warm_up_days), end, data, shorten)
     if loaded is not None:
         loaded(market)
     config = ValidationConfig(
-        BacktestConfig(start=start, end=end, risk_limits=risk_limits(settings), sizing=sizing_policy(settings),
+        BacktestConfig(start=start, end=market.end, risk_limits=risk_limits(settings),
+                       sizing=sizing_policy(settings),
                        resume_after_kill=resume_after_kill,
                        cash_sleeve=market.instruments[CASH_SLEEVE] if tbills else None),
         walk_forward=walk_forward or WalkForwardConfig(), gates=gates or PromotionGates(),
@@ -83,11 +98,16 @@ class MixBacktest:
     market: sources.MarketData
 
     def years(self) -> list[dict[str, Any]]:
-        """The return of each calendar year."""
+        """
+        The return of each calendar year. A return is dated the day its bar became
+        final, the day after the session it covers (``daily_returns``): the last
+        session of December belongs to its own year, not the next.
+        """
         returns = daily_returns(self.result.equity_curve)
         growth: dict[int, float] = {}
         for day, value in zip(returns.dates, returns.values, strict=True):
-            growth[day.year] = growth.get(day.year, 1.0) * (1 + float(value))
+            year = (day - timedelta(days=1)).year
+            growth[year] = growth.get(year, 1.0) * (1 + float(value))
         return [{"year": year, "return": g - 1} for year, g in sorted(growth.items())]
 
     @property
@@ -96,15 +116,27 @@ class MixBacktest:
 
 
 def backtest_mix(settings: Settings, profile: Profile, start: datetime, end: datetime,
-                 data: str = sources.ALPACA) -> MixBacktest:
+                 data: str = sources.ALPACA, shorten: bool = False,
+                 market: sources.MarketData | None = None) -> MixBacktest:
     """
+    Args:
+        shorten: As in ``validate_candidate``.
+        market: Bars already loaded for another mix over the same period (the lab's
+            comparison with the 60/40), used when they hold every symbol this one
+            trades and enough warm-up; otherwise the bars are loaded.
+
     Raises:
         sources.DataError, TradingNotConfiguredError: When the bars cannot be had.
         ProfileError: If the profile's limits are inconsistent with the environment's.
     """
     effective = effective_settings(settings, profile)
-    market = sources.load(settings, symbols(profile), start - timedelta(days=warm_up_days(profile)), end, data)
+    wanted = symbols(profile)
+    first = start - timedelta(days=warm_up_days(profile))
+    if market is not None and market.covers(wanted, first):
+        market = market.only(wanted)
+    else:
+        market = sources.load(settings, wanted, first, end, data, shorten)
     result = run_backtest(allocations(profile, market.instruments), market.bars, BacktestConfig(
-        start=start, end=end, risk_limits=risk_limits(effective), sizing=sizing_policy(effective),
+        start=start, end=market.end, risk_limits=risk_limits(effective), sizing=sizing_policy(effective),
         resume_after_kill=RESUME_AFTER_KILL, cash_sleeve=market.instruments[CASH_SLEEVE]))
     return MixBacktest(result, summarize(daily_returns(result.equity_curve).over(market.hurdle())), market)

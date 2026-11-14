@@ -173,6 +173,9 @@ prices.
 | change which strategies trade, and how much each gets | **Strategies** → *Save the mix* → *Restart now* | |
 | change a risk limit | **Risk** → *Save the limits* | |
 | backtest a mix, or validate a strategy | **Lab** → *Run* | |
+| try a mix without touching the one that trades | **Lab** → change *The mix to backtest* → *Run* (shown next to the 60/40) | |
+| stop a lab run, run it again, or tweak it | **Lab** → a run → *Cancel*, *Run again*, *Copy into the form* | |
+| keep a lab result | **Lab** → a run → *Equity (CSV)*, *Each year (CSV)* | |
 | choose which alerts I get, and where | **Alerts** | |
 | make sure my alerts arrive | **Alerts** → *Send a test alert* | |
 | change my name, the theme or the accent colour | **You** | |
