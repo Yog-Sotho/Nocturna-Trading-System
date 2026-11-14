@@ -178,7 +178,10 @@ const base = process.argv[3] || "http://127.0.0.1:5055";
   step(`run again: "${rerun}"`);
   // Another behind it waits its turn: cancel that one, and it never starts
   await page.click("#view-lab button.primary");
-  await notice(page, "Queued run #5");
+  const waiting = (await notice(page, "^Queued run #\\d+\\.$")).match(/#(\d+)/)[1];
+  const shows = (id) => page.waitForFunction((title) => [...document.querySelectorAll("#view-lab .card-head h2")]
+    .some((h) => h.textContent.trim() === title), `Run #${id}`, { timeout: 30000 });
+  await shows(waiting);  // its own card, not the running one's
   await page.waitForSelector("#view-lab .runs button[aria-current=true] .chip.queued");
   await page.click("#view-lab button:has-text('Cancel')");
   await page.waitForSelector("#view-lab .chip.cancelled", { timeout: 30000 });
@@ -189,13 +192,13 @@ const base = process.argv[3] || "http://127.0.0.1:5055";
   await page.click("#view-lab button.danger:has-text('Delete')");
   await page.click("#confirm-ok");
   await notice(page, "deleted");
-  await page.waitForFunction(() => ![...document.querySelectorAll("#view-lab .runs strong")]
-    .some((s) => s.textContent.trim() === "#5"), null, { timeout: 30000 });
+  await page.waitForFunction((id) => ![...document.querySelectorAll("#view-lab .runs strong")]
+    .some((s) => s.textContent.trim() === `#${id}`), waiting, { timeout: 30000 });
   step("deleted: gone from the runs");
 
   // Copy the first backtest into the form, change the mix there, and run it
   await page.click("#view-lab .runs button:has-text('#1 ')");
-  await page.waitForSelector("#view-lab button:has-text('Copy into the form')");
+  await shows(1);  // the details follow the click after a round trip
   await page.click("#view-lab button:has-text('Copy into the form')");
   await notice(page, "The form now holds run #1");
   const rows = await page.$$eval("#view-lab .lab-mix .mix-row .title", (titles) => titles.map((t) => t.textContent));
@@ -209,7 +212,7 @@ const base = process.argv[3] || "http://127.0.0.1:5055";
   await goldShare.press("Tab");
   await page.click("#view-lab button.primary");
   // (SQLite gives the deleted run's number again; PostgreSQL does not)
-  await notice(page, "Queued run #\\d+");
+  await notice(page, "^Queued run #\\d+\\.$");
   await page.waitForFunction(() => {
     const current = document.querySelector("#view-lab .runs button[aria-current=true]");
     return current && /10% gold/.test(current.textContent) && current.querySelector(".chip.done");
