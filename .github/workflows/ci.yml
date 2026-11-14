@@ -128,7 +128,8 @@ jobs:
   # The dashboard in Chromium at phone size, against the app with a simulated engine
   dashboard:
     needs: lint
-    runs-on: ubuntu-latest
+    # Playwright 1.56 installs Chromium on Ubuntu up to 24.04 only; ubuntu-latest is now 26.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
