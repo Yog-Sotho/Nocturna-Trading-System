@@ -158,15 +158,27 @@ def _check_calendar(days: Sequence[date]) -> None:
         raise ValueError(f"French's days differ from NYSE sessions (not sessions: {extra}, missing: {missing})")
 
 
-def load(start: datetime, end: datetime, fetch: Callable[[str], bytes] = download
+def covered_until(sources: Sequence[Source]) -> datetime:
+    """Where the bars the downloaded files can give end (exclusive): the session after the earliest last day."""
+    calendar = TradingCalendar(AssetClass.EQUITY)
+    return min(_bar_start(calendar.next_session(source.last)) for source in sources)
+
+
+def load(start: datetime, end: datetime, fetch: Callable[[str], bytes] = download, shorten: bool = False
          ) -> tuple[dict[str, Instrument], dict[str, list[Bar]], list[Source]]:
     """
     Proxy bars for SPY, IEF and BIL that start in [``start``, ``end``) and
     not before FIRST_DAY, as Alpaca's bars are selected, with the sources
     downloaded.
 
+    French's file is published every month or two, so it ends weeks before
+    today. With ``shorten`` the bars stop where the files do (``covered_until``
+    says where); without it an ``end`` they do not reach is an error, so that
+    a run with rules fixed in advance covers exactly the period it names.
+
     Raises:
-        ValueError: If the data stops before ``end`` or does not match the NYSE calendar.
+        ValueError: If the data stops before ``end`` (without ``shorten``) or does not match the NYSE
+            calendar.
     """
     archive = fetch(FRENCH_URL)
     french = parse_french(archive)
@@ -180,6 +192,8 @@ def load(start: datetime, end: datetime, fetch: Callable[[str], bytes] = downloa
                               max(yields[maturity])))
 
     calendar = TradingCalendar(AssetClass.EQUITY)
+    if shorten:
+        end = min(end, covered_until(sources))
     for source in sources:
         if _bar_start(calendar.next_session(source.last)) < end:
             raise ValueError(f"{source.url} ends on {source.last}: pass an end no later than "

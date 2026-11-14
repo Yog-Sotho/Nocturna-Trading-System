@@ -43,6 +43,21 @@ def synthetic(monkeypatch):
 
 
 @pytest.fixture
+def long_history(monkeypatch):
+    """The long history, made up: like French's file, it ends before today (on the last day of 2025)."""
+    source = history.Source("https://example.test/french.zip", "ab" * 32, date(2014, 1, 2), date(2025, 12, 31))
+
+    def load(start, end, shorten=False):
+        limit = history.covered_until([source])
+        if end > limit and not shorten:
+            raise ValueError(f"{source.url} ends on {source.last}: pass an end no later than {limit:%Y-%m-%d}")
+        return ({"SPY": SPY, "IEF": IEF, "BIL": BIL},
+                {s: [b for b in bars if start <= b.start < min(end, limit)] for s, bars in BARS.items()}, [source])
+
+    monkeypatch.setattr(history, "load", load)
+
+
+@pytest.fixture
 def settings(app):
     return app.extensions["settings"]
 
@@ -79,22 +94,48 @@ class TestSources:
 
     def test_the_long_history_keeps_the_symbols_asked_for(self, settings, monkeypatch):
         source = history.Source("https://example.test/french.zip", "ab" * 32, date(1926, 7, 1), date(2026, 8, 31))
-        monkeypatch.setattr(history, "load", lambda start, end: ({"SPY": SPY, "IEF": IEF, "BIL": BIL}, BARS,
-                                                                 [source]))
+        monkeypatch.setattr(history, "load", lambda start, end, shorten=False: (
+            {"SPY": SPY, "IEF": IEF, "BIL": BIL}, BARS, [source]))
         data = sources.load(settings, [("SPY", EQUITY), ("BIL", EQUITY)], T0 - timedelta(days=30), T0,
                             sources.HISTORY)
         assert set(data.instruments) == set(data.bars) == {"SPY", "BIL"} and data.sources == [source]
         assert data.hurdle_label == "T-bills (French's 1-month rate, as BIL)"
+        assert data.end == T0 and data.name == "The long history"
+
+    def test_the_long_history_shortened_ends_where_its_files_do(self, settings, long_history):
+        asked = (settings, [("SPY", EQUITY), ("BIL", EQUITY)], datetime(2020, 1, 2, tzinfo=UTC), T0, sources.HISTORY)
+        with pytest.raises(sources.DataError, match="long-history data: .* ends on 2025-12-31"):
+            sources.load(*asked)
+        data = sources.load(*asked, shorten=True)
+        # A day after the next session starts (midnight in New York): the last bar is final by then
+        assert data.end == datetime(2026, 1, 3, 5, tzinfo=UTC)
+        assert data.bars["SPY"][-1].start.date() == date(2025, 12, 31)
+        assert data.notes(datetime(2020, 1, 2, tzinfo=UTC), T0) == [
+            "The long history ends on 31 December 2025: the run stops there."]
+
+    def test_notes_say_where_bars_start_late(self):
+        def data(**bars):
+            return sources.MarketData({}, bars, "made up", "T-bills", datetime(2026, 1, 1, tzinfo=UTC))
+
+        start, end = datetime(2012, 1, 3, tzinfo=UTC), datetime(2026, 1, 1, tzinfo=UTC)
+        recent = [b for b in BARS["IEF"] if b.start.year >= 2021]
+        assert data(**BARS).notes(datetime(2014, 1, 2, tzinfo=UTC), end) == []  # a holiday or a weekend is not late
+        assert data(**BARS).late(start) == {date(2014, 1, 2): ["BIL", "IEF", "SPY"]}
+        assert data(**BARS).notes(start, end) == [
+            "Alpaca has no bars for BIL, IEF, SPY before 2 January 2014: the run starts there."]
+        assert data(SPY=BARS["SPY"], IEF=recent, BIL=[]).notes(datetime(2014, 1, 2, tzinfo=UTC), end) == [
+            "Alpaca has no bars for BIL in this period.",
+            "Alpaca has no bars for IEF before 4 January 2021: until then the run cannot trade it."]
 
     def test_the_long_history_refuses_other_symbols_before_downloading(self, settings, monkeypatch):
-        monkeypatch.setattr(history, "load", lambda start, end: pytest.fail("downloaded"))
+        monkeypatch.setattr(history, "load", lambda start, end, shorten=False: pytest.fail("downloaded"))
         with pytest.raises(sources.DataError, match="proxies for SPY, IEF, BIL only, not BTC/USD"):
             sources.load(settings, [("SPY", EQUITY), ("BTC/USD", AssetClass.CRYPTO)], T0 - timedelta(days=9), T0,
                          sources.HISTORY)
 
     @pytest.mark.parametrize("error", [ValueError("ends on 2026-08-31"), OSError("connection reset")])
     def test_long_history_failures(self, settings, monkeypatch, error):
-        def load(start, end):
+        def load(start, end, shorten=False):
             raise error
 
         monkeypatch.setattr(history, "load", load)
@@ -363,6 +404,7 @@ class TestExecute:
         assert result["data"] == "Alpaca daily bars" and result["starting_cash"] == "100000"
         assert 0 < len(result["curve"]) <= 601 and [y["year"] for y in result["years"]] == [2016, 2017]
         assert result["final_equity"] == result["curve"][-1]["equity"] and result["fills"] > 0
+        assert result["notes"] == []
 
     def test_a_validation(self, settings, synthetic):
         _, spec = lab.parse_request(settings, {"kind": "validate", "strategy": "benchmark", "start": "2016-01-04",
@@ -371,6 +413,27 @@ class TestExecute:
         assert report.startswith("# Validation: benchmark")
         assert result["headline"] == result["report"]["verdict"] and isinstance(result["passed"], bool)
         assert result["curve"] and result["report"]["candidate"] == "benchmark"
+
+    def test_a_long_history_run_to_today_stops_where_the_data_does(self, settings, long_history):
+        # The form's dates: to today, which the long history never reaches
+        _, spec = lab.parse_request(settings, {"kind": "backtest", **BENCHMARK, "start": "2020-01-02",
+                                               "data": "history"}, TODAY)
+        assert spec["end"] == TODAY.isoformat()
+        result, _ = lab.execute(settings, "backtest", spec)
+        assert result["notes"] == ["The long history ends on 31 December 2025: the run stops there."]
+        assert "2025-12-31" <= result["curve"][-1]["timestamp"] < "2026-01-02"  # not ten months of flat equity
+        # 31 December 2025 became final on 1 January: it is the last day of 2025, not a year of its own
+        assert [y["year"] for y in result["years"]] == [2020, 2021, 2022, 2023, 2024, 2025]
+
+    def test_a_run_says_where_its_bars_start_late(self, settings, synthetic):
+        early = {"start": "2012-01-03", "end": "2019-01-02"}  # the bars start in 2014
+        _, spec = lab.parse_request(settings, {"kind": "backtest", **BENCHMARK, **early}, TODAY)
+        result, _ = lab.execute(settings, "backtest", spec)
+        late = "Alpaca has no bars for BIL, IEF, SPY before 2 January 2014: the run starts there."
+        assert result["notes"] == [late] and result["curve"][0]["timestamp"].startswith("2014-01-0")
+        _, spec = lab.parse_request(settings, {"kind": "validate", "strategy": "benchmark", **early}, TODAY)
+        result, _ = lab.execute(settings, "validate", spec)
+        assert result["notes"][0] == late and "Start the run where the bars start" in result["notes"][1]
 
     def test_without_alpaca_keys(self, settings, monkeypatch):
         keyless = settings.model_copy(update={"alpaca_api_key": None, "alpaca_secret_key": None})

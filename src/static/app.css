@@ -765,6 +765,8 @@ p.label { font-weight: 600; margin: 16px 0 8px; }
 .verdict { padding: 12px 14px; border-radius: var(--radius-s); border: 1px solid var(--border-strong); background: var(--surface-2); margin: 10px 0; font-weight: 600; }
 .verdict.passed { border-color: color-mix(in srgb, var(--up) 55%, transparent); }
 .verdict.rejected { border-color: color-mix(in srgb, var(--down) 55%, transparent); }
+.run-notes { margin: 0 0 10px; padding: 10px 14px 10px 30px; border-radius: var(--radius-s); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); font-size: 0.9rem; }
+.run-notes li + li { margin-top: 4px; }
 pre.tearsheet { white-space: pre; overflow: auto; max-height: 520px; padding: 12px; border-radius: var(--radius-s); background: var(--surface-2); border: 1px solid var(--border); }
 
 /* -- dialogs ----------------------------------------------------------------------------- */

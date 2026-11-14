@@ -112,12 +112,40 @@ const base = process.argv[3] || "http://127.0.0.1:5055";
   step(`backtest done: "${await page.textContent("#view-lab .verdict")}"`);
   await page.screenshot({ path: `${out}/4-lab-backtest.png`, fullPage: true });
 
+  // The long history, with the dates the form offers: it ends before today, and the run says so
+  await page.selectOption("#view-lab select[name=data]", "history");
+  if (await page.inputValue("#view-lab input[name=start]") !== "1972-01-03") {
+    throw new Error("choosing the long history did not move the first day to 1972");
+  }
+  await page.click("#view-lab button.primary");
+  await notice(page, "Queued run");
+  await page.waitForSelector("#view-lab .run-notes", { timeout: 120000 });
+  const stops = await page.textContent("#view-lab .run-notes");
+  if (!/The long history ends on 31 August 2026: the run stops there\./.test(stops)) {
+    throw new Error(`the long-history run does not say where it stops: "${stops}"`);
+  }
+  step(`long-history backtest done: "${stops}"`);
+  await page.screenshot({ path: `${out}/4b-lab-long-history.png`, fullPage: true });
+
   await page.click("#view-lab >> text=Validate a strategy");
+  // A strategy the long history cannot serve: the option is off, Alpaca's dates are back, and the form says why
+  await page.selectOption("#view-lab select[name=strategy]", "gold");
+  const offered = await page.evaluate(() => {
+    const form = document.querySelector("#view-lab");
+    const data = form.querySelector("select[name=data]");
+    return { disabled: data.options[1].disabled, data: data.value, start: form.querySelector("input[name=start]").value,
+             why: [...form.querySelectorAll("p")].map((p) => p.textContent).find((t) => /not offered here/.test(t)) };
+  });
+  if (!offered.disabled || offered.data !== "alpaca" || offered.start !== "2017-01-03"
+      || !/Gold in the 60\/40 \(GLD\) trades more/.test(offered.why || "")) {
+    throw new Error(`the long history for gold: ${JSON.stringify(offered)}`);
+  }
+  step(`long history off for gold: "${offered.why}"`);
   await page.selectOption("#view-lab select[name=strategy]", "benchmark");
   await page.fill("#view-lab input[name=start]", "2016-01-04");
   await page.fill("#view-lab input[name=end]", "2021-01-01");
   await page.click("#view-lab button.primary");
-  await notice(page, "Queued run #2");
+  await notice(page, "Queued run #3");
   await page.waitForSelector("#view-lab .verdict.passed, #view-lab .verdict.rejected", { timeout: 300000 });
   const gates = await page.$$("#view-lab table tbody tr");
   step(`validation done: "${await page.textContent("#view-lab .verdict")}" (${gates.length} gates)`);

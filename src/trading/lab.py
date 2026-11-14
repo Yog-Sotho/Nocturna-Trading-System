@@ -168,7 +168,9 @@ def _midnight(day: str) -> datetime:
 
 def execute(settings: Settings, kind: str, spec: Mapping[str, Any]) -> tuple[dict[str, Any], str | None]:
     """
-    The result (JSON-safe, with a one-line ``headline``) and, for a validation, the tear sheet.
+    The result (JSON-safe, with a one-line ``headline`` and ``notes`` on where the bars fall short
+    of the period asked for) and, for a validation, the tear sheet. The long history ends some weeks
+    before today: a run on it ends where it does.
 
     Raises:
         sources.DataError, TradingNotConfiguredError: When the bars cannot be had.
@@ -176,14 +178,19 @@ def execute(settings: Settings, kind: str, spec: Mapping[str, Any]) -> tuple[dic
     """
     start, end = _midnight(spec["start"]), _midnight(spec["end"])
     if kind == VALIDATE:
-        report, market = runner.validate_candidate(settings, spec["strategy"], start, end, data=spec["data"])
+        report, market = runner.validate_candidate(settings, spec["strategy"], start, end, data=spec["data"],
+                                                   shorten=True)
+        notes = market.notes(start, end)
+        if market.late(start):
+            notes.append("A validation chooses the parameters on the three years before each year it tests: "
+                         "years without bars weaken it. Start the run where the bars start for a fair test.")
         return _finite({
             "headline": report.verdict, "passed": report.passed, "data": market.data_label,
             "hurdle": market.hurdle_label, "curve": runner.thin(report.out_of_sample_curve),
-            "report": report.to_dict(),
+            "report": report.to_dict(), "notes": notes,
         }), report.to_markdown()
     profile: Profile = parse(spec["profile"])
-    backtest = runner.backtest_mix(settings, profile, start, end, spec["data"])
+    backtest = runner.backtest_mix(settings, profile, start, end, spec["data"], shorten=True)
     summary = backtest.summary
     headline = (f"{summary.cagr:.2%} a year, Sharpe {summary.sharpe:.2f}, worst drawdown "
                 f"{summary.max_drawdown:.2%} ({backtest.market.hurdle_label} returned "
@@ -195,6 +202,7 @@ def execute(settings: Settings, kind: str, spec: Mapping[str, Any]) -> tuple[dic
         "fills": len(backtest.result.fills), "fees": str(backtest.result.final.fees),
         "final_equity": str(backtest.result.equity_curve[-1][1]) if backtest.result.equity_curve else None,
         "starting_cash": str(backtest.result.starting_cash),
+        "notes": backtest.market.notes(start, end),
     }), None
 
 

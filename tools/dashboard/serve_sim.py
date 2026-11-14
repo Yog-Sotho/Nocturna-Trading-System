@@ -83,11 +83,14 @@ LONG = {s: daily_bars(INSTRUMENTS[s], date(1970, 1, 2), date(2026, 8, 31), 50.0 
                       vol=0.0002 if s == CASH_SLEEVE else 0.01) for i, s in enumerate(history.SYMBOLS)}
 
 
-def sim_history(start, end, fetch=None):
-    """The lab's long history: synthetic too, and nothing is downloaded."""
+def sim_history(start, end, fetch=None, shorten=False):
+    """The lab's long history: synthetic too, and nothing is downloaded. Like the real one, it ends before today."""
     source = history.Source("https://example.invalid/synthetic", "0" * 64, date(1970, 1, 2), date(2026, 8, 31))
+    limit = history.covered_until([source])
+    if end > limit and not shorten:
+        raise ValueError(f"{source.url} ends on {source.last}: pass an end no later than {limit:%Y-%m-%d}")
     return ({s: INSTRUMENTS[s] for s in history.SYMBOLS},
-            {s: [b for b in bars if start <= b.start < end] for s, bars in LONG.items()}, [source])
+            {s: [b for b in bars if start <= b.start < min(end, limit)] for s, bars in LONG.items()}, [source])
 
 
 market.load = sim_market

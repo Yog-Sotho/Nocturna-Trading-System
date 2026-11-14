@@ -80,11 +80,32 @@ function newRunForm(ctx, catalog, state, params, onQueued) {
   const start = el("input", { type: "date", name: "start", value: START.alpaca, min: "1970-01-01", max: today() });
   const end = el("input", { type: "date", name: "end", value: today(), min: "1970-01-02", max: today() });
   const mixNote = el("p", { class: "small" });
+  const dataNote = el("p", { class: "small muted" });
   const hint = el("p", { class: "faint small" });
   const submit = el("button", { class: "primary", disabled: !ctx.admin }, icon("flask"), " Run");
 
   const mix = () => (ctx.draft ? mixForApi(ctx.draft) : state.saved.mix);
-  const symbolsOf = (names) => names.flatMap((n) => catalog.find((s) => s.name === n)?.symbols || []);
+  // The strategies the long history cannot serve, each with the symbols it lacks
+  const outsideHistory = (names) => names.map((n) => {
+    const missing = (catalog.find((s) => s.name === n)?.symbols || []).filter((s) => !LONG_HISTORY.includes(s));
+    return missing.length ? `${ctx.title(n)} (${missing.join(", ")})` : null;
+  }).filter(Boolean);
+  // The first day follows the data, unless the operator chose one
+  const followData = () => {
+    if (start.value === START.alpaca || start.value === START.history) start.value = START[data.value];
+    describeData();
+  };
+  let blocked = [];
+  const describeData = () => {
+    dataNote.textContent = blocked.length
+      ? `The long history is not offered here: it has SPY, IEF and T-bills only, and ${blocked.join(", ")} `
+        + `${blocked.length === 1 ? "trades" : "trade"} more than that.`
+      : data.value === "history"
+        ? "The long history is published every month or two, so it ends some weeks back: a run stops on its last "
+          + "day, whatever the To date, and says so."
+        : "";
+    dataNote.hidden = !dataNote.textContent;
+  };
   const update = () => {
     const isValidate = validate.checked;
     strategy.closest("label").hidden = !isValidate;
@@ -94,18 +115,16 @@ function newRunForm(ctx, catalog, state, params, onQueued) {
       entries.map((e) => `${weight(e.weight)} ${ctx.title(e.strategy)}`).join(", ") || "empty",
       ctx.draft ? el("span", { class: "muted" }, " (as on the Strategies page, saved or not)") : null,
       el("span", { class: "muted" }, ". Risk limits: the saved ones."));
-    const symbols = isValidate ? symbolsOf([strategy.value]) : symbolsOf(entries.map((e) => e.strategy));
-    const historyFits = symbols.every((s) => LONG_HISTORY.includes(s));
-    data.options[1].disabled = !historyFits;
-    if (!historyFits && data.value === "history") data.value = "alpaca";
+    blocked = outsideHistory(isValidate ? [strategy.value] : entries.map((e) => e.strategy));
+    data.options[1].disabled = blocked.length > 0;
+    if (blocked.length && data.value === "history") data.value = "alpaca";
+    followData();
     hint.textContent = isValidate
       ? "A validation needs at least 4 years: 3 to choose the parameters, then at least 1 to test them out of sample."
       : "A backtest trades the mix through the same engine, costs and risk limits as paper trading.";
   };
   for (const input of [backtest, validate, strategy]) input.addEventListener("change", update);
-  data.addEventListener("change", () => {
-    if (start.value === START.alpaca || start.value === START.history) start.value = START[data.value];
-  });
+  data.addEventListener("change", followData);
 
   submit.addEventListener("click", (event) => ctx.guard(async () => {
     event.preventDefault();
@@ -131,7 +150,7 @@ function newRunForm(ctx, catalog, state, params, onQueued) {
       el("label", {}, "Data", data),
       el("label", {}, "From", start),
       el("label", {}, "To", end)),
-    mixNote, hint,
+    mixNote, dataNote, hint,
     el("div", { class: "buttons" }, submit),
     ctx.admin ? null : el("p", { class: "muted small" }, "Only an admin can start a run."));
   update();
@@ -146,10 +165,11 @@ function runDetail(ctx, run) {
       ? " Waiting for the runs before it." : " Computing. This page updates by itself."));
   } else if (run.status === "failed") {
     parts.push(el("p", { class: "verdict rejected" }, run.error || "Failed."));
-  } else if (run.kind === "backtest") {
-    parts.push(...backtestResult(run.result));
   } else {
-    parts.push(...validationResult(run));
+    const [verdict, ...rest] = run.kind === "backtest" ? backtestResult(run.result) : validationResult(run);
+    // Where the bars fell short of the period asked for, right under the verdict (runs before this had none)
+    const notes = (run.result.notes || []).map((note) => el("li", {}, note));
+    parts.push(verdict, notes.length ? el("ul", { class: "run-notes" }, notes) : null, ...rest);
   }
   return card(`Run #${run.id}`, run.kind === "backtest" ? "chart" : "check", ...parts);
 }

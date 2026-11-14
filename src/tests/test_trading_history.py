@@ -104,8 +104,8 @@ def _sources(first=FIRST, last=LAST, drop=None):
     return files
 
 
-def _load(files, start=datetime(1969, 11, 1, tzinfo=UTC), end=datetime(1970, 4, 1, tzinfo=UTC)):
-    return history.load(start, end, fetch=files.__getitem__)
+def _load(files, start=datetime(1969, 11, 1, tzinfo=UTC), end=datetime(1970, 4, 1, tzinfo=UTC), **options):
+    return history.load(start, end, fetch=files.__getitem__, **options)
 
 
 class TestLoad:
@@ -152,6 +152,14 @@ class TestLoad:
     def test_refuses_an_end_after_the_data(self):
         with pytest.raises(ValueError, match="ends on 1970-03-31"):
             _load(_sources(), end=datetime(1970, 4, 3, tzinfo=UTC))
+
+    def test_shortened_it_stops_where_the_data_does(self):
+        # The lab asks for bars to today; French's file ends weeks before
+        _, bars, sources = _load(_sources(), end=datetime(1970, 6, 1, tzinfo=UTC), shorten=True)
+        assert {series[-1].start.astimezone(NEW_YORK).date() for series in bars.values()} == {date(1970, 3, 31)}
+        assert history.covered_until(sources) == datetime(1970, 4, 1, 5, tzinfo=UTC)  # midnight in New York
+        _, exact, _ = _load(_sources(), shorten=True)  # an end the data reaches is kept
+        assert exact == bars
 
     def test_refuses_data_that_misses_an_nyse_session(self):
         with pytest.raises(ValueError, match="differ from NYSE sessions"):
