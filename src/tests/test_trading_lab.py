@@ -15,7 +15,8 @@ import pytest
 from src.tests.trading_fixtures import BIL, IEF, SPY, daily_bars
 from src.trading import lab
 from src.trading.alerts import AlertDispatcher
-from src.trading.domain import AssetClass
+from src.trading.catalog import STRATEGIES
+from src.trading.domain import AssetClass, Instrument
 from src.trading.profile import parse
 from src.trading.runtime import TradingNotConfiguredError
 from src.trading.validation import history, market, runner, sources
@@ -27,6 +28,7 @@ BARS = {"SPY": daily_bars(SPY, date(2014, 1, 2), date(2025, 12, 31), 100.0, seed
         "IEF": daily_bars(IEF, date(2014, 1, 2), date(2025, 12, 31), 80.0, seed=2, drift=0.0001, vol=0.004),
         "BIL": daily_bars(BIL, date(2014, 1, 2), date(2025, 12, 31), 91.0, seed=5, vol=0.0001)}
 BENCHMARK = {"mix": [{"strategy": "benchmark", "params": {"equity": 0.6}, "weight": "1"}]}
+CANDIDATE_DEFAULTS = {name: info.defaults for name, info in STRATEGIES.items()}
 
 
 @pytest.fixture
@@ -336,6 +338,76 @@ class TestQueue:
         lab.drain(app, settings, heartbeat_every=0.03)
         assert lab.get(app, run_id)["status"] == "done" and "Lab heartbeat failed" in caplog.text
 
+    def test_a_queued_run_can_be_cancelled_and_never_starts(self, app, settings, monkeypatch):
+        monkeypatch.setattr(lab, "execute", lambda *args: pytest.fail("a cancelled run was executed"))
+        run_id = _submit(app)["id"]
+        cancelled = lab.cancel(app, run_id, T0)
+        assert cancelled["status"] == "cancelled" and cancelled["error"] == "cancelled"
+        assert lab.drain(app, settings) == 0
+        with pytest.raises(lab.LabStateError, match=f"run #{run_id} has already finished \\(cancelled\\)"):
+            lab.cancel(app, run_id, T0)
+        assert lab.cancel(app, 9999, T0) is None
+
+    def test_a_cancelled_run_frees_its_place_in_the_queue(self, app):
+        first = _submit(app)["id"]
+        _submit(app)
+        _submit(app)
+        lab.cancel(app, first, T0)
+        _submit(app)  # three wait again, not four
+
+    def test_a_running_run_is_interrupted_when_cancelled(self, app, settings, monkeypatch):
+        started = threading.Event()
+
+        def execute(settings, kind, spec):
+            started.set()
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:  # plain Python, as a backtest is
+                sum(range(1000))
+            pytest.fail("not interrupted")
+
+        monkeypatch.setattr(lab, "execute", execute)
+        run_id = _submit(app)["id"]
+        after = _submit(app, spec={"start": "2017-01-03", "end": "2026-10-23", "data": "alpaca",
+                                   "strategy": "benchmark"})["id"]
+        sink = Collect()
+        alerts = AlertDispatcher([sink], retry_delays=())
+        canceller = threading.Thread(target=lambda: started.wait(5) and lab.cancel(app, run_id, T0))
+        canceller.start()
+        began = time.monotonic()
+        monkeypatch.setattr(lab, "execute", lambda settings, kind, spec: execute(settings, kind, spec)
+                            if spec["strategy"] == "tsmom" else ({"headline": "the next one ran"}, None))
+        assert lab.drain(app, settings, alerts, heartbeat_every=0.05) == 2
+        canceller.join()
+        assert time.monotonic() - began < 5
+        assert lab.get(app, run_id)["status"] == "cancelled" and lab.get(app, run_id)["result"] is None
+        assert lab.get(app, after)["status"] == "done"  # the queue carries on
+        assert alerts.flush(5) and [a.title for a in sink.alerts] == [f"Lab run #{after} finished"]
+
+    def test_a_run_cancelled_where_it_cannot_be_interrupted_drops_its_result(self, app, settings, monkeypatch):
+        # In a thread (the simulator) nothing interrupts the computation: it finishes, and nothing is stored
+        def execute(settings, kind, spec):
+            lab.cancel(app, run_id, T0)
+            time.sleep(0.2)
+            return {"headline": "too late"}, "# report"
+
+        monkeypatch.setattr(lab, "execute", execute)
+        run_id = _submit(app)["id"]
+        sink = Collect()
+        alerts = AlertDispatcher([sink], retry_delays=())
+        assert lab.drain(app, settings, alerts, heartbeat_every=0.05, interrupt=lambda: None) == 1
+        run = lab.get(app, run_id)
+        assert (run["status"], run["result"], run["report"]) == ("cancelled", None, None)
+        assert alerts.flush(5) and sink.alerts == []
+
+    def test_only_finished_runs_are_deleted(self, app, settings, monkeypatch):
+        monkeypatch.setattr(lab, "execute", lambda *args: ({"headline": "x"}, None))
+        run_id = _submit(app)["id"]
+        with pytest.raises(lab.LabStateError, match=f"run #{run_id} is queued: cancel it first"):
+            lab.remove(app, run_id)
+        lab.drain(app, settings)
+        assert lab.remove(app, run_id) is True
+        assert lab.get(app, run_id) is None and lab.remove(app, run_id) is False
+
     def test_a_run_is_claimed_once(self, app):
         first, second = _submit(app)["id"], _submit(app)["id"]
         assert lab._claim(app, T0)[0] == first
@@ -405,6 +477,77 @@ class TestExecute:
         assert 0 < len(result["curve"]) <= 601 and [y["year"] for y in result["years"]] == [2016, 2017]
         assert result["final_equity"] == result["curve"][-1]["equity"] and result["fills"] > 0
         assert result["notes"] == []
+
+    def test_a_mix_is_compared_with_the_60_40_on_the_same_bars(self, settings, synthetic):
+        mix = {"mix": [{"strategy": "trend-filter", "params": CANDIDATE_DEFAULTS["trend-filter"], "weight": "0.5"}],
+               "risk": {"risk_max_drawdown": "0.08"}}
+        _, spec = lab.parse_request(settings, {"kind": "backtest", **mix, "start": "2016-01-04", "end": "2018-01-02"},
+                                    TODAY)
+        result, _ = lab.execute(settings, "backtest", spec)
+        benchmark = result["benchmark"]
+        assert benchmark["title"] == "60/40 stocks and bonds" and benchmark["summary"] != result["summary"]
+        assert [y["year"] for y in benchmark["years"]] == [y["year"] for y in result["years"]] == [2016, 2017]
+        assert benchmark["daily"][0][0] == result["daily"][0][0] and len(benchmark["curve"]) > 1
+        assert len(synthetic) == 1  # the 60/40 reused the bars already loaded
+        # The plain 60/40 is not compared with itself
+        _, spec = lab.parse_request(settings, {"kind": "backtest", **BENCHMARK, "start": "2016-01-04",
+                                               "end": "2017-01-03"}, TODAY)
+        assert lab.execute(settings, "backtest", spec)[0]["benchmark"] is None
+
+    def test_a_crypto_mix_loads_the_60_40_bars_it_lacks(self, settings, synthetic, monkeypatch):
+        crypto = daily_bars(Instrument("BTC/USD", AssetClass.CRYPTO), date(2014, 1, 2), date(2025, 12, 31), 400.0,
+                            seed=9)
+
+        def load(settings, symbols, start, end):
+            synthetic.append((tuple(s for s, _ in symbols), start, end))
+            known = {"SPY": SPY, "IEF": IEF, "BIL": BIL, "BTC/USD": Instrument("BTC/USD", AssetClass.CRYPTO),
+                     "ETH/USD": Instrument("ETH/USD", AssetClass.CRYPTO),
+                     "SOL/USD": Instrument("SOL/USD", AssetClass.CRYPTO)}
+            return ({s: known[s] for s, _ in symbols},
+                    {s: BARS.get(s, crypto) for s, _ in symbols})
+
+        monkeypatch.setattr(market, "load", load)
+        mix = {"mix": [{"strategy": "crypto-trend", "params": {}, "weight": "0.1"}]}
+        mix["mix"][0]["params"] = {k: v for k, v in CANDIDATE_DEFAULTS["crypto-trend"].items()}
+        _, spec = lab.parse_request(settings, {"kind": "backtest", **mix, "start": "2016-01-04", "end": "2017-01-03"},
+                                    TODAY)
+        result, _ = lab.execute(settings, "backtest", spec)
+        assert result["benchmark"] is not None
+        assert [set(call[0]) for call in synthetic] == [{"BTC/USD", "ETH/USD", "SOL/USD", "BIL"},
+                                                         {"SPY", "IEF", "BIL"}]
+
+    def test_the_daily_equity_is_downloaded_not_shown(self, app, settings, synthetic, monkeypatch):
+        mix = {"mix": [{"strategy": "trend-filter", "params": CANDIDATE_DEFAULTS["trend-filter"], "weight": "0.5"}]}
+        _, spec = lab.parse_request(settings, {"kind": "backtest", **mix, "start": "2016-01-04", "end": "2017-01-03"},
+                                    TODAY)
+        run_id = _submit(app, "backtest", spec)["id"]
+        with pytest.raises(lab.LabStateError, match="only a finished run has equity to download"):
+            lab.equity_csv(app, run_id)
+        lab.drain(app, settings)
+        shown = lab.get(app, run_id)["result"]
+        assert "daily" not in shown and "daily" not in shown["benchmark"] and shown["curve"]
+        name, text = lab.equity_csv(app, run_id)
+        lines = text.splitlines()
+        assert name == f"lab-{run_id}-backtest.csv" and lines[0] == "date,the mix,60/40 stocks and bonds"
+        assert lines[1].startswith("2016-01-0") and len(lines) > 240 and all(len(r.split(",")) == 3 for r in lines)
+        assert lines[-1].startswith("2016-12-30,")  # the last session of 2016, dated by the session it covers
+        assert lab.equity_csv(app, 9999) is None
+
+    def test_a_validation_downloads_its_out_of_sample_equity(self, app, settings, synthetic):
+        _, spec = lab.parse_request(settings, {"kind": "validate", "strategy": "benchmark", "start": "2016-01-04",
+                                               "end": "2021-01-01"}, TODAY)
+        run_id = _submit(app, "validate", spec)["id"]
+        lab.drain(app, settings)
+        name, text = lab.equity_csv(app, run_id)
+        assert name == f"lab-{run_id}-benchmark-out-of-sample.csv"
+        assert text.splitlines()[0] == "date,benchmark out of sample" and text.splitlines()[1].startswith("2019-")
+
+    def test_older_runs_have_nothing_to_download(self, app):
+        run_id = _submit(app)["id"]
+        lab._claim(app, T0)
+        lab._finish(app, run_id, T0, result={"headline": "x", "curve": []})  # stored before downloads existed
+        with pytest.raises(lab.LabStateError, match="made before downloads existed: run it again"):
+            lab.equity_csv(app, run_id)
 
     def test_a_validation(self, settings, synthetic):
         _, spec = lab.parse_request(settings, {"kind": "validate", "strategy": "benchmark", "start": "2016-01-04",

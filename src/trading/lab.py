@@ -8,35 +8,45 @@ server, and never the engine. A run is one of:
 
 * ``backtest``: a strategy mix with its risk limits, as the engine would trade
   it (``runner.backtest_mix``): the equity curve, the return of each year, and
-  a summary against T-bills;
+  a summary against T-bills, next to the 60/40 over the same days, data and
+  limits (unless the mix is the 60/40);
 * ``validate``: the promotion gates for one strategy and its parameter grid,
   as ``flask validate`` runs them (``runner.validate_candidate``): the verdict,
   the tear sheet, and the equity the walk-forward traded out of sample.
 
 Nothing here trades or changes the trading profile: results are for reading.
 A run whose process died (a container restart) stops sending its heartbeat
-and is marked failed.
+and is marked failed. A queued run can be cancelled before it starts; a
+running one is interrupted at its next heartbeat (``drain``). Finished runs
+can be deleted. Each result keeps its whole daily equity, which ``get`` leaves
+out and ``equity_csv`` turns into a download.
 """
 
 from __future__ import annotations
 
+import _thread
+import csv
+import io
 import logging
 import math
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from flask import Flask
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 
 from src.config import Settings
 
 from .alerts import Alert, AlertDispatcher
-from .profile import Profile, ProfileError, effective_settings, parse, symbols
+from .catalog import STRATEGIES
+from .profile import DEFAULT_PROFILE, Profile, ProfileError, effective_settings, parse, symbols
 from .runtime import TradingNotConfiguredError
 from .validation import runner, sources
 from .validation.candidates import CANDIDATES
@@ -45,7 +55,8 @@ logger = logging.getLogger(__name__)
 
 BACKTEST, VALIDATE = "backtest", "validate"
 KINDS = (BACKTEST, VALIDATE)
-QUEUED, RUNNING, DONE, FAILED = "queued", "running", "done", "failed"
+QUEUED, RUNNING, DONE, FAILED, CANCELLED = "queued", "running", "done", "failed", "cancelled"
+FINISHED = (DONE, FAILED, CANCELLED)
 #: Runs queued or running at once; more are refused until one finishes
 MAX_WAITING = 3
 #: The long history starts in 1970 (``history.py``)
@@ -53,7 +64,8 @@ EARLIEST = date(1970, 1, 1)
 MIN_BACKTEST = timedelta(days=30)
 #: The walk-forward's default: 36 months to choose the parameters, then at least 12 to test them
 MIN_VALIDATE = timedelta(days=4 * 365)
-HEARTBEAT_EVERY = 30.0
+#: Also how soon a running run notices that it was cancelled
+HEARTBEAT_EVERY = 5.0
 #: A running run without a heartbeat this long lost its process
 LAB_STALE_AFTER = timedelta(minutes=5)
 MAX_ERROR = 2000
@@ -67,6 +79,10 @@ class LabError(ValueError):
 
 class LabBusyError(RuntimeError):
     """MAX_WAITING runs are already queued or running."""
+
+
+class LabStateError(RuntimeError):
+    """The run is not in a state that allows this (cancel a finished run, delete a running one)."""
 
 
 # -- what to run --------------------------------------------------------------------------
@@ -187,7 +203,7 @@ def execute(settings: Settings, kind: str, spec: Mapping[str, Any]) -> tuple[dic
         return _finite({
             "headline": report.verdict, "passed": report.passed, "data": market.data_label,
             "hurdle": market.hurdle_label, "curve": runner.thin(report.out_of_sample_curve),
-            "report": report.to_dict(), "notes": notes,
+            "daily": runner.daily(report.out_of_sample_curve), "report": report.to_dict(), "notes": notes,
         }), report.to_markdown()
     profile: Profile = parse(spec["profile"])
     backtest = runner.backtest_mix(settings, profile, start, end, spec["data"], shorten=True)
@@ -195,15 +211,27 @@ def execute(settings: Settings, kind: str, spec: Mapping[str, Any]) -> tuple[dic
     headline = (f"{summary.cagr:.2%} a year, Sharpe {summary.sharpe:.2f}, worst drawdown "
                 f"{summary.max_drawdown:.2%} ({backtest.market.hurdle_label} returned "
                 f"{summary.hurdle_return:.2%} in all, the mix {summary.total_return:.2%})")
+    benchmark = None
+    if profile.mix != DEFAULT_PROFILE.mix:
+        # The yardstick over the same days, on the same data, within the same limits
+        plain = runner.backtest_mix(settings, replace(DEFAULT_PROFILE, risk=profile.risk), start, end,
+                                    spec["data"], shorten=True, market=backtest.market)
+        benchmark = {"title": STRATEGIES[DEFAULT_PROFILE.mix[0].strategy].title, **_curves(plain),
+                     "summary": plain.summary.as_dict()}
     return _finite({
         "headline": headline, "summary": summary.as_dict(), "data": backtest.market.data_label,
-        "hurdle": backtest.market.hurdle_label, "curve": runner.thin(backtest.result.equity_curve),
-        "years": backtest.years(), "kill_switch_trips": backtest.kill_switch_trips,
+        "hurdle": backtest.market.hurdle_label, **_curves(backtest),
         "fills": len(backtest.result.fills), "fees": str(backtest.result.final.fees),
-        "final_equity": str(backtest.result.equity_curve[-1][1]) if backtest.result.equity_curve else None,
         "starting_cash": str(backtest.result.starting_cash),
-        "notes": backtest.market.notes(start, end),
+        "notes": backtest.market.notes(start, end), "benchmark": benchmark,
     }), None
+
+
+def _curves(backtest: runner.MixBacktest) -> dict[str, Any]:
+    curve = backtest.result.equity_curve
+    return {"curve": runner.thin(curve), "daily": runner.daily(curve), "years": backtest.years(),
+            "kill_switch_trips": backtest.kill_switch_trips,
+            "final_equity": str(curve[-1][1]) if curve else None}
 
 
 def _failure(e: Exception) -> str:
@@ -262,7 +290,95 @@ def get(app: Flask, run_id: int) -> dict[str, Any] | None:
         record = db.session.get(LabRun, run_id)
         if record is None:
             return None
-        return {**_summary(record), "result": record.result, "report": record.report}
+        return {**_summary(record), "result": _without_daily(record.result), "report": record.report}
+
+
+def _without_daily(result: Any) -> Any:
+    """A result without its daily equity, which only a download needs (``equity_csv``)."""
+    if not isinstance(result, dict):
+        return result
+    trimmed = {k: v for k, v in result.items() if k != "daily"}
+    if isinstance(trimmed.get("benchmark"), dict):
+        trimmed["benchmark"] = {k: v for k, v in trimmed["benchmark"].items() if k != "daily"}
+    return trimmed
+
+
+def equity_csv(app: Flask, run_id: int) -> tuple[str, str] | None:
+    """
+    A finished run's daily equity as CSV, with its file name; None for an unknown run.
+
+    Raises:
+        LabStateError: If the run has no daily equity: not finished, failed, or made before downloads.
+    """
+    from src.models.trading import LabRun
+    from src.models.user import db
+
+    with app.app_context():
+        record = db.session.get(LabRun, run_id)
+        if record is None:
+            return None
+        result = record.result if isinstance(record.result, dict) else {}
+        if record.status != DONE or "daily" not in result:
+            raise LabStateError("only a finished run has equity to download" if record.status != DONE else
+                                "this run was made before downloads existed: run it again")
+        kind, spec = record.kind, record.spec
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\n")
+    if kind == VALIDATE:
+        writer.writerow(["date", f"{spec['strategy']} out of sample"])
+        writer.writerows(result["daily"])
+        return f"lab-{run_id}-{spec['strategy']}-out-of-sample.csv", out.getvalue()
+    benchmark = result.get("benchmark") or {}
+    other = dict(benchmark.get("daily") or [])
+    writer.writerow(["date", "the mix", *([benchmark["title"]] if other else [])])
+    for day, equity in result["daily"]:
+        writer.writerow([day, equity, *([other.get(day, "")] if other else [])])
+    return f"lab-{run_id}-backtest.csv", out.getvalue()
+
+
+def cancel(app: Flask, run_id: int, now: datetime) -> dict[str, Any] | None:
+    """
+    Cancel a queued run (it never starts) or a running one (its process stops it at its next
+    heartbeat); None for an unknown run.
+
+    Raises:
+        LabStateError: If the run has already finished.
+    """
+    from src.models.trading import LabRun
+    from src.models.user import db
+
+    with app.app_context():
+        changed = db.session.execute(
+            update(LabRun).where(LabRun.id == run_id, LabRun.status.in_((QUEUED, RUNNING)))
+            .values(status=CANCELLED, finished_at=now, error="cancelled"))
+        db.session.commit()
+        record = db.session.get(LabRun, run_id)
+        if record is None:
+            return None
+        if getattr(changed, "rowcount", 0) != 1:
+            raise LabStateError(f"run #{run_id} has already finished ({record.status})")
+        return _summary(record)
+
+
+def remove(app: Flask, run_id: int) -> bool:
+    """
+    Delete a finished run; False for an unknown run.
+
+    Raises:
+        LabStateError: If the run is queued or running (cancel it first).
+    """
+    from src.models.trading import LabRun
+    from src.models.user import db
+
+    with app.app_context():
+        record = db.session.get(LabRun, run_id)
+        if record is None:
+            return False
+        if record.status not in FINISHED:
+            raise LabStateError(f"run #{run_id} is {record.status}: cancel it first")
+        db.session.execute(delete(LabRun).where(LabRun.id == run_id, LabRun.status.in_(FINISHED)))
+        db.session.commit()
+        return True
 
 
 def latest_verdicts(app: Flask) -> dict[str, dict[str, Any]]:
@@ -316,28 +432,30 @@ def _claim(app: Flask, now: datetime) -> tuple[int, str, dict[str, Any]] | None:
                 return run_id, kind, spec
 
 
-def _beat(app: Flask, run_id: int, now: datetime) -> None:
+def _beat(app: Flask, run_id: int, now: datetime) -> bool:
+    """Touch the run's heartbeat; False once it is no longer running (it was cancelled)."""
     from src.models.trading import LabRun
     from src.models.user import db
 
     with app.app_context():
-        db.session.execute(update(LabRun).where(LabRun.id == run_id, LabRun.status == RUNNING)
-                           .values(heartbeat_at=now))
+        touched = db.session.execute(update(LabRun).where(LabRun.id == run_id, LabRun.status == RUNNING)
+                                     .values(heartbeat_at=now))
         db.session.commit()
+        return getattr(touched, "rowcount", 0) == 1
 
 
 def _finish(app: Flask, run_id: int, now: datetime, result: dict[str, Any] | None = None,
-            report: str | None = None, error: str | None = None) -> None:
+            report: str | None = None, error: str | None = None) -> bool:
+    """Store the outcome; False if the run was cancelled meanwhile (it stays cancelled, the result is dropped)."""
     from src.models.trading import LabRun
     from src.models.user import db
 
     with app.app_context():
-        record = db.session.get(LabRun, run_id)
-        if record is None:
-            return
-        record.status, record.finished_at = (FAILED if error is not None else DONE), now
-        record.result, record.report, record.error = result, report, error
+        stored = db.session.execute(update(LabRun).where(LabRun.id == run_id, LabRun.status == RUNNING).values(
+            status=FAILED if error is not None else DONE, finished_at=now, result=result, report=report,
+            error=error))
         db.session.commit()
+        return getattr(stored, "rowcount", 0) == 1
 
 
 def has_queued(app: Flask) -> bool:
@@ -358,15 +476,49 @@ def running_fresh(app: Flask, now: datetime) -> bool:
             LabRun.status == RUNNING, LabRun.heartbeat_at >= now - LAB_STALE_AFTER)).first() is not None
 
 
-def _heartbeat(app: Flask, run_id: int, now: Callable[[], datetime],
-               every: float) -> tuple[threading.Event, threading.Thread]:
-    """Touch the run's heartbeat every ``every`` seconds until the event is set."""
+class _Interrupter:
+    """
+    Stops a run in progress once it is cancelled. The computation is plain Python in this
+    process's main thread, so the heartbeat thread interrupts it as Ctrl-C would
+    (``interrupt``); only while it computes, so a result being stored is never cut short.
+    """
+
+    def __init__(self, interrupt: Callable[[], None] | None) -> None:
+        self._interrupt = interrupt
+        self._lock = threading.Lock()
+        self._computing = False
+        self.cancelled = False
+
+    @contextmanager
+    def computing(self) -> Iterator[None]:
+        with self._lock:
+            self._computing = True
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._computing = False
+
+    def cancel(self) -> None:
+        with self._lock:
+            if self.cancelled:
+                return
+            self.cancelled = True
+            if self._computing and self._interrupt is not None:
+                self._interrupt()
+
+
+def _heartbeat(app: Flask, run_id: int, now: Callable[[], datetime], every: float,
+               on_cancel: Callable[[], None] = lambda: None) -> tuple[threading.Event, threading.Thread]:
+    """Touch the run's heartbeat every ``every`` seconds until the event is set; tell ``on_cancel`` if it was cancelled."""
     stop = threading.Event()
 
     def beat() -> None:
         while not stop.wait(every):
             try:
-                _beat(app, run_id, now())
+                if not _beat(app, run_id, now()):
+                    on_cancel()
+                    return
             except Exception:
                 logger.exception("Lab heartbeat failed")
 
@@ -375,33 +527,55 @@ def _heartbeat(app: Flask, run_id: int, now: Callable[[], datetime],
     return stop, thread
 
 
+def _main_thread_interrupt() -> Callable[[], None] | None:
+    """Ctrl-C for the main thread, when the runs execute there (``flask lab run``); a thread is not interrupted."""
+    return _thread.interrupt_main if threading.current_thread() is threading.main_thread() else None
+
+
 def drain(app: Flask, settings: Settings, alerts: AlertDispatcher | None = None,
-          now: Callable[[], datetime] = lambda: datetime.now(UTC), heartbeat_every: float = HEARTBEAT_EVERY) -> int:
-    """Run the queued runs, oldest first, until none is left; returns how many ran."""
+          now: Callable[[], datetime] = lambda: datetime.now(UTC), heartbeat_every: float = HEARTBEAT_EVERY,
+          interrupt: Callable[[], Callable[[], None] | None] = _main_thread_interrupt) -> int:
+    """
+    Run the queued runs, oldest first, until none is left; returns how many ran. A run
+    cancelled while it computes is interrupted where ``interrupt`` can (the main thread),
+    otherwise left to finish and its result dropped.
+    """
     count = 0
     while (claimed := _claim(app, now())) is not None:
         run_id, kind, spec = claimed
         logger.info("Lab run %d started: %s", run_id, title(kind, spec))
-        stop, beating = _heartbeat(app, run_id, now, heartbeat_every)
+        interrupter = _Interrupter(interrupt())
+        stop, beating = _heartbeat(app, run_id, now, heartbeat_every, interrupter.cancel)
         try:
-            result, report = execute(settings, kind, spec)
+            try:
+                with interrupter.computing():
+                    result, report = execute(settings, kind, spec)
+            except KeyboardInterrupt:
+                if not interrupter.cancelled:
+                    raise
+                logger.info("Lab run %d cancelled", run_id)
+                count += 1
+                continue
         except Exception as e:
             if not isinstance(e, sources.DataError | TradingNotConfiguredError | ValueError):
                 logger.exception("Lab run %d failed", run_id)
             error = _failure(e)
-            _finish(app, run_id, now(), error=error)
+            stored = _finish(app, run_id, now(), error=error)
             alert = Alert(f"Lab run #{run_id} failed", f"{title(kind, spec)}: {error}", category="lab")
         else:
-            _finish(app, run_id, now(), result=result, report=report)
+            stored = _finish(app, run_id, now(), result=result, report=report)
             alert = Alert(f"Lab run #{run_id} finished", f"{title(kind, spec)}: {result['headline']}",
                           category="lab")
         finally:
             stop.set()
             beating.join()
+        count += 1
+        if not stored:
+            logger.info("Lab run %d cancelled", run_id)
+            continue
         logger.info("Lab run %d: %s", run_id, alert.title)
         if alerts is not None:
             alerts.notify(alert)
-        count += 1
     return count
 
 

@@ -415,7 +415,7 @@ class LabRunBody(Strict):
 class LabRunSummary(Strict):
     id: int
     kind: Literal["backtest", "validate"]
-    status: Literal["queued", "running", "done", "failed"]
+    status: Literal["queued", "running", "done", "failed", "cancelled"]
     title: str
     spec: dict[str, Any] = Field(description="What was asked: period, data, and the mix or the strategy")
     created_by: str | None
@@ -428,8 +428,10 @@ class LabRunSummary(Strict):
 
 class LabRunDetail(LabRunSummary):
     result: dict[str, Any] | None = Field(
-        description="backtest: summary, curve, years, fills, fees. validate: passed, curve (out of sample), "
-                    "report (the JSON tear sheet)")
+        description="backtest: summary, curve, years, fills, fees, notes, and benchmark: the 60/40 over the same "
+                    "days and limits (its title, summary, curve, years; null when the mix is the 60/40). validate: "
+                    "passed, curve (out of sample), notes, report (the JSON tear sheet). notes: where the bars fell "
+                    "short of the period asked for")
     report: str | None = Field(description="validate: the tear sheet in Markdown")
 
 
@@ -443,6 +445,11 @@ class LabRunQueued(Strict):
 
 class LabRunData(Strict):
     run: LabRunDetail
+
+
+class LabEquity(Strict):
+    filename: str
+    csv: str = Field(description="date, then the equity of each series, one row per session")
 
 
 # -- alerts and preferences ---------------------------------------------------------------

@@ -628,6 +628,9 @@ td.wrap { white-space: normal; min-width: 14em; }
 .chart svg { display: block; width: 100%; height: 220px; overflow: visible; }
 .chart .line { fill: none; stroke: var(--accent); stroke-width: 2.2; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
 .chart .line.second { stroke: var(--faint); stroke-width: 1.4; stroke-dasharray: 4 4; }
+.chart .bar.second { fill: color-mix(in srgb, var(--faint) 70%, transparent); }
+.chart-foot .key::before { content: ""; display: inline-block; width: 14px; height: 0; margin-right: 6px; vertical-align: middle; border-top: 2.2px solid var(--accent); }
+.chart-foot .key.second::before { border-top: 1.4px dashed var(--faint); margin-left: 6px; }
 .chart .grid { stroke: var(--border); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .chart .cursor { stroke: var(--accent); stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0.6; }
 .chart .dot { fill: var(--accent); stroke: var(--surface-solid); stroke-width: 2; }
@@ -767,6 +770,8 @@ p.label { font-weight: 600; margin: 16px 0 8px; }
 .verdict.rejected { border-color: color-mix(in srgb, var(--down) 55%, transparent); }
 .run-notes { margin: 0 0 10px; padding: 10px 14px 10px 30px; border-radius: var(--radius-s); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); font-size: 0.9rem; }
 .run-notes li + li { margin-top: 4px; }
+.scroll + .figures { margin-top: 14px; }
+.lab-mix { margin: 6px 0 4px; }
 pre.tearsheet { white-space: pre; overflow: auto; max-height: 520px; padding: 12px; border-radius: var(--radius-s); background: var(--surface-2); border: 1px solid var(--border); }
 
 /* -- dialogs ----------------------------------------------------------------------------- */

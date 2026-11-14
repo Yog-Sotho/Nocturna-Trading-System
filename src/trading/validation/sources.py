@@ -15,7 +15,7 @@ held in it and Sharpe ratios are measured in excess of its return.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 
 from src.config import Settings
@@ -52,6 +52,20 @@ class MarketData:
     def hurdle(self) -> dict[date, float]:
         """T-bills' return per day (BIL or its proxy)."""
         return dict(hurdle_returns(self.bars[CASH_SLEEVE], DEFAULT_FEED_DELAY[AssetClass.EQUITY]))
+
+    #: Where the bars were asked to start, warm-up included
+    first: datetime | None = None
+
+    def covers(self, symbols: Sequence[tuple[str, AssetClass]], first: datetime) -> bool:
+        """It holds every one of ``symbols``, loaded from ``first`` or earlier."""
+        return (self.first is not None and self.first <= first
+                and all(s in self.bars and s in self.instruments for s, _ in symbols))
+
+    def only(self, symbols: Sequence[tuple[str, AssetClass]]) -> MarketData:
+        """The same data, for ``symbols`` alone."""
+        wanted = {s for s, _ in symbols}
+        return replace(self, instruments={s: i for s, i in self.instruments.items() if s in wanted},
+                       bars={s: b for s, b in self.bars.items() if s in wanted})
 
     def late(self, start: datetime) -> dict[date, list[str]]:
         """The symbols whose bars begin well after ``start``, by the day they begin."""
@@ -127,8 +141,8 @@ def load(settings: Settings, symbols: Sequence[tuple[str, AssetClass]], start: d
                           f"T-bills (French's 1-month rate, as {CASH_SLEEVE})",
                           # A day past the last bar, so that it becomes final, and is traded, within the period
                           min(end, history.covered_until(sources) + timedelta(days=1)) if shorten else end,
-                          sources, name="The long history")
+                          sources, name="The long history", first=start)
     if data != ALPACA:
         raise DataError(f"unknown data source {data!r}; known: {', '.join(DATA_SOURCES)}")
     instruments, bars = market.load(settings, symbols, start, end)
-    return MarketData(instruments, bars, "Alpaca daily bars", f"T-bills ({CASH_SLEEVE})", end)
+    return MarketData(instruments, bars, "Alpaca daily bars", f"T-bills ({CASH_SLEEVE})", end, first=start)
