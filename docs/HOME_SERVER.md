@@ -137,7 +137,11 @@ Tailscale and prints a sign-in link. In the [admin console](https://login.tailsc
 6. **Did the test alert reach your phone?**
 
 When you run the setup again, it offers to keep each value already in `.env` (press Enter).
-It tests the Alpaca keys and the bot token again.
+It tests the Alpaca keys and the bot token again. To change something, answer `n`:
+- **To another bot:** answer `n` to "Keep the bot already in .env?", then paste the new bot's token.
+  It then asks you to tap **Start** in the new bot's chat, since a bot can only write to a chat
+  once it has been started there.
+- **Other Alpaca keys:** answer `n` to "Keep the Alpaca keys already in .env?".
 
 ## When it stops before changing anything
 
