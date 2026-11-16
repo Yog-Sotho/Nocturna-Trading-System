@@ -637,8 +637,10 @@ def test_a_failed_step_stops_the_run_and_says_where(tmp_path):
 class Services:
     """Alpaca and Telegram as the setup sees them."""
 
-    def __init__(self, alpaca_key="PKABCDEFGH123456", chats=({"id": 424242, "type": "private", "first_name": "Op"},)):
+    def __init__(self, alpaca_key="PKABCDEFGH123456", chats=({"id": 424242, "type": "private", "first_name": "Op"},),
+                 bots=None):
         self.alpaca_key, self.chats = alpaca_key, list(chats)
+        self.bots = bots or {TOKEN: "nocturna_bot"}
 
     def __call__(self, method, url, headers=None, data=None, timeout=15):
         if "alpaca" in url:
@@ -648,9 +650,10 @@ class Services:
             return inst.Response(401, b"{}")
         method_name = url.rsplit("/", 1)[-1]
         if method_name == "getMe":
-            good = url.split("/bot", 1)[1].startswith(TOKEN)
-            return inst.Response(200 if good else 401, json.dumps(
-                {"ok": good, "result": {"username": "nocturna_bot"}} if good else
+            token = url.split("/bot", 1)[1].rsplit("/", 1)[0]
+            name = self.bots.get(token)
+            return inst.Response(200 if name else 401, json.dumps(
+                {"ok": True, "result": {"username": name}} if name else
                 {"ok": False, "description": "Unauthorized"}).encode())
         if method_name == "getUpdates":
             updates = [{"update_id": n, "message": {"chat": chat}} for n, chat in enumerate(self.chats)]
@@ -692,7 +695,7 @@ def test_a_first_run(tmp_path):
 def test_a_second_run_keeps_every_secret_and_backs_up_the_file(tmp_path):
     env = write(tmp_path / ".env", {**GOOD, "RISK_MAX_DRAWDOWN": "0.08", "DATABASE_URL": "postgresql://x",
                                     "ADMIN_EMAIL": "admin@yourdomain.com"})
-    code, _ = build(tmp_path, Script(answers=["", "", "", "", "", ""]))
+    code, _ = build(tmp_path, Script(answers=["", "", "", "", "", "", ""]))
     assert code == 0
     values = inst.env_values(env)
     assert {k: values[k] for k in GOOD} == GOOD
@@ -713,7 +716,7 @@ def test_the_example_file_becomes_a_working_configuration(tmp_path):
 
 def test_the_database_password_is_never_replaced(tmp_path):
     write(tmp_path / ".env", {**GOOD, "DB_PASSWORD": "not-url-safe@1"})
-    script = Script(answers=["", "", "", "", "", ""])
+    script = Script(answers=["", "", "", "", "", "", ""])
     _, env = build(tmp_path, script)
     assert inst.env_values(env)["DB_PASSWORD"] == "not-url-safe@1"
     assert "Left unchanged, since the database uses it" in script.text
@@ -745,6 +748,24 @@ def test_telegram_can_be_skipped_and_several_chats_are_offered(tmp_path):
     values = inst.env_values(env)
     assert values["ALERT_TELEGRAM_CHAT_ID"] == "2" and values["TELEGRAM_COMMANDS"] == "false"
     assert "B (@bee)" in script.text
+
+
+def test_the_bot_can_be_replaced_and_its_chat_is_found_again(tmp_path):
+    other = "7777777777:" + "B" * 35
+    env = write(tmp_path / ".env", GOOD)
+    services = Services(bots={TOKEN: "nocturna_bot", other: "night_owl_bot"},
+                        chats=[{"id": 515151, "type": "private", "first_name": "Op"}])
+    # Keep Alpaca, set up Telegram, not the old bot; a wrong token, try again; Start the new one (Enter),
+    # commands on, no ping URLs
+    script = Script(answers=["", "", "n", "", "", "", "", ""], secrets=["not a token", other])
+    code, _ = build(tmp_path, script, services=services)
+    values = inst.env_values(env)
+    assert code == 0 and values["ALERT_TELEGRAM_BOT_TOKEN"] == other
+    assert values["ALERT_TELEGRAM_CHAT_ID"] == "515151"  # found again with the new bot, not kept from the old
+    assert "Keep the bot already in .env (@nocturna_bot)?" in script.text
+    assert "Telegram refused this token" in script.text and "The bot is @night_owl_bot." in script.text
+    assert "Keep the chat id already in .env?" not in script.text and "open https://t.me/night_owl_bot" in script.text
+    assert other not in script.text
 
 
 def test_before_tailscale_serves_it_the_address_waits(tmp_path):

@@ -1346,6 +1346,9 @@ def _telegram_step(values: dict[str, str], done: dict[str, str], h: Http, d: Dia
         bot = result if ok and isinstance(result, dict) else None
         if bot is None:
             d.say(f"The bot token in .env does not work ({result}).")
+        elif not d.yes(f"Keep the bot already in .env (@{bot.get('username', '')})?"):
+            bot = None
+    kept = bot is not None
     while bot is None:
         token = d.ask_secret("Bot token (hidden): ").strip()
         ok, result = telegram(h, token, "getMe")
@@ -1358,7 +1361,8 @@ def _telegram_step(values: dict[str, str], done: dict[str, str], h: Http, d: Dia
                 return
     username = bot.get("username", "")
     d.say(f"The bot is @{username}.")
-    if chat and _CHAT.fullmatch(chat) and d.yes("Keep the chat id already in .env?"):
+    # A new bot can write to a chat only once it has been started there: find the chat again
+    if kept and chat and _CHAT.fullmatch(chat) and d.yes("Keep the chat id already in .env?"):
         done.setdefault("ALERT_TELEGRAM_CHAT_ID", "kept")
     else:
         chat = ""
